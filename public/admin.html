@@ -57,8 +57,21 @@
     .print-header-title h1 { margin: 0 0 4px; font-size: 1.5rem; }
     .print-header-title p { margin: 2px 0; color: var(--text-muted); font-size: 0.9rem; }
 
-    /* Keep charts and cards from splitting awkwardly across pages */
-    .module-card { box-shadow: none; break-inside: auto; margin-bottom: 18px; }
+    /* One module per printed page: every card starts on a fresh page.
+       The first card shares page 1 with the report header. */
+    .module-card {
+      box-shadow: none;
+      border: none;
+      margin-bottom: 0;
+      break-before: page;
+      page-break-before: always;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    #detail-grid .module-card:first-child {
+      break-before: auto;
+      page-break-before: auto;
+    }
     .module-card-header, .chart-donut, .chart-gauge, .chart-projection,
     .chart-balance, .stat-rows, .stat-bar, .result-flag { break-inside: avoid; }
 
