@@ -6,10 +6,13 @@
 <title>BlueLine Advisors — Admin</title>
 <link rel="stylesheet" href="assets/style.css" />
 <style>
-  .admin-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  .admin-table th, .admin-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .admin-container { max-width: 1400px; }
+  #clients-card { overflow-x: auto; }
+  .admin-table { width: 100%; min-width: 1000px; border-collapse: collapse; margin-top: 20px; }
+  .admin-table th, .admin-table td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
+  .admin-table td.wrap { white-space: normal; max-width: 220px; }
   .admin-table th { color: var(--navy); font-family: Georgia, serif; }
-  .admin-empty { color: var(--text-muted); }
+  .admin-empty { color: var(--text-muted); white-space: normal; }
   .token-form { max-width: 400px; }
 </style>
 </head>
@@ -22,7 +25,7 @@
     </div>
   </header>
 
-  <main class="container">
+  <main class="container admin-container">
     <div class="card token-form" id="token-card">
       <h2>Admin Access</h2>
       <form id="token-form" class="form">
@@ -103,9 +106,9 @@
             <td>${escapeHtml(r.budgetRange)}</td>
             <td>${escapeHtml(r.experienceLevel)}</td>
             <td>${r.riskTolerance} / 10</td>
-            <td>${escapeHtml(r.goalShortTerm || '—')}</td>
-            <td>${escapeHtml(r.goalMediumTerm || '—')}</td>
-            <td>${escapeHtml(r.goalLongTerm || '—')}</td>
+            <td class="wrap">${escapeHtml(r.goalShortTerm || '—')}</td>
+            <td class="wrap">${escapeHtml(r.goalMediumTerm || '—')}</td>
+            <td class="wrap">${escapeHtml(r.goalLongTerm || '—')}</td>
             <td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : '—'}</td>
           </tr>`;
         })
