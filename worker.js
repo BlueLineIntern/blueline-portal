@@ -236,7 +236,10 @@ export default {
       if (url.pathname === '/api/questionnaire' && request.method === 'POST') {
         return await handleSaveQuestionnaire(request, env, origin);
       }
-      return json({ error: 'Not found' }, 404, origin);
+      if (url.pathname.startsWith('/api/')) {
+        return json({ error: 'Not found' }, 404, origin);
+      }
+      return env.ASSETS.fetch(request);
     } catch (err) {
       return json({ error: 'Internal server error' }, 500, origin);
     }

@@ -1,5 +1,5 @@
-// Point this at your deployed Cloudflare Worker URL.
-const API_BASE_URL = "https://blueline-portal-api.YOUR-SUBDOMAIN.workers.dev";
+// Frontend and API are served from the same Worker, so requests are same-origin.
+const API_BASE_URL = "";
 
 const SESSION_KEY = "blueline_session";
 

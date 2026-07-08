@@ -1,4 +1,4 @@
-name = "blueline-portal-api"
+name = "blueline-portal"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
@@ -7,3 +7,7 @@ compatibility_date = "2024-01-01"
 [[kv_namespaces]]
 binding = "PORTAL_KV"
 id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
