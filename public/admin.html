@@ -43,9 +43,9 @@
           <tr>
             <th>Name</th>
             <th>Email</th>
-            <th>Budget</th>
+            <th>Monthly Budget Total</th>
             <th>Experience</th>
-            <th>Risk</th>
+            <th>Risk Score</th>
             <th>3–5yr Goals</th>
             <th>5–10yr Goals</th>
             <th>10+yr Goals</th>
@@ -100,12 +100,13 @@
               <td colspan="7" class="admin-empty">No questionnaire submitted</td>
             </tr>`;
           }
+          const total = Object.values(r.budget || {}).reduce((sum, v) => sum + (Number(v) || 0), 0);
           return `<tr>
             <td>${escapeHtml(c.name)}</td>
             <td>${escapeHtml(c.email)}</td>
-            <td>${escapeHtml(r.budgetRange)}</td>
+            <td>$${total.toLocaleString()}</td>
             <td>${escapeHtml(r.experienceLevel)}</td>
-            <td>${r.riskTolerance} / 10</td>
+            <td>${r.riskScore} / 25 (${escapeHtml(r.riskCategory)})</td>
             <td class="wrap">${escapeHtml(r.goalShortTerm || '—')}</td>
             <td class="wrap">${escapeHtml(r.goalMediumTerm || '—')}</td>
             <td class="wrap">${escapeHtml(r.goalLongTerm || '—')}</td>

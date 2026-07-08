@@ -170,6 +170,25 @@ async function handleGetQuestionnaire(request, env, origin) {
   return json({ responses: raw ? JSON.parse(raw) : null }, 200, origin);
 }
 
+const BUDGET_CATEGORIES = [
+  'housing',
+  'groceries',
+  'transportation',
+  'investments',
+  'debt',
+  'discretionary',
+  'other',
+];
+const EXPERIENCE_LEVELS = ['beginner', 'intermediate', 'advanced', 'expert'];
+
+function riskCategoryForScore(score) {
+  if (score <= 9) return 'Conservative';
+  if (score <= 14) return 'Moderately Conservative';
+  if (score <= 19) return 'Moderate';
+  if (score <= 24) return 'Moderately Aggressive';
+  return 'Aggressive';
+}
+
 async function handleSaveQuestionnaire(request, env, origin) {
   const email = await getSessionEmail(request, env);
   if (!email) return json({ error: 'Not authenticated' }, 401, origin);
@@ -177,34 +196,44 @@ async function handleSaveQuestionnaire(request, env, origin) {
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, origin);
 
-  const {
-    budgetRange,
-    experienceLevel,
-    riskTolerance,
-    goalShortTerm,
-    goalMediumTerm,
-    goalLongTerm,
-  } = body;
+  const { budget, experienceLevel, riskAnswers, goalShortTerm, goalMediumTerm, goalLongTerm } = body;
 
-  const risk = Number(riskTolerance);
-  if (
-    !budgetRange ||
-    !experienceLevel ||
-    !Number.isInteger(risk) ||
-    risk < 1 ||
-    risk > 10
-  ) {
-    return json(
-      { error: 'budgetRange, experienceLevel, and riskTolerance (integer 1-10) are required' },
-      400,
-      origin
-    );
+  if (!budget || typeof budget !== 'object') {
+    return json({ error: 'budget is required' }, 400, origin);
+  }
+  const normalizedBudget = {};
+  for (const key of BUDGET_CATEGORIES) {
+    const value = Number(budget[key]);
+    if (!Number.isFinite(value) || value < 0) {
+      return json({ error: `budget.${key} must be a non-negative number` }, 400, origin);
+    }
+    normalizedBudget[key] = value;
+  }
+
+  if (!EXPERIENCE_LEVELS.includes(experienceLevel)) {
+    return json({ error: 'experienceLevel is required' }, 400, origin);
+  }
+
+  if (!riskAnswers || typeof riskAnswers !== 'object') {
+    return json({ error: 'riskAnswers is required' }, 400, origin);
+  }
+  const normalizedRiskAnswers = {};
+  let riskScore = 0;
+  for (let i = 1; i <= 5; i++) {
+    const value = Number(riskAnswers[i]);
+    if (!Number.isInteger(value) || value < 1 || value > 5) {
+      return json({ error: `riskAnswers.${i} must be an integer 1-5` }, 400, origin);
+    }
+    normalizedRiskAnswers[i] = value;
+    riskScore += value;
   }
 
   const responses = {
-    budgetRange,
+    budget: normalizedBudget,
     experienceLevel,
-    riskTolerance: risk,
+    riskAnswers: normalizedRiskAnswers,
+    riskScore,
+    riskCategory: riskCategoryForScore(riskScore),
     goalShortTerm: goalShortTerm || '',
     goalMediumTerm: goalMediumTerm || '',
     goalLongTerm: goalLongTerm || '',

@@ -305,3 +305,130 @@ h2 {
     margin-bottom: 8px;
   }
 }
+
+.summary-heading {
+  font-size: 1.1rem;
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.summary-card > .summary-heading:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.summary-total-label {
+  color: var(--navy);
+  font-weight: 700;
+}
+
+.summary-total-value {
+  font-weight: 700;
+  color: var(--sky-dark);
+}
+
+/* Questionnaire sections */
+.section-heading {
+  font-size: 1.15rem;
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.form > .section-heading:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+/* Budget grid */
+.budget-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0 20px;
+}
+
+.budget-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.budget-field label {
+  margin-top: 16px;
+  margin-bottom: 6px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--navy);
+}
+
+.budget-field input[type="number"] {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 1rem;
+  font-family: inherit;
+  color: var(--text);
+  background: #fff;
+}
+
+.budget-field input[type="number"]:focus {
+  outline: none;
+  border-color: var(--sky);
+  box-shadow: 0 0 0 3px rgba(74, 171, 219, 0.2);
+}
+
+.budget-total {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border);
+  font-weight: 700;
+  color: var(--navy);
+  font-size: 1.05rem;
+}
+
+@media (max-width: 600px) {
+  .budget-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Risk questionnaire */
+.risk-question {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  margin-top: 18px;
+}
+
+.risk-question legend {
+  font-weight: 600;
+  color: var(--navy);
+  padding: 0 4px;
+}
+
+.radio-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px !important;
+  font-weight: 400 !important;
+  color: var(--text) !important;
+  cursor: pointer;
+}
+
+.radio-option input[type="radio"] {
+  accent-color: var(--sky);
+  width: 16px;
+  height: 16px;
+}
+
+.risk-score-display {
+  margin-top: 20px;
+  padding: 12px 16px;
+  background: var(--bg);
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--navy);
+}
