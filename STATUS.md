@@ -12,7 +12,8 @@ Single Cloudflare Worker serves both the static frontend (`public/`) and the API
 namespace called `PORTAL_KV`.
 
 - `public/index.html` / `public/assets/style.css` / `public/assets/script.js` — client-facing login, five onboarding assessment modules, dashboard with SVG charts
-- `public/admin.html` — internal staff view of all client submissions, gated by `ADMIN_TOKEN` secret (separate from client logins)
+- `public/assets/render.js` — shared chart builders (`donutChart`, `riskGauge`, `projectionChart`, `balanceBars`, `statBar`), module metadata (`MODULES`), and per-module result renderers; loaded by both index.html and admin.html
+- `public/admin.html` — internal staff view, gated by `ADMIN_TOKEN` secret (separate from client logins): summary table of all clients plus a per-client "Details" view that renders the client's full dashboard (same charts/flags the client sees, via render.js)
 - `worker.js` — register/login/logout, per-module assessment save/load, admin listing
 - `wrangler.toml` — Worker config incl. KV binding and static assets directory
 - `dev-server.ps1` — local mock server (serves `public/` + in-memory API) for frontend
@@ -42,8 +43,7 @@ server-side in `worker.js` (`MODULE_VALIDATORS`).
    `totalComp`, `concentrationFlag`. Dashboard: comp-mix donut + flags for
    stock concentration and contributing below the employer match.
 
-All charts are dependency-free inline SVG generated in `script.js`
-(`donutChart`, `riskGauge`, `projectionChart`, `balanceBars`, `statBar`).
+All charts are dependency-free inline SVG generated in `render.js`.
 
 Admin table shows per-module key stats plus a Flags column (rollover opportunity,
 stock concentration, missing 401(k) match, negative cash flow).
