@@ -24,8 +24,51 @@
   #detail-view { max-width: 900px; margin: 0 auto; }
   .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
   .detail-header h1 { margin: 0; }
+  .detail-header-actions { display: flex; gap: 12px; }
   .detail-client-email { color: var(--text-muted); margin: 4px 0 0; }
   .detail-empty-module { color: var(--text-muted); margin: 14px 0 0; }
+
+  /* Print report header — hidden on screen, shown when printing */
+  .print-header { display: none; }
+
+  @media print {
+    /* Print exactly the detail view as a branded client report */
+    body { background: #fff; }
+    .topbar, .footer, #token-card, #clients-card, .detail-header-actions { display: none !important; }
+    .container { padding: 0; max-width: none; }
+
+    .print-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      border-bottom: 3px solid var(--navy);
+      padding-bottom: 14px;
+      margin-bottom: 22px;
+    }
+    .print-header-logo {
+      background: var(--navy);
+      border-radius: 8px;
+      padding: 10px 16px;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .print-header-logo img { height: 60px; width: auto; display: block; }
+    .print-header-title h1 { margin: 0 0 4px; font-size: 1.5rem; }
+    .print-header-title p { margin: 2px 0; color: var(--text-muted); font-size: 0.9rem; }
+
+    /* Keep charts and cards from splitting awkwardly across pages */
+    .module-card { box-shadow: none; break-inside: auto; margin-bottom: 18px; }
+    .module-card-header, .chart-donut, .chart-gauge, .chart-projection,
+    .chart-balance, .stat-rows, .stat-bar, .result-flag { break-inside: avoid; }
+
+    /* Preserve chart colors on paper */
+    .legend-swatch, .stat-bar-fill, .stack-seg, .stack-track,
+    .status-badge, .module-number, .result-flag, .progress-fill {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+  }
 </style>
 </head>
 <body>
@@ -71,12 +114,26 @@
     </div>
 
     <div class="hidden" id="detail-view">
+      <div class="print-header">
+        <div class="print-header-title">
+          <h1>Financial Onboarding Report</h1>
+          <p id="print-client-line"></p>
+          <p id="print-date-line"></p>
+          <p>Prepared by BlueLine Advisors — for discussion purposes only.</p>
+        </div>
+        <div class="print-header-logo">
+          <img src="assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" />
+        </div>
+      </div>
       <div class="detail-header">
         <div>
           <h1 id="detail-name"></h1>
           <p class="detail-client-email" id="detail-email"></p>
         </div>
-        <button type="button" class="btn btn-secondary" id="detail-back-btn">← Back to All Clients</button>
+        <div class="detail-header-actions">
+          <button type="button" class="btn btn-primary" id="detail-print-btn">Print / Save PDF</button>
+          <button type="button" class="btn btn-secondary" id="detail-back-btn">← Back to All Clients</button>
+        </div>
       </div>
       <div class="module-grid" id="detail-grid"></div>
     </div>
@@ -198,6 +255,8 @@
 
       document.getElementById('detail-name').textContent = client.name;
       document.getElementById('detail-email').textContent = client.email;
+      document.getElementById('print-client-line').textContent = `Client: ${client.name} (${client.email})`;
+      document.getElementById('print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
 
       document.getElementById('detail-grid').innerHTML = MODULES.map((mod, i) => {
         const data = m[mod.key];
@@ -230,6 +289,8 @@
       detailView.classList.remove('hidden');
       window.scrollTo(0, 0);
     }
+
+    document.getElementById('detail-print-btn').addEventListener('click', () => window.print());
 
     document.getElementById('detail-back-btn').addEventListener('click', () => {
       detailView.classList.add('hidden');

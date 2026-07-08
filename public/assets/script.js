@@ -152,6 +152,8 @@ function renderDashboard() {
           <button class="btn btn-primary module-start-btn" data-module="${mod.key}">Start Assessment</button>
         </div>`;
     }
+    // Results and charts are intentionally not shown to clients — the advisor
+    // walks through them in person (printable from the admin detail view).
     return `
       <div class="card module-card">
         <div class="module-card-header">
@@ -159,10 +161,10 @@ function renderDashboard() {
           <h2>${escapeHtml(mod.title)}</h2>
           <span class="status-badge status-done">Completed</span>
         </div>
-        <div class="module-result">${mod.renderResult(data)}</div>
+        <p class="module-description">Thank you — your responses have been submitted. Your advisor will review your results with you.</p>
         <div class="module-card-footer">
-          <span class="updated-at-inline">Updated ${data.updatedAt ? new Date(data.updatedAt).toLocaleDateString() : ""}</span>
-          <button class="btn btn-secondary module-start-btn" data-module="${mod.key}">Review / Edit</button>
+          <span class="updated-at-inline">Submitted ${data.updatedAt ? new Date(data.updatedAt).toLocaleDateString() : ""}</span>
+          <button class="btn btn-secondary module-start-btn" data-module="${mod.key}">Review / Edit Answers</button>
         </div>
       </div>`;
   }).join("");
