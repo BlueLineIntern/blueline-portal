@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BlueLine Advisors — Admin</title>
+<link rel="stylesheet" href="assets/style.css" />
+<style>
+  .admin-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+  .admin-table th, .admin-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .admin-table th { color: var(--navy); font-family: Georgia, serif; }
+  .admin-empty { color: var(--text-muted); }
+  .token-form { max-width: 400px; }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" class="brand-logo" />
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="card token-form" id="token-card">
+      <h2>Admin Access</h2>
+      <form id="token-form" class="form">
+        <label for="admin-token">Admin Token</label>
+        <input type="password" id="admin-token" required />
+        <p class="form-error" id="token-error"></p>
+        <button type="submit" class="btn btn-primary">View Clients</button>
+      </form>
+    </div>
+
+    <div class="card hidden" id="clients-card">
+      <h1>Client Submissions</h1>
+      <table class="admin-table" id="clients-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Budget</th>
+            <th>Experience</th>
+            <th>Risk</th>
+            <th>3–5yr Goals</th>
+            <th>5–10yr Goals</th>
+            <th>10+yr Goals</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody id="clients-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    const tokenForm = document.getElementById('token-form');
+    const tokenCard = document.getElementById('token-card');
+    const clientsCard = document.getElementById('clients-card');
+    const clientsBody = document.getElementById('clients-body');
+    const tokenError = document.getElementById('token-error');
+
+    tokenForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      tokenError.textContent = '';
+      const token = document.getElementById('admin-token').value;
+
+      try {
+        const res = await fetch('/api/admin/clients', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load clients');
+
+        renderClients(data.clients);
+        tokenCard.classList.add('hidden');
+        clientsCard.classList.remove('hidden');
+      } catch (err) {
+        tokenError.textContent = err.message;
+      }
+    });
+
+    function renderClients(clients) {
+      if (!clients.length) {
+        clientsBody.innerHTML = '<tr><td colspan="9" class="admin-empty">No client accounts yet.</td></tr>';
+        return;
+      }
+
+      clientsBody.innerHTML = clients
+        .map((c) => {
+          const r = c.responses;
+          if (!r) {
+            return `<tr>
+              <td>${escapeHtml(c.name)}</td>
+              <td>${escapeHtml(c.email)}</td>
+              <td colspan="7" class="admin-empty">No questionnaire submitted</td>
+            </tr>`;
+          }
+          return `<tr>
+            <td>${escapeHtml(c.name)}</td>
+            <td>${escapeHtml(c.email)}</td>
+            <td>${escapeHtml(r.budgetRange)}</td>
+            <td>${escapeHtml(r.experienceLevel)}</td>
+            <td>${r.riskTolerance} / 10</td>
+            <td>${escapeHtml(r.goalShortTerm || '—')}</td>
+            <td>${escapeHtml(r.goalMediumTerm || '—')}</td>
+            <td>${escapeHtml(r.goalLongTerm || '—')}</td>
+            <td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : '—'}</td>
+          </tr>`;
+        })
+        .join('');
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>

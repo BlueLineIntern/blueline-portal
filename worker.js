@@ -13,6 +13,10 @@
  *   POST /api/logout       (Authorization: Bearer <token>)
  *   GET  /api/questionnaire            (Authorization: Bearer <token>)
  *   POST /api/questionnaire { ... }    (Authorization: Bearer <token>)
+ *   GET  /api/admin/clients            (Authorization: Bearer <ADMIN_TOKEN secret>)
+ *
+ * Set the admin secret with: wrangler secret put ADMIN_TOKEN
+ * (or Cloudflare dashboard -> Worker -> Settings -> Variables and secrets)
  */
 
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
@@ -211,6 +215,38 @@ async function handleSaveQuestionnaire(request, env, origin) {
   return json({ responses }, 200, origin);
 }
 
+async function handleAdminClients(request, env, origin) {
+  const authHeader = request.headers.get('Authorization') || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  const providedToken = match ? match[1] : '';
+
+  if (!env.ADMIN_TOKEN || providedToken !== env.ADMIN_TOKEN) {
+    return json({ error: 'Not authorized' }, 401, origin);
+  }
+
+  const clients = [];
+  let cursor;
+  do {
+    const page = await env.PORTAL_KV.list({ prefix: 'user:', cursor });
+    for (const key of page.keys) {
+      const email = key.name.slice('user:'.length);
+      const userRaw = await env.PORTAL_KV.get(key.name);
+      const responsesRaw = await env.PORTAL_KV.get(`responses:${email}`);
+      if (!userRaw) continue;
+      const user = JSON.parse(userRaw);
+      clients.push({
+        name: user.name,
+        email: user.email,
+        responses: responsesRaw ? JSON.parse(responsesRaw) : null,
+      });
+    }
+    cursor = page.cursor;
+    if (page.list_complete) break;
+  } while (cursor);
+
+  return json({ clients }, 200, origin);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -235,6 +271,9 @@ export default {
       }
       if (url.pathname === '/api/questionnaire' && request.method === 'POST') {
         return await handleSaveQuestionnaire(request, env, origin);
+      }
+      if (url.pathname === '/api/admin/clients' && request.method === 'GET') {
+        return await handleAdminClients(request, env, origin);
       }
       if (url.pathname.startsWith('/api/')) {
         return json({ error: 'Not found' }, 404, origin);
