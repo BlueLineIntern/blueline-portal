@@ -179,13 +179,15 @@ function renderSummary(responses) {
     expert: "Expert",
   };
 
+  const budget = responses.budget || {};
   BUDGET_CATEGORIES.forEach((key) => {
-    document.getElementById(`summary-budget-${key}`).textContent = formatCurrency(responses.budget[key]);
+    document.getElementById(`summary-budget-${key}`).textContent = formatCurrency(budget[key]);
   });
-  document.getElementById("summary-budget-total").textContent = formatCurrency(budgetTotal(responses.budget));
+  document.getElementById("summary-budget-total").textContent = formatCurrency(budgetTotal(budget));
 
-  document.getElementById("summary-experience").textContent = experienceLabels[responses.experienceLevel] || responses.experienceLevel;
-  document.getElementById("summary-risk").textContent = `${responses.riskScore} / 25 — ${responses.riskCategory}`;
+  document.getElementById("summary-experience").textContent = experienceLabels[responses.experienceLevel] || responses.experienceLevel || "—";
+  document.getElementById("summary-risk").textContent =
+    responses.riskScore != null ? `${responses.riskScore} / 25 — ${responses.riskCategory}` : "—";
   document.getElementById("summary-goal-short").textContent = responses.goalShortTerm || "—";
   document.getElementById("summary-goal-medium").textContent = responses.goalMediumTerm || "—";
   document.getElementById("summary-goal-long").textContent = responses.goalLongTerm || "—";
@@ -264,10 +266,13 @@ function showQuestionnaireForm(existing) {
   document.getElementById("questionnaire-form").reset();
 
   if (existing) {
+    const budget = existing.budget || {};
     BUDGET_CATEGORIES.forEach((key) => {
-      document.getElementById(`q-budget-${key}`).value = existing.budget[key] || 0;
+      document.getElementById(`q-budget-${key}`).value = budget[key] || 0;
     });
-    document.getElementById("q-experience").value = existing.experienceLevel;
+    if (existing.experienceLevel) {
+      document.getElementById("q-experience").value = existing.experienceLevel;
+    }
     if (existing.riskAnswers) {
       Object.entries(existing.riskAnswers).forEach(([question, value]) => {
         const input = document.querySelector(`input[name="q-risk-${question}"][value="${value}"]`);
