@@ -18,6 +18,14 @@
   .cell-flag { color: #c97e2c; font-weight: 700; }
   .cell-negative { color: var(--error); font-weight: 600; }
   .module-count { font-weight: 700; color: var(--navy); }
+  .btn-small { padding: 6px 14px; font-size: 0.85rem; }
+
+  /* Client detail view */
+  #detail-view { max-width: 900px; margin: 0 auto; }
+  .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .detail-header h1 { margin: 0; }
+  .detail-client-email { color: var(--text-muted); margin: 4px 0 0; }
+  .detail-empty-module { color: var(--text-muted); margin: 14px 0 0; }
 </style>
 </head>
 <body>
@@ -45,6 +53,7 @@
       <table class="admin-table" id="clients-table">
         <thead>
           <tr>
+            <th></th>
             <th>Name</th>
             <th>Email</th>
             <th>Progress</th>
@@ -60,16 +69,29 @@
         <tbody id="clients-body"></tbody>
       </table>
     </div>
+
+    <div class="hidden" id="detail-view">
+      <div class="detail-header">
+        <div>
+          <h1 id="detail-name"></h1>
+          <p class="detail-client-email" id="detail-email"></p>
+        </div>
+        <button type="button" class="btn btn-secondary" id="detail-back-btn">← Back to All Clients</button>
+      </div>
+      <div class="module-grid" id="detail-grid"></div>
+    </div>
   </main>
 
+  <script src="assets/render.js"></script>
   <script>
-    const MODULE_KEYS = ['risk', 'budget', 'retirement', 'networth', 'compensation'];
-
     const tokenForm = document.getElementById('token-form');
     const tokenCard = document.getElementById('token-card');
     const clientsCard = document.getElementById('clients-card');
     const clientsBody = document.getElementById('clients-body');
     const tokenError = document.getElementById('token-error');
+    const detailView = document.getElementById('detail-view');
+
+    let allClients = [];
 
     tokenForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -83,7 +105,8 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to load clients');
 
-        renderClients(data.clients);
+        allClients = data.clients;
+        renderClients(allClients);
         tokenCard.classList.add('hidden');
         clientsCard.classList.remove('hidden');
       } catch (err) {
@@ -102,14 +125,14 @@
 
     function renderClients(clients) {
       if (!clients.length) {
-        clientsBody.innerHTML = '<tr><td colspan="10" class="admin-empty">No client accounts yet.</td></tr>';
+        clientsBody.innerHTML = '<tr><td colspan="11" class="admin-empty">No client accounts yet.</td></tr>';
         return;
       }
 
       clientsBody.innerHTML = clients
-        .map((c) => {
+        .map((c, index) => {
           const m = c.modules || {};
-          const done = MODULE_KEYS.filter((k) => m[k]).length;
+          const done = MODULES.filter((mod) => m[mod.key]).length;
 
           const risk = m.risk
             ? `${m.risk.score} / 25<br>${escapeHtml(m.risk.category)}`
@@ -140,15 +163,16 @@
           if (m.compensation && m.compensation.contributionPct < m.compensation.employerMatchPct) flags.push('Missing 401(k) match');
           if (m.budget && m.budget.surplus < 0) flags.push('Negative cash flow');
 
-          const updatedAts = MODULE_KEYS.map((k) => m[k] && m[k].updatedAt).filter(Boolean);
+          const updatedAts = MODULES.map((mod) => m[mod.key] && m[mod.key].updatedAt).filter(Boolean);
           const lastUpdated = updatedAts.length
             ? new Date(updatedAts.sort().slice(-1)[0]).toLocaleString()
             : missing();
 
           return `<tr>
+            <td><button type="button" class="btn btn-secondary btn-small detail-btn" data-index="${index}" ${done ? '' : 'disabled title="No submissions yet"'}>Details</button></td>
             <td>${escapeHtml(c.name)}</td>
             <td>${escapeHtml(c.email)}</td>
-            <td><span class="module-count">${done} / ${MODULE_KEYS.length}</span></td>
+            <td><span class="module-count">${done} / ${MODULES.length}</span></td>
             <td>${risk}</td>
             <td>${budget}</td>
             <td>${retirement}</td>
@@ -159,13 +183,59 @@
           </tr>`;
         })
         .join('');
+
+      clientsBody.querySelectorAll('.detail-btn').forEach((btn) => {
+        btn.addEventListener('click', () => showDetail(Number(btn.dataset.index)));
+      });
     }
 
-    function escapeHtml(str) {
-      const div = document.createElement('div');
-      div.textContent = str == null ? '' : String(str);
-      return div.innerHTML;
+    // Renders the client's modules exactly as they see them, using the same
+    // renderers as the client dashboard (render.js).
+    function showDetail(index) {
+      const client = allClients[index];
+      if (!client) return;
+      const m = client.modules || {};
+
+      document.getElementById('detail-name').textContent = client.name;
+      document.getElementById('detail-email').textContent = client.email;
+
+      document.getElementById('detail-grid').innerHTML = MODULES.map((mod, i) => {
+        const data = m[mod.key];
+        if (!data) {
+          return `
+            <div class="card module-card module-card-empty">
+              <div class="module-card-header">
+                <span class="module-number">${i + 1}</span>
+                <h2>${escapeHtml(mod.title)}</h2>
+                <span class="status-badge status-pending">Not started</span>
+              </div>
+              <p class="detail-empty-module">The client hasn't completed this assessment yet.</p>
+            </div>`;
+        }
+        return `
+          <div class="card module-card">
+            <div class="module-card-header">
+              <span class="module-number done">✓</span>
+              <h2>${escapeHtml(mod.title)}</h2>
+              <span class="status-badge status-done">Completed</span>
+            </div>
+            <div class="module-result">${mod.renderResult(data)}</div>
+            <div class="module-card-footer">
+              <span class="updated-at-inline">Updated ${data.updatedAt ? new Date(data.updatedAt).toLocaleString() : ''}</span>
+            </div>
+          </div>`;
+      }).join('');
+
+      clientsCard.classList.add('hidden');
+      detailView.classList.remove('hidden');
+      window.scrollTo(0, 0);
     }
+
+    document.getElementById('detail-back-btn').addEventListener('click', () => {
+      detailView.classList.add('hidden');
+      clientsCard.classList.remove('hidden');
+      window.scrollTo(0, 0);
+    });
   </script>
 </body>
 </html>
