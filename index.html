@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BlueLine Advisors — Client Portal</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <span class="brand">BlueLine <span class="brand-accent">Advisors</span></span>
+      <nav id="nav-auth" class="nav-auth hidden">
+        <span id="nav-username"></span>
+        <button id="logout-btn" class="btn btn-ghost">Log out</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- AUTH VIEW -->
+    <section id="view-auth" class="view">
+      <div class="card auth-card">
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="login">Log In</button>
+          <button class="tab-btn" data-tab="register">Create Account</button>
+        </div>
+
+        <form id="login-form" class="form">
+          <h2>Welcome back</h2>
+          <label for="login-email">Email</label>
+          <input type="email" id="login-email" required autocomplete="email" />
+
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" required autocomplete="current-password" />
+
+          <p class="form-error" id="login-error"></p>
+          <button type="submit" class="btn btn-primary">Log In</button>
+        </form>
+
+        <form id="register-form" class="form hidden">
+          <h2>Create your account</h2>
+          <label for="register-name">Full Name</label>
+          <input type="text" id="register-name" required autocomplete="name" />
+
+          <label for="register-email">Email</label>
+          <input type="email" id="register-email" required autocomplete="email" />
+
+          <label for="register-password">Password</label>
+          <input type="password" id="register-password" required minlength="8" autocomplete="new-password" />
+          <p class="hint">At least 8 characters.</p>
+
+          <p class="form-error" id="register-error"></p>
+          <button type="submit" class="btn btn-primary">Create Account</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- DASHBOARD VIEW -->
+    <section id="view-dashboard" class="view hidden">
+      <div class="dashboard-header">
+        <h1>Your Investment Profile</h1>
+        <button id="edit-btn" class="btn btn-secondary hidden">Edit Responses</button>
+      </div>
+
+      <div id="no-responses" class="card hidden">
+        <p>You haven't completed the questionnaire yet.</p>
+        <button id="start-questionnaire-btn" class="btn btn-primary">Start Questionnaire</button>
+      </div>
+
+      <div id="summary-card" class="card summary-card hidden">
+        <dl class="summary-list">
+          <dt>Monthly Budget Range</dt>
+          <dd id="summary-budget"></dd>
+
+          <dt>Investment Experience</dt>
+          <dd id="summary-experience"></dd>
+
+          <dt>Risk Tolerance</dt>
+          <dd id="summary-risk"></dd>
+
+          <dt>3–5 Year Goals</dt>
+          <dd id="summary-goal-short"></dd>
+
+          <dt>5–10 Year Goals</dt>
+          <dd id="summary-goal-medium"></dd>
+
+          <dt>10+ Year Goals</dt>
+          <dd id="summary-goal-long"></dd>
+        </dl>
+        <p class="updated-at" id="summary-updated"></p>
+      </div>
+    </section>
+
+    <!-- QUESTIONNAIRE VIEW -->
+    <section id="view-questionnaire" class="view hidden">
+      <div class="card">
+        <h1>Investment Questionnaire</h1>
+        <p class="subtitle">Help us understand your financial goals so we can tailor our advice.</p>
+
+        <form id="questionnaire-form" class="form">
+          <label for="q-budget">Monthly Budget Range</label>
+          <select id="q-budget" required>
+            <option value="" disabled selected>Select a range</option>
+            <option value="under-500">Under $500</option>
+            <option value="500-1500">$500 – $1,500</option>
+            <option value="1500-5000">$1,500 – $5,000</option>
+            <option value="5000-15000">$5,000 – $15,000</option>
+            <option value="15000-plus">$15,000+</option>
+          </select>
+
+          <label for="q-experience">Investment Experience Level</label>
+          <select id="q-experience" required>
+            <option value="" disabled selected>Select a level</option>
+            <option value="beginner">Beginner</option>
+            <option value="intermediate">Intermediate</option>
+            <option value="advanced">Advanced</option>
+            <option value="expert">Expert</option>
+          </select>
+
+          <label for="q-risk">Risk Tolerance <span id="q-risk-value">5</span> / 10</label>
+          <input type="range" id="q-risk" min="1" max="10" step="1" value="5" />
+
+          <label for="q-goal-short">Goals — Next 3–5 Years</label>
+          <textarea id="q-goal-short" rows="2" placeholder="e.g. Build an emergency fund, buy a home"></textarea>
+
+          <label for="q-goal-medium">Goals — 5–10 Years</label>
+          <textarea id="q-goal-medium" rows="2" placeholder="e.g. Fund children's education"></textarea>
+
+          <label for="q-goal-long">Goals — 10+ Years</label>
+          <textarea id="q-goal-long" rows="2" placeholder="e.g. Retirement, legacy planning"></textarea>
+
+          <p class="form-error" id="questionnaire-error"></p>
+          <div class="form-actions">
+            <button type="button" id="cancel-questionnaire-btn" class="btn btn-ghost hidden">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Responses</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <p>&copy; 2026 BlueLine Advisors. For informational purposes only.</p>
+  </footer>
+
+  <script src="assets/script.js"></script>
+</body>
+</html>
