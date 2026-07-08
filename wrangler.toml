@@ -6,7 +6,7 @@ compatibility_date = "2024-01-01"
 # Then replace the id below with the id it prints.
 [[kv_namespaces]]
 binding = "PORTAL_KV"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+id = "dadc7f3c3d66491bbc97ded5efa59bc4"
 
 [assets]
 directory = "./public"
