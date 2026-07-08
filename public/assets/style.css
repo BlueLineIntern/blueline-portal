@@ -432,3 +432,406 @@ h2 {
   font-weight: 600;
   color: var(--navy);
 }
+
+/* ---------- Onboarding dashboard ---------- */
+
+.progress-track {
+  height: 8px;
+  background: #e2e9f0;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 4px 0 28px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--sky), var(--sky-dark));
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.module-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 24px;
+}
+
+.module-card {
+  padding: 26px 28px;
+}
+
+.module-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.module-card-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  flex: 1;
+}
+
+.module-number {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2px solid var(--sky);
+  color: var(--navy);
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+}
+
+.module-number.done {
+  background: var(--sky);
+  color: #fff;
+}
+
+.status-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+
+.status-pending {
+  background: #eef2f6;
+  color: var(--text-muted);
+}
+
+.status-done {
+  background: #e4f2e7;
+  color: #3d7a4a;
+}
+
+.module-description {
+  color: var(--text-muted);
+  margin: 14px 0 18px;
+}
+
+.module-start-btn {
+  margin-top: 0;
+}
+
+.module-card-empty .module-start-btn {
+  align-self: flex-start;
+}
+
+.module-result {
+  margin-top: 20px;
+}
+
+.module-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.updated-at-inline {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* ---------- Charts ---------- */
+
+.chart-donut {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.chart-donut svg {
+  width: 180px;
+  height: 180px;
+  flex-shrink: 0;
+}
+
+.donut-center-top {
+  font-family: Georgia, serif;
+  font-size: 22px;
+  font-weight: 700;
+  fill: var(--navy);
+}
+
+.donut-center-bottom {
+  font-size: 12px;
+  fill: var(--text-muted);
+}
+
+.chart-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  min-width: 220px;
+}
+
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 0.92rem;
+}
+
+.legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.legend-label {
+  flex: 1;
+  color: var(--text);
+}
+
+.legend-value {
+  font-weight: 600;
+  color: var(--navy);
+  white-space: nowrap;
+}
+
+.legend-value em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.legend-columns {
+  column-count: 2;
+  column-gap: 24px;
+  margin-top: 14px;
+}
+
+.legend-columns li {
+  break-inside: avoid;
+}
+
+.chart-gauge {
+  text-align: center;
+  margin: 10px 0;
+}
+
+.chart-gauge svg {
+  width: 220px;
+  height: 130px;
+}
+
+.gauge-end-label {
+  font-size: 10px;
+  fill: var(--text-muted);
+}
+
+.gauge-caption {
+  margin: 6px 0 0;
+  font-size: 1.05rem;
+  color: var(--navy);
+}
+
+.chart-projection svg {
+  width: 100%;
+  height: auto;
+}
+
+.axis-label {
+  font-size: 11px;
+  fill: var(--text-muted);
+}
+
+.axis-title {
+  font-size: 11px;
+  fill: var(--text-muted);
+  font-style: italic;
+}
+
+.grid-line {
+  stroke: #e6ecf2;
+  stroke-width: 1;
+}
+
+.target-label {
+  font-size: 12px;
+  font-weight: 700;
+  fill: #c97e2c;
+}
+
+/* Stat rows & bars */
+
+.stat-rows {
+  margin: 14px 0;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.95rem;
+}
+
+.stat-row:last-child {
+  border-bottom: none;
+}
+
+.stat-row span {
+  color: var(--text-muted);
+}
+
+.stat-row strong {
+  color: var(--navy);
+  text-align: right;
+}
+
+.stat-row .goal-text {
+  font-weight: 400;
+  color: var(--text);
+  max-width: 60%;
+}
+
+.positive {
+  color: #3d7a4a !important;
+}
+
+.negative {
+  color: var(--error) !important;
+}
+
+.stat-bar {
+  margin: 16px 0 6px;
+}
+
+.stat-bar-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  color: var(--navy);
+  margin-bottom: 6px;
+}
+
+.stat-bar-track {
+  height: 12px;
+  background: #e2e9f0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.stat-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.4s ease;
+}
+
+/* Balance (assets vs liabilities) bars */
+
+.chart-balance {
+  margin: 14px 0;
+}
+
+.balance-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.balance-row-label {
+  width: 78px;
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--navy);
+}
+
+.balance-bar-area {
+  flex: 1;
+  min-width: 0;
+}
+
+.stack-track {
+  display: flex;
+  height: 26px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #f0f4f8;
+  min-width: 4px;
+}
+
+.stack-seg {
+  height: 100%;
+}
+
+.balance-row-total {
+  font-weight: 700;
+  color: var(--navy);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.headline-stat {
+  font-size: 1.25rem;
+  font-family: Georgia, serif;
+  color: var(--navy);
+  margin: 6px 0 14px;
+}
+
+.result-subheading {
+  font-family: Georgia, serif;
+  color: var(--navy);
+  font-size: 1.02rem;
+  margin: 22px 0 6px;
+}
+
+.result-note {
+  margin: 14px 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.result-flag {
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  background: #fdf3e6;
+  border-left: 3px solid #F2A65A;
+  border-radius: 4px;
+  font-size: 0.92rem;
+  color: #7a5220;
+}
+
+/* Checkbox groups in module forms */
+
+.checkbox-group {
+  margin-top: 8px;
+}
+
+.budget-surplus {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.budget-surplus.negative {
+  color: var(--error);
+}
+
+@media (max-width: 640px) {
+  .legend-columns {
+    column-count: 1;
+  }
+  .balance-row-label {
+    width: 64px;
+  }
+}

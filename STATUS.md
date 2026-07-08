@@ -11,35 +11,58 @@ Single Cloudflare Worker serves both the static frontend (`public/`) and the API
 (`worker.js`), same origin — no CORS needed. Data lives in a Cloudflare KV
 namespace called `PORTAL_KV`.
 
-- `public/index.html` / `public/assets/style.css` / `public/assets/script.js` — client-facing login, questionnaire, dashboard
+- `public/index.html` / `public/assets/style.css` / `public/assets/script.js` — client-facing login, five onboarding assessment modules, dashboard with SVG charts
 - `public/admin.html` — internal staff view of all client submissions, gated by `ADMIN_TOKEN` secret (separate from client logins)
-- `worker.js` — register/login/logout, questionnaire save/load, admin listing
+- `worker.js` — register/login/logout, per-module assessment save/load, admin listing
 - `wrangler.toml` — Worker config incl. KV binding and static assets directory
+- `dev-server.ps1` — local mock server (serves `public/` + in-memory API) for frontend
+  testing on machines without Node/wrangler. Keep its computed fields in sync with
+  `worker.js`. Launch config in `.claude/launch.json`.
 
-## Current questionnaire schema (as of commit `e74632d`)
-```
-{
-  budget: { housing, groceries, transportation, investments, debt, discretionary, other },  // monthly $ each
-  experienceLevel: "beginner" | "intermediate" | "advanced" | "expert",
-  riskAnswers: { 1: 1-5, 2: 1-5, 3: 1-5, 4: 1-5, 5: 1-5 },  // 5 scored questions
-  riskScore: 5-25,           // computed server-side, sum of riskAnswers
-  riskCategory: string,      // Conservative / Moderately Conservative / Moderate / Moderately Aggressive / Aggressive
-  goalShortTerm, goalMediumTerm, goalLongTerm: string,
-  updatedAt: ISO timestamp
-}
-```
-Note: any test data saved before this schema (had `budgetRange` + single `riskTolerance` 1-10 slider)
-is stale/incompatible. Frontend now tolerates missing fields without crashing, but old
-records will show blank budget/risk sections.
+## Onboarding modules (as of the five-module rework)
+KV record `responses:<email>` = `{ modules: { risk, budget, retirement, networth, compensation } }`.
+Each module object carries its own `updatedAt`. API: `GET /api/assessments`,
+`POST /api/assessments/:module`. Validation + all derived fields computed
+server-side in `worker.js` (`MODULE_VALIDATORS`).
+
+1. **risk** — 5 scored questions (5–25) + experience level + goals.
+   Derived: `score`, `category`, `suggestedAllocation` {stocks,bonds,cash}.
+   Dashboard: score gauge + allocation donut.
+2. **budget** — monthly take-home income, savings, 10 expense categories.
+   Derived: `totalExpenses`, `surplus`, `savingsRate`. Dashboard: expense donut,
+   savings-rate bar, negative-cash-flow warning.
+3. **retirement** — ages, savings, contributions, employer match, desired income,
+   old-employer-plan status (rollover lead flag). Derived: `projectedBalance`
+   (6%/yr, monthly compounding), `targetNestEgg` (25× annual need), `readinessPct`.
+   Dashboard: projection area chart with target line + readiness bar.
+4. **networth** — 6 asset + 6 liability categories. Derived: totals + `netWorth`.
+   Dashboard: stacked assets/liabilities bars + asset composition donut.
+5. **compensation** — base/bonus/equity, equity award types, 401(k) contribution
+   & match %, HSA/deferred comp, employer stock concentration. Derived:
+   `totalComp`, `concentrationFlag`. Dashboard: comp-mix donut + flags for
+   stock concentration and contributing below the employer match.
+
+All charts are dependency-free inline SVG generated in `script.js`
+(`donutChart`, `riskGauge`, `projectionChart`, `balanceBars`, `statBar`).
+
+Admin table shows per-module key stats plus a Flags column (rollover opportunity,
+stock concentration, missing 401(k) match, negative cash flow).
+
+**Legacy data:** records saved before the module rework (top-level
+`budget`/`riskAnswers`) are ignored by `loadModules()` — those were test data.
+Clients from that era just see an empty dashboard.
 
 ## Known gaps / flagged but not addressed
 - No rate limiting on login/register.
 - No data retention policy or encryption beyond Cloudflare defaults for client PII
-  (names, emails, financial goals, risk answers) in KV.
+  (names, emails, compensation, net worth, risk answers) in KV. The portal now
+  collects substantially more sensitive data (salary, equity, net worth) than before.
 - `ADMIN_TOKEN` grants full read access to all client data, no per-user audit log.
 - Only one Cloudflare account/login in use (fsabin@blueline-advisors.com) — no
   documented plan for what happens to account ownership if that changes.
 - Site is on the `workers.dev` subdomain, not a custom `blueline-advisors.com` domain.
+- No Node.js on this machine — `worker.js` is not executed locally; it's verified by
+  review and exercised only once deployed. The mock server duplicates its math.
 
 ## To continue in a new chat
 Tell Claude: "Continue work on the BlueLine Advisors portal — read STATUS.md and

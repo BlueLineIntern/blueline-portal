@@ -6,14 +6,18 @@
 <title>BlueLine Advisors — Admin</title>
 <link rel="stylesheet" href="assets/style.css" />
 <style>
-  .admin-container { max-width: 1400px; }
+  .admin-container { max-width: 1500px; }
   #clients-card { overflow-x: auto; }
-  .admin-table { width: 100%; min-width: 1000px; border-collapse: collapse; margin-top: 20px; }
+  .admin-table { width: 100%; min-width: 1200px; border-collapse: collapse; margin-top: 20px; }
   .admin-table th, .admin-table td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
-  .admin-table td.wrap { white-space: normal; max-width: 220px; }
+  .admin-table td.wrap { white-space: normal; max-width: 240px; }
   .admin-table th { color: var(--navy); font-family: Georgia, serif; }
   .admin-empty { color: var(--text-muted); white-space: normal; }
   .token-form { max-width: 400px; }
+  .cell-missing { color: var(--text-muted); }
+  .cell-flag { color: #c97e2c; font-weight: 700; }
+  .cell-negative { color: var(--error); font-weight: 600; }
+  .module-count { font-weight: 700; color: var(--navy); }
 </style>
 </head>
 <body>
@@ -37,19 +41,20 @@
     </div>
 
     <div class="card hidden" id="clients-card">
-      <h1>Client Submissions</h1>
+      <h1>Client Onboarding Submissions</h1>
       <table class="admin-table" id="clients-table">
         <thead>
           <tr>
             <th>Name</th>
             <th>Email</th>
-            <th>Monthly Budget Total</th>
-            <th>Experience</th>
-            <th>Risk Score</th>
-            <th>3–5yr Goals</th>
-            <th>5–10yr Goals</th>
-            <th>10+yr Goals</th>
-            <th>Updated</th>
+            <th>Progress</th>
+            <th>Risk Profile</th>
+            <th>Cash Flow</th>
+            <th>Retirement</th>
+            <th>Net Worth</th>
+            <th>Compensation</th>
+            <th>Flags</th>
+            <th>Last Updated</th>
           </tr>
         </thead>
         <tbody id="clients-body"></tbody>
@@ -58,6 +63,8 @@
   </main>
 
   <script>
+    const MODULE_KEYS = ['risk', 'budget', 'retirement', 'networth', 'compensation'];
+
     const tokenForm = document.getElementById('token-form');
     const tokenCard = document.getElementById('token-card');
     const clientsCard = document.getElementById('clients-card');
@@ -84,33 +91,71 @@
       }
     });
 
+    function money(n) {
+      const v = Number(n || 0);
+      return (v < 0 ? '-$' : '$') + Math.abs(Math.round(v)).toLocaleString();
+    }
+
+    function missing() {
+      return '<span class="cell-missing">—</span>';
+    }
+
     function renderClients(clients) {
       if (!clients.length) {
-        clientsBody.innerHTML = '<tr><td colspan="9" class="admin-empty">No client accounts yet.</td></tr>';
+        clientsBody.innerHTML = '<tr><td colspan="10" class="admin-empty">No client accounts yet.</td></tr>';
         return;
       }
 
       clientsBody.innerHTML = clients
         .map((c) => {
-          const r = c.responses;
-          if (!r) {
-            return `<tr>
-              <td>${escapeHtml(c.name)}</td>
-              <td>${escapeHtml(c.email)}</td>
-              <td colspan="7" class="admin-empty">No questionnaire submitted</td>
-            </tr>`;
-          }
-          const total = Object.values(r.budget || {}).reduce((sum, v) => sum + (Number(v) || 0), 0);
+          const m = c.modules || {};
+          const done = MODULE_KEYS.filter((k) => m[k]).length;
+
+          const risk = m.risk
+            ? `${m.risk.score} / 25<br>${escapeHtml(m.risk.category)}`
+            : missing();
+
+          const budget = m.budget
+            ? `Income ${money(m.budget.monthlyIncome)}/mo<br>Savings rate ${m.budget.savingsRate}%` +
+              (m.budget.surplus < 0 ? `<br><span class="cell-negative">Overspending ${money(-m.budget.surplus)}/mo</span>` : '')
+            : missing();
+
+          const retirement = m.retirement
+            ? `Retire at ${m.retirement.targetAge}<br>Projected ${money(m.retirement.projectedBalance)}<br>` +
+              (m.retirement.readinessPct != null ? `${m.retirement.readinessPct}% of target` : '')
+            : missing();
+
+          const networth = m.networth
+            ? `<span class="${m.networth.netWorth < 0 ? 'cell-negative' : ''}">${money(m.networth.netWorth)}</span>` +
+              `<br>A ${money(m.networth.totalAssets)} / L ${money(m.networth.totalLiabilities)}`
+            : missing();
+
+          const comp = m.compensation
+            ? `Total ${money(m.compensation.totalComp)}<br>Equity ${money(m.compensation.annualEquityValue)}/yr`
+            : missing();
+
+          const flags = [];
+          if (m.retirement && m.retirement.oldEmployerPlans !== 'none') flags.push('Rollover opportunity');
+          if (m.compensation && m.compensation.concentrationFlag) flags.push('Stock concentration');
+          if (m.compensation && m.compensation.contributionPct < m.compensation.employerMatchPct) flags.push('Missing 401(k) match');
+          if (m.budget && m.budget.surplus < 0) flags.push('Negative cash flow');
+
+          const updatedAts = MODULE_KEYS.map((k) => m[k] && m[k].updatedAt).filter(Boolean);
+          const lastUpdated = updatedAts.length
+            ? new Date(updatedAts.sort().slice(-1)[0]).toLocaleString()
+            : missing();
+
           return `<tr>
             <td>${escapeHtml(c.name)}</td>
             <td>${escapeHtml(c.email)}</td>
-            <td>$${total.toLocaleString()}</td>
-            <td>${escapeHtml(r.experienceLevel)}</td>
-            <td>${r.riskScore} / 25 (${escapeHtml(r.riskCategory)})</td>
-            <td class="wrap">${escapeHtml(r.goalShortTerm || '—')}</td>
-            <td class="wrap">${escapeHtml(r.goalMediumTerm || '—')}</td>
-            <td class="wrap">${escapeHtml(r.goalLongTerm || '—')}</td>
-            <td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : '—'}</td>
+            <td><span class="module-count">${done} / ${MODULE_KEYS.length}</span></td>
+            <td>${risk}</td>
+            <td>${budget}</td>
+            <td>${retirement}</td>
+            <td>${networth}</td>
+            <td>${comp}</td>
+            <td class="wrap">${flags.length ? `<span class="cell-flag">${flags.map(escapeHtml).join('<br>')}</span>` : missing()}</td>
+            <td>${lastUpdated}</td>
           </tr>`;
         })
         .join('');
@@ -118,7 +163,7 @@
 
     function escapeHtml(str) {
       const div = document.createElement('div');
-      div.textContent = str;
+      div.textContent = str == null ? '' : String(str);
       return div.innerHTML;
     }
   </script>

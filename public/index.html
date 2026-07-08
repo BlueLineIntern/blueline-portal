@@ -62,110 +62,26 @@
     <!-- DASHBOARD VIEW -->
     <section id="view-dashboard" class="view hidden">
       <div class="dashboard-header">
-        <h1>Your Investment Profile</h1>
-        <button id="edit-btn" class="btn btn-secondary hidden">Edit Responses</button>
+        <div>
+          <h1>Your Financial Onboarding</h1>
+          <p class="subtitle">Complete each assessment so your advisor can build a plan around the full picture. <span id="progress-note"></span></p>
+        </div>
       </div>
+      <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
 
-      <div id="no-responses" class="card hidden">
-        <p>You haven't completed the questionnaire yet.</p>
-        <button id="start-questionnaire-btn" class="btn btn-primary">Start Questionnaire</button>
-      </div>
-
-      <div id="summary-card" class="card summary-card hidden">
-        <h2 class="summary-heading">Monthly Budget</h2>
-        <dl class="summary-list">
-          <dt>Housing / Rent</dt>
-          <dd id="summary-budget-housing"></dd>
-
-          <dt>Groceries</dt>
-          <dd id="summary-budget-groceries"></dd>
-
-          <dt>Transportation</dt>
-          <dd id="summary-budget-transportation"></dd>
-
-          <dt>Investments / Savings</dt>
-          <dd id="summary-budget-investments"></dd>
-
-          <dt>Debt Payments</dt>
-          <dd id="summary-budget-debt"></dd>
-
-          <dt>Entertainment &amp; Discretionary</dt>
-          <dd id="summary-budget-discretionary"></dd>
-
-          <dt>Other</dt>
-          <dd id="summary-budget-other"></dd>
-
-          <dt class="summary-total-label">Total Monthly Spend</dt>
-          <dd class="summary-total-value" id="summary-budget-total"></dd>
-        </dl>
-
-        <h2 class="summary-heading">Investment Profile</h2>
-        <dl class="summary-list">
-          <dt>Investment Experience</dt>
-          <dd id="summary-experience"></dd>
-
-          <dt>Risk Tolerance</dt>
-          <dd id="summary-risk"></dd>
-
-          <dt>3–5 Year Goals</dt>
-          <dd id="summary-goal-short"></dd>
-
-          <dt>5–10 Year Goals</dt>
-          <dd id="summary-goal-medium"></dd>
-
-          <dt>10+ Year Goals</dt>
-          <dd id="summary-goal-long"></dd>
-        </dl>
-        <p class="updated-at" id="summary-updated"></p>
-      </div>
+      <div id="module-grid" class="module-grid"></div>
     </section>
 
-    <!-- QUESTIONNAIRE VIEW -->
-    <section id="view-questionnaire" class="view hidden">
+    <!-- RISK MODULE -->
+    <section id="view-risk" class="view hidden">
       <div class="card">
-        <h1>Investment Questionnaire</h1>
-        <p class="subtitle">Help us understand your financial goals so we can tailor our advice.</p>
+        <h1>Risk Tolerance &amp; Investor Profile</h1>
+        <p class="subtitle">How you respond to market movement shapes how we build your portfolio.</p>
 
-        <form id="questionnaire-form" class="form">
-
-          <h2 class="section-heading">Monthly Budget</h2>
-          <p class="subtitle">Roughly how much do you spend per month in each category?</p>
-
-          <div class="budget-grid">
-            <div class="budget-field">
-              <label for="q-budget-housing">Housing / Rent</label>
-              <input type="number" id="q-budget-housing" min="0" step="1" placeholder="0" required />
-            </div>
-            <div class="budget-field">
-              <label for="q-budget-groceries">Groceries</label>
-              <input type="number" id="q-budget-groceries" min="0" step="1" placeholder="0" required />
-            </div>
-            <div class="budget-field">
-              <label for="q-budget-transportation">Transportation</label>
-              <input type="number" id="q-budget-transportation" min="0" step="1" placeholder="0" required />
-            </div>
-            <div class="budget-field">
-              <label for="q-budget-investments">Investments / Savings</label>
-              <input type="number" id="q-budget-investments" min="0" step="1" placeholder="0" required />
-            </div>
-            <div class="budget-field">
-              <label for="q-budget-debt">Debt Payments</label>
-              <input type="number" id="q-budget-debt" min="0" step="1" placeholder="0" required />
-            </div>
-            <div class="budget-field">
-              <label for="q-budget-discretionary">Entertainment &amp; Discretionary</label>
-              <input type="number" id="q-budget-discretionary" min="0" step="1" placeholder="0" required />
-            </div>
-            <div class="budget-field">
-              <label for="q-budget-other">Other</label>
-              <input type="number" id="q-budget-other" min="0" step="1" placeholder="0" required />
-            </div>
-          </div>
-          <p class="budget-total">Total Monthly Spend: <span id="budget-total-value">$0</span></p>
-
+        <form id="risk-form" class="form">
           <h2 class="section-heading">Investment Experience</h2>
-          <label for="q-experience">Investment Experience Level</label>
-          <select id="q-experience" required>
+          <label for="risk-experience">Investment Experience Level</label>
+          <select id="risk-experience" required>
             <option value="" disabled selected>Select a level</option>
             <option value="beginner">Beginner</option>
             <option value="intermediate">Intermediate</option>
@@ -173,70 +89,251 @@
             <option value="expert">Expert</option>
           </select>
 
-          <h2 class="section-heading">Risk Tolerance Questionnaire</h2>
-          <p class="subtitle">Answer each question as it best applies to you.</p>
+          <h2 class="section-heading">Risk Tolerance Questions</h2>
 
-          <fieldset class="risk-question" data-question="1">
+          <fieldset class="risk-question">
             <legend>1. If your investments dropped 20% in value in a short period, what would you most likely do?</legend>
-            <label class="radio-option"><input type="radio" name="q-risk-1" value="1" required /> Sell everything to avoid further loss</label>
-            <label class="radio-option"><input type="radio" name="q-risk-1" value="2" /> Sell some to reduce risk</label>
-            <label class="radio-option"><input type="radio" name="q-risk-1" value="3" /> Hold and wait it out</label>
-            <label class="radio-option"><input type="radio" name="q-risk-1" value="4" /> Hold, and consider buying more at lower prices</label>
-            <label class="radio-option"><input type="radio" name="q-risk-1" value="5" /> Buy more immediately — I see it as an opportunity</label>
+            <label class="radio-option"><input type="radio" name="risk-q1" value="1" required /> Sell everything to avoid further loss</label>
+            <label class="radio-option"><input type="radio" name="risk-q1" value="2" /> Sell some to reduce risk</label>
+            <label class="radio-option"><input type="radio" name="risk-q1" value="3" /> Hold and wait it out</label>
+            <label class="radio-option"><input type="radio" name="risk-q1" value="4" /> Hold, and consider buying more at lower prices</label>
+            <label class="radio-option"><input type="radio" name="risk-q1" value="5" /> Buy more immediately — I see it as an opportunity</label>
           </fieldset>
 
-          <fieldset class="risk-question" data-question="2">
+          <fieldset class="risk-question">
             <legend>2. What is your primary investment time horizon?</legend>
-            <label class="radio-option"><input type="radio" name="q-risk-2" value="1" required /> Less than 2 years</label>
-            <label class="radio-option"><input type="radio" name="q-risk-2" value="2" /> 2–4 years</label>
-            <label class="radio-option"><input type="radio" name="q-risk-2" value="3" /> 5–7 years</label>
-            <label class="radio-option"><input type="radio" name="q-risk-2" value="4" /> 8–10 years</label>
-            <label class="radio-option"><input type="radio" name="q-risk-2" value="5" /> 10+ years</label>
+            <label class="radio-option"><input type="radio" name="risk-q2" value="1" required /> Less than 2 years</label>
+            <label class="radio-option"><input type="radio" name="risk-q2" value="2" /> 2–4 years</label>
+            <label class="radio-option"><input type="radio" name="risk-q2" value="3" /> 5–7 years</label>
+            <label class="radio-option"><input type="radio" name="risk-q2" value="4" /> 8–10 years</label>
+            <label class="radio-option"><input type="radio" name="risk-q2" value="5" /> 10+ years</label>
           </fieldset>
 
-          <fieldset class="risk-question" data-question="3">
+          <fieldset class="risk-question">
             <legend>3. Which best describes your investment goal?</legend>
-            <label class="radio-option"><input type="radio" name="q-risk-3" value="1" required /> Preserve my capital, minimal risk</label>
-            <label class="radio-option"><input type="radio" name="q-risk-3" value="2" /> Generate steady income with low risk</label>
-            <label class="radio-option"><input type="radio" name="q-risk-3" value="3" /> Balance growth and safety</label>
-            <label class="radio-option"><input type="radio" name="q-risk-3" value="4" /> Grow my wealth, accepting moderate risk</label>
-            <label class="radio-option"><input type="radio" name="q-risk-3" value="5" /> Maximize long-term growth, accepting high volatility</label>
+            <label class="radio-option"><input type="radio" name="risk-q3" value="1" required /> Preserve my capital, minimal risk</label>
+            <label class="radio-option"><input type="radio" name="risk-q3" value="2" /> Generate steady income with low risk</label>
+            <label class="radio-option"><input type="radio" name="risk-q3" value="3" /> Balance growth and safety</label>
+            <label class="radio-option"><input type="radio" name="risk-q3" value="4" /> Grow my wealth, accepting moderate risk</label>
+            <label class="radio-option"><input type="radio" name="risk-q3" value="5" /> Maximize long-term growth, accepting high volatility</label>
           </fieldset>
 
-          <fieldset class="risk-question" data-question="4">
+          <fieldset class="risk-question">
             <legend>4. How would you describe your investment experience?</legend>
-            <label class="radio-option"><input type="radio" name="q-risk-4" value="1" required /> None</label>
-            <label class="radio-option"><input type="radio" name="q-risk-4" value="2" /> Limited exposure (savings accounts, CDs)</label>
-            <label class="radio-option"><input type="radio" name="q-risk-4" value="3" /> Some experience with mutual funds or stocks</label>
-            <label class="radio-option"><input type="radio" name="q-risk-4" value="4" /> Experienced with stocks, bonds, and ETFs</label>
-            <label class="radio-option"><input type="radio" name="q-risk-4" value="5" /> Extensive experience, including options or alternatives</label>
+            <label class="radio-option"><input type="radio" name="risk-q4" value="1" required /> None</label>
+            <label class="radio-option"><input type="radio" name="risk-q4" value="2" /> Limited exposure (savings accounts, CDs)</label>
+            <label class="radio-option"><input type="radio" name="risk-q4" value="3" /> Some experience with mutual funds or stocks</label>
+            <label class="radio-option"><input type="radio" name="risk-q4" value="4" /> Experienced with stocks, bonds, and ETFs</label>
+            <label class="radio-option"><input type="radio" name="risk-q4" value="5" /> Extensive experience, including options or alternatives</label>
           </fieldset>
 
-          <fieldset class="risk-question" data-question="5">
+          <fieldset class="risk-question">
             <legend>5. What percentage of your monthly income could you invest without needing it for emergencies?</legend>
-            <label class="radio-option"><input type="radio" name="q-risk-5" value="1" required /> Less than 5%</label>
-            <label class="radio-option"><input type="radio" name="q-risk-5" value="2" /> 5–10%</label>
-            <label class="radio-option"><input type="radio" name="q-risk-5" value="3" /> 10–20%</label>
-            <label class="radio-option"><input type="radio" name="q-risk-5" value="4" /> 20–35%</label>
-            <label class="radio-option"><input type="radio" name="q-risk-5" value="5" /> More than 35%</label>
+            <label class="radio-option"><input type="radio" name="risk-q5" value="1" required /> Less than 5%</label>
+            <label class="radio-option"><input type="radio" name="risk-q5" value="2" /> 5–10%</label>
+            <label class="radio-option"><input type="radio" name="risk-q5" value="3" /> 10–20%</label>
+            <label class="radio-option"><input type="radio" name="risk-q5" value="4" /> 20–35%</label>
+            <label class="radio-option"><input type="radio" name="risk-q5" value="5" /> More than 35%</label>
           </fieldset>
 
           <p class="risk-score-display" id="risk-score-display"></p>
 
-          <h2 class="section-heading">Goals</h2>
-          <label for="q-goal-short">Goals — Next 3–5 Years</label>
-          <textarea id="q-goal-short" rows="2" placeholder="e.g. Build an emergency fund, buy a home"></textarea>
+          <h2 class="section-heading">Your Goals</h2>
+          <label for="risk-goal-short">Goals — Next 3–5 Years</label>
+          <textarea id="risk-goal-short" rows="2" placeholder="e.g. Build an emergency fund, buy a home"></textarea>
 
-          <label for="q-goal-medium">Goals — 5–10 Years</label>
-          <textarea id="q-goal-medium" rows="2" placeholder="e.g. Fund children's education"></textarea>
+          <label for="risk-goal-medium">Goals — 5–10 Years</label>
+          <textarea id="risk-goal-medium" rows="2" placeholder="e.g. Fund children's education"></textarea>
 
-          <label for="q-goal-long">Goals — 10+ Years</label>
-          <textarea id="q-goal-long" rows="2" placeholder="e.g. Retirement, legacy planning"></textarea>
+          <label for="risk-goal-long">Goals — 10+ Years</label>
+          <textarea id="risk-goal-long" rows="2" placeholder="e.g. Retirement, legacy planning"></textarea>
 
-          <p class="form-error" id="questionnaire-error"></p>
+          <p class="form-error" id="risk-error"></p>
           <div class="form-actions">
-            <button type="button" id="cancel-questionnaire-btn" class="btn btn-ghost hidden">Cancel</button>
-            <button type="submit" class="btn btn-primary">Save Responses</button>
+            <button type="button" class="btn btn-ghost back-btn">Back to Dashboard</button>
+            <button type="submit" class="btn btn-primary">Save Assessment</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- BUDGET MODULE -->
+    <section id="view-budget" class="view hidden">
+      <div class="card">
+        <h1>Budget &amp; Cash Flow Analysis</h1>
+        <p class="subtitle">Where your money goes each month tells us where your plan can work harder.</p>
+
+        <form id="budget-form" class="form">
+          <h2 class="section-heading">Monthly Income &amp; Savings</h2>
+          <div class="budget-grid">
+            <div class="budget-field">
+              <label for="budget-income">Monthly Take-Home Income ($)</label>
+              <input type="number" id="budget-income" min="0" step="1" placeholder="0" required />
+            </div>
+            <div class="budget-field">
+              <label for="budget-savings">Monthly Savings &amp; Investing ($)</label>
+              <input type="number" id="budget-savings" min="0" step="1" placeholder="0" required />
+            </div>
+          </div>
+
+          <h2 class="section-heading">Monthly Expenses</h2>
+          <p class="subtitle">Roughly how much do you spend per month in each category?</p>
+          <div class="budget-grid" id="budget-expense-grid"></div>
+
+          <p class="budget-total">Total Monthly Expenses: <span id="budget-total-value">$0</span>
+            <span class="budget-surplus" id="budget-surplus-value"></span></p>
+
+          <p class="form-error" id="budget-error"></p>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost back-btn">Back to Dashboard</button>
+            <button type="submit" class="btn btn-primary">Save Assessment</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- RETIREMENT MODULE -->
+    <section id="view-retirement" class="view hidden">
+      <div class="card">
+        <h1>Retirement Readiness</h1>
+        <p class="subtitle">A quick projection of where your current savings path leads — and how it compares to the retirement you want.</p>
+
+        <form id="retirement-form" class="form">
+          <h2 class="section-heading">Where You Are</h2>
+          <div class="budget-grid">
+            <div class="budget-field">
+              <label for="ret-current-age">Current Age</label>
+              <input type="number" id="ret-current-age" min="18" max="99" step="1" required />
+            </div>
+            <div class="budget-field">
+              <label for="ret-target-age">Target Retirement Age</label>
+              <input type="number" id="ret-target-age" min="19" max="100" step="1" required />
+            </div>
+            <div class="budget-field">
+              <label for="ret-current-savings">Current Retirement Savings ($)</label>
+              <input type="number" id="ret-current-savings" min="0" step="1" placeholder="0" required />
+            </div>
+            <div class="budget-field">
+              <label for="ret-monthly-contribution">Your Monthly Contribution ($)</label>
+              <input type="number" id="ret-monthly-contribution" min="0" step="1" placeholder="0" required />
+            </div>
+            <div class="budget-field">
+              <label for="ret-employer-match">Employer Match per Month ($)</label>
+              <input type="number" id="ret-employer-match" min="0" step="1" placeholder="0" required />
+            </div>
+            <div class="budget-field">
+              <label for="ret-desired-income">Desired Monthly Income in Retirement ($)</label>
+              <input type="number" id="ret-desired-income" min="0" step="1" placeholder="0" required />
+            </div>
+          </div>
+
+          <h2 class="section-heading">Previous Employer Plans</h2>
+          <label for="ret-old-plans">Do you have 401(k)/403(b) accounts still with previous employers?</label>
+          <select id="ret-old-plans" required>
+            <option value="" disabled selected>Select one</option>
+            <option value="none">No, everything is consolidated</option>
+            <option value="one">Yes, one old account</option>
+            <option value="multiple">Yes, more than one old account</option>
+          </select>
+          <p class="hint">Old workplace plans often carry higher fees and get forgotten. We review consolidation options as part of onboarding.</p>
+
+          <p class="form-error" id="retirement-error"></p>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost back-btn">Back to Dashboard</button>
+            <button type="submit" class="btn btn-primary">Save Assessment</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- NET WORTH MODULE -->
+    <section id="view-networth" class="view hidden">
+      <div class="card">
+        <h1>Net Worth Snapshot</h1>
+        <p class="subtitle">Estimates are fine — this gives us the starting point for your balance sheet.</p>
+
+        <form id="networth-form" class="form">
+          <h2 class="section-heading">What You Own (Assets)</h2>
+          <div class="budget-grid" id="networth-asset-grid"></div>
+
+          <h2 class="section-heading">What You Owe (Liabilities)</h2>
+          <div class="budget-grid" id="networth-liability-grid"></div>
+
+          <p class="budget-total">Estimated Net Worth: <span id="networth-total-value">$0</span></p>
+
+          <p class="form-error" id="networth-error"></p>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost back-btn">Back to Dashboard</button>
+            <button type="submit" class="btn btn-primary">Save Assessment</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- COMPENSATION MODULE -->
+    <section id="view-compensation" class="view hidden">
+      <div class="card">
+        <h1>Compensation &amp; Employer Benefits</h1>
+        <p class="subtitle">Equity awards, retirement matches, and benefit elections are often the most under-optimized part of a professional's finances.</p>
+
+        <form id="compensation-form" class="form">
+          <h2 class="section-heading">Annual Compensation</h2>
+          <div class="budget-grid">
+            <div class="budget-field">
+              <label for="comp-base">Base Salary ($/yr)</label>
+              <input type="number" id="comp-base" min="0" step="1" placeholder="0" required />
+            </div>
+            <div class="budget-field">
+              <label for="comp-bonus">Bonus / Commission ($/yr, typical)</label>
+              <input type="number" id="comp-bonus" min="0" step="1" placeholder="0" required />
+            </div>
+            <div class="budget-field">
+              <label for="comp-equity">Equity Compensation ($/yr, estimated value)</label>
+              <input type="number" id="comp-equity" min="0" step="1" placeholder="0" required />
+            </div>
+          </div>
+
+          <h2 class="section-heading">Equity Award Types</h2>
+          <p class="subtitle">Select all that apply.</p>
+          <div class="checkbox-group">
+            <label class="radio-option"><input type="checkbox" name="comp-equity-type" value="rsu" /> Restricted Stock Units (RSUs)</label>
+            <label class="radio-option"><input type="checkbox" name="comp-equity-type" value="options" /> Stock Options (ISOs / NSOs)</label>
+            <label class="radio-option"><input type="checkbox" name="comp-equity-type" value="espp" /> Employee Stock Purchase Plan (ESPP)</label>
+            <label class="radio-option"><input type="checkbox" name="comp-equity-type" value="partnership" /> Partnership / Business Ownership Interest</label>
+            <label class="radio-option"><input type="checkbox" name="comp-equity-type" value="none" /> None</label>
+          </div>
+
+          <h2 class="section-heading">Retirement Plan &amp; Benefits</h2>
+          <div class="budget-grid">
+            <div class="budget-field">
+              <label for="comp-contribution-pct">Your 401(k) Contribution (% of salary)</label>
+              <input type="number" id="comp-contribution-pct" min="0" max="100" step="0.5" placeholder="0" required />
+            </div>
+            <div class="budget-field">
+              <label for="comp-match-pct">Employer Match (% of salary)</label>
+              <input type="number" id="comp-match-pct" min="0" max="100" step="0.5" placeholder="0" required />
+            </div>
+          </div>
+          <div class="checkbox-group">
+            <label class="radio-option"><input type="checkbox" id="comp-hsa" /> I have access to a Health Savings Account (HSA)</label>
+            <label class="radio-option"><input type="checkbox" id="comp-deferred" /> I have access to a deferred compensation plan</label>
+          </div>
+
+          <h2 class="section-heading">Employer Stock Concentration</h2>
+          <label for="comp-concentration">Roughly what share of your investable assets is in your employer's stock?</label>
+          <select id="comp-concentration" required>
+            <option value="" disabled selected>Select one</option>
+            <option value="none">None</option>
+            <option value="under5">Under 5%</option>
+            <option value="5to15">5–15%</option>
+            <option value="15to30">15–30%</option>
+            <option value="over30">Over 30%</option>
+          </select>
+
+          <p class="form-error" id="compensation-error"></p>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost back-btn">Back to Dashboard</button>
+            <button type="submit" class="btn btn-primary">Save Assessment</button>
           </div>
         </form>
       </div>
@@ -245,7 +342,7 @@
   </main>
 
   <footer class="footer">
-    <p>&copy; 2026 BlueLine Advisors. For informational purposes only.</p>
+    <p>&copy; 2026 BlueLine Advisors. For informational purposes only. Projections are hypothetical illustrations, not guarantees.</p>
   </footer>
 
   <script src="assets/script.js"></script>

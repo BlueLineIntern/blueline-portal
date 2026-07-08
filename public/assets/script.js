@@ -38,17 +38,247 @@ async function apiRequest(path, { method = "GET", body, auth = false } = {}) {
   return data;
 }
 
+// ---------- Shared formatting ----------
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str == null ? "" : String(str);
+  return div.innerHTML;
+}
+
+function fmtMoney(amount) {
+  const n = Number(amount || 0);
+  const sign = n < 0 ? "-" : "";
+  return `${sign}$${Math.abs(Math.round(n)).toLocaleString()}`;
+}
+
+function fmtCompact(amount) {
+  const n = Number(amount || 0);
+  const abs = Math.abs(n);
+  const sign = n < 0 ? "-" : "";
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs >= 1_000) return `${sign}$${Math.round(abs / 1_000)}K`;
+  return `${sign}$${Math.round(abs)}`;
+}
+
+const PALETTE = [
+  "#4AABDB", "#1B2A4A", "#6BAA75", "#F2A65A", "#8E7CC3",
+  "#3690c0", "#C77B58", "#5b6b7f", "#A3B86C", "#D4AC6E",
+];
+
+// ---------- SVG chart helpers ----------
+
+function polar(cx, cy, r, deg) {
+  const rad = ((deg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function donutArcPath(cx, cy, rOuter, rInner, startDeg, endDeg) {
+  const large = endDeg - startDeg > 180 ? 1 : 0;
+  const so = polar(cx, cy, rOuter, startDeg);
+  const eo = polar(cx, cy, rOuter, endDeg);
+  const si = polar(cx, cy, rInner, startDeg);
+  const ei = polar(cx, cy, rInner, endDeg);
+  return [
+    `M ${so.x.toFixed(2)} ${so.y.toFixed(2)}`,
+    `A ${rOuter} ${rOuter} 0 ${large} 1 ${eo.x.toFixed(2)} ${eo.y.toFixed(2)}`,
+    `L ${ei.x.toFixed(2)} ${ei.y.toFixed(2)}`,
+    `A ${rInner} ${rInner} 0 ${large} 0 ${si.x.toFixed(2)} ${si.y.toFixed(2)}`,
+    "Z",
+  ].join(" ");
+}
+
+/**
+ * Donut chart with legend. segments: [{ label, value, color }]
+ * centerTop / centerBottom: text in the donut hole.
+ */
+function donutChart(segments, { centerTop = "", centerBottom = "", format = fmtMoney, showPct = true } = {}) {
+  const visible = segments.filter((s) => s.value > 0);
+  const total = visible.reduce((sum, s) => sum + s.value, 0);
+  const size = 180;
+  const cx = size / 2, cy = size / 2, rOuter = 84, rInner = 54;
+
+  let paths = "";
+  if (total <= 0) {
+    paths = `<circle cx="${cx}" cy="${cy}" r="${(rOuter + rInner) / 2}" fill="none" stroke="#e6ecf2" stroke-width="${rOuter - rInner}" />`;
+  } else if (visible.length === 1) {
+    paths = `<circle cx="${cx}" cy="${cy}" r="${(rOuter + rInner) / 2}" fill="none" stroke="${visible[0].color}" stroke-width="${rOuter - rInner}" />`;
+  } else {
+    let angle = 0;
+    for (const seg of visible) {
+      const sweep = (seg.value / total) * 360;
+      // cap at 359.9 to avoid degenerate full-circle arcs
+      const end = Math.min(angle + sweep, angle + 359.9);
+      paths += `<path d="${donutArcPath(cx, cy, rOuter, rInner, angle, end)}" fill="${seg.color}"><title>${escapeHtml(seg.label)}: ${format(seg.value)}</title></path>`;
+      angle += sweep;
+    }
+  }
+
+  const legend = segments
+    .map((s) => {
+      const pct = total > 0 ? Math.round((s.value / total) * 100) : 0;
+      return `<li><span class="legend-swatch" style="background:${s.color}"></span>
+        <span class="legend-label">${escapeHtml(s.label)}</span>
+        <span class="legend-value">${format(s.value)}${showPct ? ` <em>(${pct}%)</em>` : ""}</span></li>`;
+    })
+    .join("");
+
+  return `
+    <div class="chart-donut">
+      <svg viewBox="0 0 ${size} ${size}" role="img" aria-label="Breakdown chart">
+        ${paths}
+        <text x="${cx}" y="${cy - 4}" text-anchor="middle" class="donut-center-top">${escapeHtml(centerTop)}</text>
+        <text x="${cx}" y="${cy + 16}" text-anchor="middle" class="donut-center-bottom">${escapeHtml(centerBottom)}</text>
+      </svg>
+      <ul class="chart-legend">${legend}</ul>
+    </div>`;
+}
+
+/** Semicircular gauge for the risk score (5–25). */
+function riskGauge(score, category) {
+  const size = 220;
+  const cx = size / 2, cy = 108, r = 88;
+  const bands = ["#a8d5ec", "#7fc2e3", "#56afd9", "#3690c0", "#1B2A4A"];
+  const bandLabels = ["Conservative", "Mod. Conservative", "Moderate", "Mod. Aggressive", "Aggressive"];
+
+  let arcs = "";
+  for (let i = 0; i < 5; i++) {
+    const start = -90 + i * 36;
+    const end = start + 34.5;
+    arcs += `<path d="${donutArcPath(cx, cy, r, r - 22, start, end)}" fill="${bands[i]}"><title>${bandLabels[i]}</title></path>`;
+  }
+
+  const frac = Math.max(0, Math.min(1, (score - 5) / 20));
+  const needleDeg = -90 + frac * 180;
+  const tip = polar(cx, cy, r - 30, needleDeg);
+
+  return `
+    <div class="chart-gauge">
+      <svg viewBox="0 0 ${size} 130" role="img" aria-label="Risk score gauge">
+        ${arcs}
+        <line x1="${cx}" y1="${cy}" x2="${tip.x.toFixed(1)}" y2="${tip.y.toFixed(1)}" stroke="#1c2530" stroke-width="3" stroke-linecap="round" />
+        <circle cx="${cx}" cy="${cy}" r="6" fill="#1c2530" />
+        <text x="14" y="126" class="gauge-end-label">Conservative</text>
+        <text x="${size - 14}" y="126" text-anchor="end" class="gauge-end-label">Aggressive</text>
+      </svg>
+      <p class="gauge-caption"><strong>${score} / 25</strong> — ${escapeHtml(category)}</p>
+    </div>`;
+}
+
+/** Retirement projection area chart with target line. */
+function projectionChart(retirement) {
+  const { currentAge, targetAge, currentSavings, monthlyContribution, employerMatchMonthly, targetNestEgg } = retirement;
+  const monthlyRate = 0.06 / 12;
+  const contribution = monthlyContribution + employerMatchMonthly;
+
+  const points = [];
+  let balance = currentSavings;
+  points.push({ age: currentAge, balance });
+  for (let age = currentAge + 1; age <= targetAge; age++) {
+    for (let m = 0; m < 12; m++) balance = balance * (1 + monthlyRate) + contribution;
+    points.push({ age, balance });
+  }
+
+  const W = 560, H = 260, padL = 56, padR = 16, padT = 16, padB = 34;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const maxY = Math.max(targetNestEgg, points[points.length - 1].balance, 1) * 1.12;
+  const ageSpan = Math.max(targetAge - currentAge, 1);
+
+  const x = (age) => padL + ((age - currentAge) / ageSpan) * plotW;
+  const y = (val) => padT + plotH - (val / maxY) * plotH;
+
+  const linePts = points.map((p) => `${x(p.age).toFixed(1)},${y(p.balance).toFixed(1)}`).join(" ");
+  const areaPts = `${padL},${(padT + plotH).toFixed(1)} ${linePts} ${(padL + plotW).toFixed(1)},${(padT + plotH).toFixed(1)}`;
+
+  // x-axis ticks roughly every 5 years, always including endpoints
+  const step = ageSpan > 25 ? 10 : 5;
+  const tickAges = [];
+  for (let a = currentAge; a < targetAge; a += step) tickAges.push(a);
+  tickAges.push(targetAge);
+  const xTicks = tickAges
+    .map((a) => `<text x="${x(a).toFixed(1)}" y="${H - 12}" text-anchor="middle" class="axis-label">${a}</text>`)
+    .join("");
+
+  const yTicks = [0.5, 1]
+    .map((f) => {
+      const v = maxY * f;
+      return `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${padL + plotW}" y2="${y(v).toFixed(1)}" class="grid-line" />
+        <text x="${padL - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" class="axis-label">${fmtCompact(v)}</text>`;
+    })
+    .join("");
+
+  const targetY = y(Math.min(targetNestEgg, maxY));
+  const endBalance = points[points.length - 1].balance;
+
+  return `
+    <div class="chart-projection">
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Projected retirement savings by age">
+        ${yTicks}
+        <line x1="${padL}" y1="${padT + plotH}" x2="${padL + plotW}" y2="${padT + plotH}" stroke="#c9d4df" />
+        <polygon points="${areaPts}" fill="rgba(74,171,219,0.18)" />
+        <polyline points="${linePts}" fill="none" stroke="#4AABDB" stroke-width="3" stroke-linejoin="round" />
+        <line x1="${padL}" y1="${targetY.toFixed(1)}" x2="${padL + plotW}" y2="${targetY.toFixed(1)}"
+          stroke="#F2A65A" stroke-width="2" stroke-dasharray="7 5" />
+        <text x="${padL + 6}" y="${(targetY - 7).toFixed(1)}" class="target-label">Target: ${fmtCompact(targetNestEgg)}</text>
+        <circle cx="${x(targetAge).toFixed(1)}" cy="${y(endBalance).toFixed(1)}" r="5" fill="#1B2A4A" />
+        ${xTicks}
+        <text x="${padL + plotW / 2}" y="${H - 0.5}" text-anchor="middle" class="axis-title">Age</text>
+      </svg>
+    </div>`;
+}
+
+/** Horizontal progress-style bar with a label, capped at 100% width. */
+function statBar(label, pct, color) {
+  const width = Math.max(0, Math.min(100, pct));
+  return `
+    <div class="stat-bar">
+      <div class="stat-bar-header"><span>${escapeHtml(label)}</span><strong>${Math.round(pct)}%</strong></div>
+      <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${width}%;background:${color}"></div></div>
+    </div>`;
+}
+
+/** Paired horizontal stacked bars: assets vs liabilities. */
+function balanceBars(assetSegments, liabilitySegments) {
+  const totalAssets = assetSegments.reduce((s, a) => s + a.value, 0);
+  const totalLiabilities = liabilitySegments.reduce((s, a) => s + a.value, 0);
+  const maxTotal = Math.max(totalAssets, totalLiabilities, 1);
+
+  function stackedBar(segments, total) {
+    const widthPct = (total / maxTotal) * 100;
+    let inner = "";
+    for (const seg of segments) {
+      if (seg.value <= 0) continue;
+      const w = (seg.value / maxTotal) * 100;
+      inner += `<div class="stack-seg" style="width:${w}%;background:${seg.color}" title="${escapeHtml(seg.label)}: ${fmtMoney(seg.value)}"></div>`;
+    }
+    return `<div class="stack-track" style="width:${Math.max(widthPct, 0.5)}%">${inner}</div>`;
+  }
+
+  const legend = [...assetSegments, ...liabilitySegments]
+    .filter((s) => s.value > 0)
+    .map(
+      (s) => `<li><span class="legend-swatch" style="background:${s.color}"></span>
+        <span class="legend-label">${escapeHtml(s.label)}</span>
+        <span class="legend-value">${fmtMoney(s.value)}</span></li>`
+    )
+    .join("");
+
+  return `
+    <div class="chart-balance">
+      <div class="balance-row"><span class="balance-row-label">Assets</span><div class="balance-bar-area">${stackedBar(assetSegments, totalAssets)}</div><span class="balance-row-total">${fmtCompact(totalAssets)}</span></div>
+      <div class="balance-row"><span class="balance-row-label">Liabilities</span><div class="balance-bar-area">${stackedBar(liabilitySegments, totalLiabilities)}</div><span class="balance-row-total">${fmtCompact(totalLiabilities)}</span></div>
+      <ul class="chart-legend legend-columns">${legend}</ul>
+    </div>`;
+}
+
 // ---------- View management ----------
 
-const views = {
-  auth: document.getElementById("view-auth"),
-  dashboard: document.getElementById("view-dashboard"),
-  questionnaire: document.getElementById("view-questionnaire"),
-};
+const VIEW_IDS = ["auth", "dashboard", "risk", "budget", "retirement", "networth", "compensation"];
 
 function showView(name) {
-  Object.values(views).forEach((v) => v.classList.add("hidden"));
-  views[name].classList.remove("hidden");
+  VIEW_IDS.forEach((id) => document.getElementById(`view-${id}`).classList.add("hidden"));
+  document.getElementById(`view-${name}`).classList.remove("hidden");
+  window.scrollTo(0, 0);
 }
 
 function updateNav() {
@@ -64,7 +294,7 @@ function updateNav() {
   }
 }
 
-// ---------- Auth tabs ----------
+// ---------- Auth ----------
 
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -76,21 +306,18 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
   });
 });
 
-// ---------- Register ----------
-
 document.getElementById("register-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const errorEl = document.getElementById("register-error");
   errorEl.textContent = "";
-
-  const name = document.getElementById("register-name").value.trim();
-  const email = document.getElementById("register-email").value.trim();
-  const password = document.getElementById("register-password").value;
-
   try {
     const data = await apiRequest("/api/register", {
       method: "POST",
-      body: { name, email, password },
+      body: {
+        name: document.getElementById("register-name").value.trim(),
+        email: document.getElementById("register-email").value.trim(),
+        password: document.getElementById("register-password").value,
+      },
     });
     setSession({ token: data.token, name: data.name, email: data.email });
     await enterApp();
@@ -98,21 +325,18 @@ document.getElementById("register-form").addEventListener("submit", async (e) =>
     errorEl.textContent = err.message;
   }
 });
-
-// ---------- Login ----------
 
 document.getElementById("login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const errorEl = document.getElementById("login-error");
   errorEl.textContent = "";
-
-  const email = document.getElementById("login-email").value.trim();
-  const password = document.getElementById("login-password").value;
-
   try {
     const data = await apiRequest("/api/login", {
       method: "POST",
-      body: { email, password },
+      body: {
+        email: document.getElementById("login-email").value.trim(),
+        password: document.getElementById("login-password").value,
+      },
     });
     setSession({ token: data.token, name: data.name, email: data.email });
     await enterApp();
@@ -120,8 +344,6 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
     errorEl.textContent = err.message;
   }
 });
-
-// ---------- Logout ----------
 
 document.getElementById("logout-btn").addEventListener("click", async () => {
   try {
@@ -134,73 +356,268 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
   showView("auth");
 });
 
-// ---------- Dashboard ----------
+// ---------- Module metadata & dashboard ----------
 
-let lastResponses = null;
+let currentModules = {};
 
-const BUDGET_CATEGORIES = [
-  "housing",
-  "groceries",
-  "transportation",
-  "investments",
-  "debt",
-  "discretionary",
-  "other",
+const BUDGET_EXPENSES = [
+  ["housing", "Housing / Rent"],
+  ["utilities", "Utilities"],
+  ["groceries", "Groceries"],
+  ["transportation", "Transportation"],
+  ["insurance", "Insurance"],
+  ["healthcare", "Healthcare"],
+  ["debt", "Debt Payments"],
+  ["childcareEducation", "Childcare & Education"],
+  ["discretionary", "Entertainment & Discretionary"],
+  ["other", "Other"],
 ];
 
-function formatCurrency(amount) {
-  return `$${Number(amount || 0).toLocaleString()}`;
+const NETWORTH_ASSETS = [
+  ["cash", "Cash & Savings"],
+  ["brokerage", "Brokerage / Investments"],
+  ["retirement", "Retirement Accounts"],
+  ["realEstate", "Real Estate"],
+  ["businessEquity", "Business Ownership"],
+  ["otherAssets", "Other Assets"],
+];
+
+const NETWORTH_LIABILITIES = [
+  ["mortgage", "Mortgage"],
+  ["studentLoans", "Student Loans"],
+  ["autoLoans", "Auto Loans"],
+  ["creditCards", "Credit Cards"],
+  ["businessDebt", "Business Debt"],
+  ["otherDebts", "Other Debts"],
+];
+
+const EQUITY_TYPE_LABELS = {
+  rsu: "RSUs",
+  options: "Stock Options",
+  espp: "ESPP",
+  partnership: "Partnership Interest",
+  none: "None",
+};
+
+const CONCENTRATION_LABELS = {
+  none: "None",
+  under5: "Under 5%",
+  "5to15": "5–15%",
+  "15to30": "15–30%",
+  over30: "Over 30%",
+};
+
+const EXPERIENCE_LABELS = {
+  beginner: "Beginner",
+  intermediate: "Intermediate",
+  advanced: "Advanced",
+  expert: "Expert",
+};
+
+const MODULES = [
+  {
+    key: "risk",
+    title: "Risk Tolerance & Investor Profile",
+    description: "Five quick questions to gauge how you handle market swings — and see the portfolio mix that fits.",
+    renderResult: renderRiskResult,
+  },
+  {
+    key: "budget",
+    title: "Budget & Cash Flow Analysis",
+    description: "Map your monthly income and spending to see your savings rate and where cash flow can improve.",
+    renderResult: renderBudgetResult,
+  },
+  {
+    key: "retirement",
+    title: "Retirement Readiness",
+    description: "Project where your current savings path leads and how it compares to the retirement you want.",
+    renderResult: renderRetirementResult,
+  },
+  {
+    key: "networth",
+    title: "Net Worth Snapshot",
+    description: "A simple balance sheet — what you own vs. what you owe — as the starting point for your plan.",
+    renderResult: renderNetWorthResult,
+  },
+  {
+    key: "compensation",
+    title: "Compensation & Employer Benefits",
+    description: "Salary, bonus, equity awards, and benefits — often the most under-optimized part of a professional's finances.",
+    renderResult: renderCompensationResult,
+  },
+];
+
+function renderRiskResult(m) {
+  const alloc = m.suggestedAllocation || {};
+  const goals = [
+    ["3–5 yr", m.goalShortTerm],
+    ["5–10 yr", m.goalMediumTerm],
+    ["10+ yr", m.goalLongTerm],
+  ].filter(([, v]) => v);
+  return `
+    ${riskGauge(m.score, m.category)}
+    <div class="stat-rows">
+      <div class="stat-row"><span>Investment Experience</span><strong>${escapeHtml(EXPERIENCE_LABELS[m.experienceLevel] || m.experienceLevel)}</strong></div>
+    </div>
+    <h3 class="result-subheading">Suggested Starting Allocation</h3>
+    ${donutChart(
+      [
+        { label: "Stocks", value: alloc.stocks || 0, color: PALETTE[0] },
+        { label: "Bonds", value: alloc.bonds || 0, color: PALETTE[1] },
+        { label: "Cash", value: alloc.cash || 0, color: PALETTE[3] },
+      ],
+      { centerTop: `${alloc.stocks || 0}%`, centerBottom: "stocks", format: (v) => `${v}%`, showPct: false }
+    )}
+    ${goals.length ? `<h3 class="result-subheading">Goals</h3><div class="stat-rows">${goals
+      .map(([label, v]) => `<div class="stat-row"><span>${label}</span><strong class="goal-text">${escapeHtml(v)}</strong></div>`)
+      .join("")}</div>` : ""}`;
 }
 
-function budgetTotal(budget) {
-  return BUDGET_CATEGORIES.reduce((sum, key) => sum + (Number(budget[key]) || 0), 0);
+function renderBudgetResult(m) {
+  const segments = BUDGET_EXPENSES.map(([key, label], i) => ({
+    label,
+    value: m.expenses[key] || 0,
+    color: PALETTE[i % PALETTE.length],
+  }));
+  const surplusClass = m.surplus < 0 ? "negative" : "positive";
+  return `
+    ${donutChart(segments, { centerTop: fmtCompact(m.totalExpenses), centerBottom: "expenses/mo" })}
+    <div class="stat-rows">
+      <div class="stat-row"><span>Monthly Take-Home Income</span><strong>${fmtMoney(m.monthlyIncome)}</strong></div>
+      <div class="stat-row"><span>Monthly Expenses</span><strong>${fmtMoney(m.totalExpenses)}</strong></div>
+      <div class="stat-row"><span>Monthly Savings & Investing</span><strong>${fmtMoney(m.monthlySavings)}</strong></div>
+      <div class="stat-row"><span>Unallocated Cash Flow</span><strong class="${surplusClass}">${fmtMoney(m.surplus)}</strong></div>
+    </div>
+    ${statBar("Savings Rate", m.savingsRate, m.savingsRate >= 15 ? "#6BAA75" : m.savingsRate >= 8 ? "#F2A65A" : "#C0392B")}
+    <p class="result-note">${
+      m.surplus < 0
+        ? "Your reported spending and saving exceed your income — worth a close look together."
+        : "A savings rate of 15%+ of take-home pay is a strong baseline for long-term goals."
+    }</p>`;
 }
 
-function riskCategoryForScore(score) {
-  if (score <= 9) return "Conservative";
-  if (score <= 14) return "Moderately Conservative";
-  if (score <= 19) return "Moderate";
-  if (score <= 24) return "Moderately Aggressive";
-  return "Aggressive";
+function renderRetirementResult(m) {
+  const readiness = m.readinessPct == null ? null : Math.min(m.readinessPct, 100);
+  const rolloverNote =
+    m.oldEmployerPlans !== "none"
+      ? `<p class="result-flag">You have ${m.oldEmployerPlans === "one" ? "an old employer plan" : "multiple old employer plans"} — we'll review consolidation and rollover options with you.</p>`
+      : "";
+  return `
+    ${projectionChart(m)}
+    <div class="stat-rows">
+      <div class="stat-row"><span>Projected at Age ${m.targetAge}</span><strong>${fmtMoney(m.projectedBalance)}</strong></div>
+      <div class="stat-row"><span>Target Nest Egg (4% rule)</span><strong>${fmtMoney(m.targetNestEgg)}</strong></div>
+      <div class="stat-row"><span>Monthly Contributions (incl. match)</span><strong>${fmtMoney(m.monthlyContribution + m.employerMatchMonthly)}</strong></div>
+    </div>
+    ${
+      readiness == null
+        ? ""
+        : statBar(`On Track: ${m.readinessPct}% of target`, readiness, readiness >= 90 ? "#6BAA75" : readiness >= 60 ? "#F2A65A" : "#C0392B")
+    }
+    ${rolloverNote}
+    <p class="result-note">Assumes 6% annual growth for illustration only — actual planning uses far more than one number.</p>`;
 }
 
-function renderSummary(responses) {
-  lastResponses = responses;
-  document.getElementById("no-responses").classList.toggle("hidden", !!responses);
-  document.getElementById("summary-card").classList.toggle("hidden", !responses);
-  document.getElementById("edit-btn").classList.toggle("hidden", !responses);
+function renderNetWorthResult(m) {
+  const assetSegments = NETWORTH_ASSETS.map(([key, label], i) => ({
+    label,
+    value: m.assets[key] || 0,
+    color: PALETTE[i % PALETTE.length],
+  }));
+  const liabilitySegments = NETWORTH_LIABILITIES.map(([key, label], i) => ({
+    label,
+    value: m.liabilities[key] || 0,
+    color: PALETTE[(i + 5) % PALETTE.length],
+  }));
+  const nwClass = m.netWorth < 0 ? "negative" : "positive";
+  return `
+    <p class="headline-stat">Net Worth: <strong class="${nwClass}">${fmtMoney(m.netWorth)}</strong></p>
+    ${balanceBars(assetSegments, liabilitySegments)}
+    <h3 class="result-subheading">Asset Composition</h3>
+    ${donutChart(assetSegments, { centerTop: fmtCompact(m.totalAssets), centerBottom: "total assets" })}`;
+}
 
-  if (!responses) return;
-
-  const experienceLabels = {
-    beginner: "Beginner",
-    intermediate: "Intermediate",
-    advanced: "Advanced",
-    expert: "Expert",
-  };
-
-  const budget = responses.budget || {};
-  BUDGET_CATEGORIES.forEach((key) => {
-    document.getElementById(`summary-budget-${key}`).textContent = formatCurrency(budget[key]);
-  });
-  document.getElementById("summary-budget-total").textContent = formatCurrency(budgetTotal(budget));
-
-  document.getElementById("summary-experience").textContent = experienceLabels[responses.experienceLevel] || responses.experienceLevel || "—";
-  document.getElementById("summary-risk").textContent =
-    responses.riskScore != null ? `${responses.riskScore} / 25 — ${responses.riskCategory}` : "—";
-  document.getElementById("summary-goal-short").textContent = responses.goalShortTerm || "—";
-  document.getElementById("summary-goal-medium").textContent = responses.goalMediumTerm || "—";
-  document.getElementById("summary-goal-long").textContent = responses.goalLongTerm || "—";
-  document.getElementById("summary-updated").textContent = responses.updatedAt
-    ? `Last updated: ${new Date(responses.updatedAt).toLocaleString()}`
+function renderCompensationResult(m) {
+  const mix = donutChart(
+    [
+      { label: "Base Salary", value: m.baseSalary, color: PALETTE[0] },
+      { label: "Bonus / Commission", value: m.annualBonus, color: PALETTE[3] },
+      { label: "Equity Compensation", value: m.annualEquityValue, color: PALETTE[1] },
+    ],
+    { centerTop: fmtCompact(m.totalComp), centerBottom: "total comp" }
+  );
+  const types = (m.equityTypes || []).map((t) => EQUITY_TYPE_LABELS[t] || t);
+  const benefits = [
+    m.hsaEligible ? "HSA access" : null,
+    m.deferredComp ? "Deferred comp plan" : null,
+  ].filter(Boolean);
+  const concentrationFlag = m.concentrationFlag
+    ? `<p class="result-flag">${CONCENTRATION_LABELS[m.employerStockConcentration]} of your investable assets is in employer stock — concentration risk we should plan around.</p>`
     : "";
+  return `
+    ${mix}
+    <div class="stat-rows">
+      <div class="stat-row"><span>Equity Award Types</span><strong>${types.length ? escapeHtml(types.join(", ")) : "—"}</strong></div>
+      <div class="stat-row"><span>401(k) Contribution</span><strong>${m.contributionPct}% of salary</strong></div>
+      <div class="stat-row"><span>Employer Match</span><strong>${m.employerMatchPct}% of salary</strong></div>
+      <div class="stat-row"><span>Other Benefits</span><strong>${benefits.length ? escapeHtml(benefits.join(", ")) : "—"}</strong></div>
+      <div class="stat-row"><span>Employer Stock Concentration</span><strong>${CONCENTRATION_LABELS[m.employerStockConcentration] || "—"}</strong></div>
+    </div>
+    ${concentrationFlag}
+    ${
+      m.contributionPct < m.employerMatchPct
+        ? `<p class="result-flag">You're contributing less than your employer match — that's unclaimed compensation.</p>`
+        : ""
+    }`;
+}
+
+function renderDashboard() {
+  const grid = document.getElementById("module-grid");
+  const completed = MODULES.filter((mod) => currentModules[mod.key]).length;
+
+  document.getElementById("progress-note").textContent = `${completed} of ${MODULES.length} complete.`;
+  document.getElementById("progress-fill").style.width = `${(completed / MODULES.length) * 100}%`;
+
+  grid.innerHTML = MODULES.map((mod, index) => {
+    const data = currentModules[mod.key];
+    if (!data) {
+      return `
+        <div class="card module-card module-card-empty">
+          <div class="module-card-header">
+            <span class="module-number">${index + 1}</span>
+            <h2>${escapeHtml(mod.title)}</h2>
+            <span class="status-badge status-pending">Not started</span>
+          </div>
+          <p class="module-description">${escapeHtml(mod.description)}</p>
+          <button class="btn btn-primary module-start-btn" data-module="${mod.key}">Start Assessment</button>
+        </div>`;
+    }
+    return `
+      <div class="card module-card">
+        <div class="module-card-header">
+          <span class="module-number done">✓</span>
+          <h2>${escapeHtml(mod.title)}</h2>
+          <span class="status-badge status-done">Completed</span>
+        </div>
+        <div class="module-result">${mod.renderResult(data)}</div>
+        <div class="module-card-footer">
+          <span class="updated-at-inline">Updated ${data.updatedAt ? new Date(data.updatedAt).toLocaleDateString() : ""}</span>
+          <button class="btn btn-secondary module-start-btn" data-module="${mod.key}">Review / Edit</button>
+        </div>
+      </div>`;
+  }).join("");
+
+  grid.querySelectorAll(".module-start-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openModuleForm(btn.dataset.module));
+  });
 }
 
 async function loadDashboard() {
   showView("dashboard");
   try {
-    const data = await apiRequest("/api/questionnaire", { auth: true });
-    renderSummary(data.responses);
+    const data = await apiRequest("/api/assessments", { auth: true });
+    currentModules = data.modules || {};
+    renderDashboard();
   } catch (err) {
     if (err.message.includes("authenticated")) {
       clearSession();
@@ -210,122 +627,261 @@ async function loadDashboard() {
   }
 }
 
-document.getElementById("start-questionnaire-btn").addEventListener("click", () => {
-  showQuestionnaireForm(null);
+document.querySelectorAll(".back-btn").forEach((btn) => {
+  btn.addEventListener("click", () => loadDashboard());
 });
 
-document.getElementById("edit-btn").addEventListener("click", () => {
-  showQuestionnaireForm(lastResponses);
-});
+// ---------- Form builders (dynamic field grids) ----------
 
-document.getElementById("cancel-questionnaire-btn").addEventListener("click", () => {
-  loadDashboard();
-});
-
-// ---------- Questionnaire ----------
-
-function updateBudgetTotalDisplay() {
-  const budget = {};
-  BUDGET_CATEGORIES.forEach((key) => {
-    budget[key] = Number(document.getElementById(`q-budget-${key}`).value) || 0;
-  });
-  document.getElementById("budget-total-value").textContent = formatCurrency(budgetTotal(budget));
+function buildMoneyGrid(containerId, fields, idPrefix) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = fields
+    .map(
+      ([key, label]) => `
+      <div class="budget-field">
+        <label for="${idPrefix}-${key}">${escapeHtml(label)} ($)</label>
+        <input type="number" id="${idPrefix}-${key}" min="0" step="1" placeholder="0" required />
+      </div>`
+    )
+    .join("");
 }
 
-BUDGET_CATEGORIES.forEach((key) => {
-  document.getElementById(`q-budget-${key}`).addEventListener("input", updateBudgetTotalDisplay);
-});
+buildMoneyGrid("budget-expense-grid", BUDGET_EXPENSES, "budget-exp");
+buildMoneyGrid("networth-asset-grid", NETWORTH_ASSETS, "nw-asset");
+buildMoneyGrid("networth-liability-grid", NETWORTH_LIABILITIES, "nw-debt");
+
+function readMoneyGrid(fields, idPrefix) {
+  const values = {};
+  fields.forEach(([key]) => {
+    values[key] = Number(document.getElementById(`${idPrefix}-${key}`).value) || 0;
+  });
+  return values;
+}
+
+function fillMoneyGrid(fields, idPrefix, values) {
+  fields.forEach(([key]) => {
+    document.getElementById(`${idPrefix}-${key}`).value = values && values[key] != null ? values[key] : "";
+  });
+}
+
+// ---------- Module form open/populate ----------
+
+function openModuleForm(key) {
+  const data = currentModules[key];
+  const populate = FORM_POPULATORS[key];
+  document.getElementById(`${key}-form`).reset();
+  populate(data || null);
+  document.getElementById(`${key}-error`).textContent = "";
+  showView(key);
+}
+
+const FORM_POPULATORS = {
+  risk(data) {
+    if (data) {
+      document.getElementById("risk-experience").value = data.experienceLevel || "";
+      Object.entries(data.answers || {}).forEach(([q, v]) => {
+        const input = document.querySelector(`input[name="risk-q${q}"][value="${v}"]`);
+        if (input) input.checked = true;
+      });
+      document.getElementById("risk-goal-short").value = data.goalShortTerm || "";
+      document.getElementById("risk-goal-medium").value = data.goalMediumTerm || "";
+      document.getElementById("risk-goal-long").value = data.goalLongTerm || "";
+    }
+    updateRiskScoreDisplay();
+  },
+  budget(data) {
+    document.getElementById("budget-income").value = data ? data.monthlyIncome : "";
+    document.getElementById("budget-savings").value = data ? data.monthlySavings : "";
+    fillMoneyGrid(BUDGET_EXPENSES, "budget-exp", data ? data.expenses : null);
+    updateBudgetTotals();
+  },
+  retirement(data) {
+    document.getElementById("ret-current-age").value = data ? data.currentAge : "";
+    document.getElementById("ret-target-age").value = data ? data.targetAge : "";
+    document.getElementById("ret-current-savings").value = data ? data.currentSavings : "";
+    document.getElementById("ret-monthly-contribution").value = data ? data.monthlyContribution : "";
+    document.getElementById("ret-employer-match").value = data ? data.employerMatchMonthly : "";
+    document.getElementById("ret-desired-income").value = data ? data.desiredMonthlyIncome : "";
+    document.getElementById("ret-old-plans").value = data ? data.oldEmployerPlans : "";
+  },
+  networth(data) {
+    fillMoneyGrid(NETWORTH_ASSETS, "nw-asset", data ? data.assets : null);
+    fillMoneyGrid(NETWORTH_LIABILITIES, "nw-debt", data ? data.liabilities : null);
+    updateNetWorthTotal();
+  },
+  compensation(data) {
+    document.getElementById("comp-base").value = data ? data.baseSalary : "";
+    document.getElementById("comp-bonus").value = data ? data.annualBonus : "";
+    document.getElementById("comp-equity").value = data ? data.annualEquityValue : "";
+    document.querySelectorAll('input[name="comp-equity-type"]').forEach((cb) => {
+      cb.checked = !!(data && data.equityTypes && data.equityTypes.includes(cb.value));
+    });
+    document.getElementById("comp-contribution-pct").value = data ? data.contributionPct : "";
+    document.getElementById("comp-match-pct").value = data ? data.employerMatchPct : "";
+    document.getElementById("comp-hsa").checked = !!(data && data.hsaEligible);
+    document.getElementById("comp-deferred").checked = !!(data && data.deferredComp);
+    document.getElementById("comp-concentration").value = data ? data.employerStockConcentration : "";
+  },
+};
+
+// ---------- Live form feedback ----------
 
 function updateRiskScoreDisplay() {
   const display = document.getElementById("risk-score-display");
-  let score = 0;
-  let answered = 0;
+  let score = 0, answered = 0;
   for (let i = 1; i <= 5; i++) {
-    const checked = document.querySelector(`input[name="q-risk-${i}"]:checked`);
+    const checked = document.querySelector(`input[name="risk-q${i}"]:checked`);
     if (checked) {
       score += Number(checked.value);
       answered++;
     }
   }
-  if (answered === 0) {
-    display.textContent = "";
-  } else if (answered < 5) {
-    display.textContent = `${answered} of 5 questions answered`;
-  } else {
-    display.textContent = `Risk Score: ${score} / 25 — ${riskCategoryForScore(score)}`;
+  if (answered === 0) display.textContent = "";
+  else if (answered < 5) display.textContent = `${answered} of 5 questions answered`;
+  else {
+    const category =
+      score <= 9 ? "Conservative" : score <= 14 ? "Moderately Conservative" : score <= 19 ? "Moderate" : score <= 24 ? "Moderately Aggressive" : "Aggressive";
+    display.textContent = `Risk Score: ${score} / 25 — ${category}`;
   }
 }
 
-document.querySelectorAll('.risk-question input[type="radio"]').forEach((input) => {
+document.querySelectorAll('#risk-form input[type="radio"]').forEach((input) => {
   input.addEventListener("change", updateRiskScoreDisplay);
 });
 
-function showQuestionnaireForm(existing) {
-  const cancelBtn = document.getElementById("cancel-questionnaire-btn");
-  cancelBtn.classList.toggle("hidden", !existing);
-  document.getElementById("questionnaire-form").reset();
-
-  if (existing) {
-    const budget = existing.budget || {};
-    BUDGET_CATEGORIES.forEach((key) => {
-      document.getElementById(`q-budget-${key}`).value = budget[key] || 0;
-    });
-    if (existing.experienceLevel) {
-      document.getElementById("q-experience").value = existing.experienceLevel;
-    }
-    if (existing.riskAnswers) {
-      Object.entries(existing.riskAnswers).forEach(([question, value]) => {
-        const input = document.querySelector(`input[name="q-risk-${question}"][value="${value}"]`);
-        if (input) input.checked = true;
-      });
-    }
-    document.getElementById("q-goal-short").value = existing.goalShortTerm || "";
-    document.getElementById("q-goal-medium").value = existing.goalMediumTerm || "";
-    document.getElementById("q-goal-long").value = existing.goalLongTerm || "";
-  }
-
-  updateBudgetTotalDisplay();
-  updateRiskScoreDisplay();
-  document.getElementById("questionnaire-error").textContent = "";
-  showView("questionnaire");
+function updateBudgetTotals() {
+  const expenses = readMoneyGrid(BUDGET_EXPENSES, "budget-exp");
+  const total = Object.values(expenses).reduce((s, v) => s + v, 0);
+  const income = Number(document.getElementById("budget-income").value) || 0;
+  const savings = Number(document.getElementById("budget-savings").value) || 0;
+  document.getElementById("budget-total-value").textContent = fmtMoney(total);
+  const surplus = income - total - savings;
+  const surplusEl = document.getElementById("budget-surplus-value");
+  surplusEl.textContent = income > 0 ? ` · Unallocated: ${fmtMoney(surplus)}` : "";
+  surplusEl.classList.toggle("negative", surplus < 0);
 }
 
-document.getElementById("questionnaire-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const errorEl = document.getElementById("questionnaire-error");
+document.getElementById("budget-form").addEventListener("input", updateBudgetTotals);
+
+function updateNetWorthTotal() {
+  const assets = readMoneyGrid(NETWORTH_ASSETS, "nw-asset");
+  const debts = readMoneyGrid(NETWORTH_LIABILITIES, "nw-debt");
+  const net =
+    Object.values(assets).reduce((s, v) => s + v, 0) - Object.values(debts).reduce((s, v) => s + v, 0);
+  const el = document.getElementById("networth-total-value");
+  el.textContent = fmtMoney(net);
+  el.classList.toggle("negative", net < 0);
+}
+
+document.getElementById("networth-form").addEventListener("input", updateNetWorthTotal);
+
+// ---------- Module form submission ----------
+
+async function saveModule(key, payload, errorElId) {
+  const errorEl = document.getElementById(errorElId);
   errorEl.textContent = "";
-
-  const budget = {};
-  BUDGET_CATEGORIES.forEach((key) => {
-    budget[key] = Number(document.getElementById(`q-budget-${key}`).value) || 0;
-  });
-
-  const riskAnswers = {};
-  for (let i = 1; i <= 5; i++) {
-    const checked = document.querySelector(`input[name="q-risk-${i}"]:checked`);
-    if (checked) riskAnswers[i] = Number(checked.value);
-  }
-
-  if (Object.keys(riskAnswers).length < 5) {
-    errorEl.textContent = "Please answer all 5 risk tolerance questions.";
-    return;
-  }
-
-  const payload = {
-    budget,
-    experienceLevel: document.getElementById("q-experience").value,
-    riskAnswers,
-    goalShortTerm: document.getElementById("q-goal-short").value.trim(),
-    goalMediumTerm: document.getElementById("q-goal-medium").value.trim(),
-    goalLongTerm: document.getElementById("q-goal-long").value.trim(),
-  };
-
   try {
-    await apiRequest("/api/questionnaire", { method: "POST", body: payload, auth: true });
-    await loadDashboard();
+    const data = await apiRequest(`/api/assessments/${key}`, { method: "POST", body: payload, auth: true });
+    currentModules = data.modules || currentModules;
+    showView("dashboard");
+    renderDashboard();
   } catch (err) {
     errorEl.textContent = err.message;
   }
+}
+
+document.getElementById("risk-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const answers = {};
+  for (let i = 1; i <= 5; i++) {
+    const checked = document.querySelector(`input[name="risk-q${i}"]:checked`);
+    if (checked) answers[i] = Number(checked.value);
+  }
+  if (Object.keys(answers).length < 5) {
+    document.getElementById("risk-error").textContent = "Please answer all 5 risk tolerance questions.";
+    return;
+  }
+  await saveModule(
+    "risk",
+    {
+      experienceLevel: document.getElementById("risk-experience").value,
+      answers,
+      goalShortTerm: document.getElementById("risk-goal-short").value.trim(),
+      goalMediumTerm: document.getElementById("risk-goal-medium").value.trim(),
+      goalLongTerm: document.getElementById("risk-goal-long").value.trim(),
+    },
+    "risk-error"
+  );
+});
+
+document.getElementById("budget-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await saveModule(
+    "budget",
+    {
+      monthlyIncome: Number(document.getElementById("budget-income").value) || 0,
+      monthlySavings: Number(document.getElementById("budget-savings").value) || 0,
+      expenses: readMoneyGrid(BUDGET_EXPENSES, "budget-exp"),
+    },
+    "budget-error"
+  );
+});
+
+document.getElementById("retirement-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const currentAge = Number(document.getElementById("ret-current-age").value);
+  const targetAge = Number(document.getElementById("ret-target-age").value);
+  if (targetAge <= currentAge) {
+    document.getElementById("retirement-error").textContent = "Target retirement age must be greater than your current age.";
+    return;
+  }
+  await saveModule(
+    "retirement",
+    {
+      currentAge,
+      targetAge,
+      currentSavings: Number(document.getElementById("ret-current-savings").value) || 0,
+      monthlyContribution: Number(document.getElementById("ret-monthly-contribution").value) || 0,
+      employerMatchMonthly: Number(document.getElementById("ret-employer-match").value) || 0,
+      desiredMonthlyIncome: Number(document.getElementById("ret-desired-income").value) || 0,
+      oldEmployerPlans: document.getElementById("ret-old-plans").value,
+    },
+    "retirement-error"
+  );
+});
+
+document.getElementById("networth-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await saveModule(
+    "networth",
+    {
+      assets: readMoneyGrid(NETWORTH_ASSETS, "nw-asset"),
+      liabilities: readMoneyGrid(NETWORTH_LIABILITIES, "nw-debt"),
+    },
+    "networth-error"
+  );
+});
+
+document.getElementById("compensation-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const equityTypes = Array.from(document.querySelectorAll('input[name="comp-equity-type"]:checked')).map(
+    (cb) => cb.value
+  );
+  await saveModule(
+    "compensation",
+    {
+      baseSalary: Number(document.getElementById("comp-base").value) || 0,
+      annualBonus: Number(document.getElementById("comp-bonus").value) || 0,
+      annualEquityValue: Number(document.getElementById("comp-equity").value) || 0,
+      equityTypes,
+      contributionPct: Number(document.getElementById("comp-contribution-pct").value) || 0,
+      employerMatchPct: Number(document.getElementById("comp-match-pct").value) || 0,
+      hsaEligible: document.getElementById("comp-hsa").checked,
+      deferredComp: document.getElementById("comp-deferred").checked,
+      employerStockConcentration: document.getElementById("comp-concentration").value,
+    },
+    "compensation-error"
+  );
 });
 
 // ---------- Boot ----------
@@ -337,8 +893,7 @@ async function enterApp() {
 
 (function init() {
   updateNav();
-  const session = getSession();
-  if (session) {
+  if (getSession()) {
     enterApp();
   } else {
     showView("auth");

@@ -1,22 +1,21 @@
 /**
- * BlueLine Advisors Client Questionnaire Portal — Cloudflare Worker API
+ * BlueLine Advisors Client Onboarding Portal — Cloudflare Worker API
  *
  * Requires a KV namespace binding called PORTAL_KV (see wrangler.toml).
  * KV layout:
  *   user:<email>          -> { name, email, salt, hash, iterations }
  *   session:<token>       -> email                         (TTL'd)
- *   responses:<email>     -> questionnaire object
+ *   responses:<email>     -> { modules: { risk, budget, retirement, networth, compensation } }
  *
  * Endpoints:
- *   POST /api/register     { name, email, password }
- *   POST /api/login        { email, password }
- *   POST /api/logout       (Authorization: Bearer <token>)
- *   GET  /api/questionnaire            (Authorization: Bearer <token>)
- *   POST /api/questionnaire { ... }    (Authorization: Bearer <token>)
- *   GET  /api/admin/clients            (Authorization: Bearer <ADMIN_TOKEN secret>)
+ *   POST /api/register              { name, email, password }
+ *   POST /api/login                 { email, password }
+ *   POST /api/logout                (Authorization: Bearer <token>)
+ *   GET  /api/assessments           (Authorization: Bearer <token>)
+ *   POST /api/assessments/:module   { ...module fields }    (Authorization: Bearer <token>)
+ *   GET  /api/admin/clients         (Authorization: Bearer <ADMIN_TOKEN secret>)
  *
  * Set the admin secret with: wrangler secret put ADMIN_TOKEN
- * (or Cloudflare dashboard -> Worker -> Settings -> Variables and secrets)
  */
 
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
@@ -62,12 +61,7 @@ async function hashPassword(password, saltHex, iterations) {
     ['deriveBits']
   );
   const derived = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt: hexToBuf(saltHex),
-      iterations,
-      hash: 'SHA-256',
-    },
+    { name: 'PBKDF2', salt: hexToBuf(saltHex), iterations, hash: 'SHA-256' },
     keyMaterial,
     256
   );
@@ -87,9 +81,7 @@ async function getSessionEmail(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   if (!match) return null;
-  const token = match[1];
-  const email = await env.PORTAL_KV.get(`session:${token}`);
-  return email;
+  return env.PORTAL_KV.get(`session:${match[1]}`);
 }
 
 async function handleRegister(request, env, origin) {
@@ -142,7 +134,6 @@ async function handleLogin(request, env, origin) {
 
   const user = JSON.parse(userRaw);
   const attemptedHash = await hashPassword(password, user.salt, user.iterations);
-
   if (attemptedHash !== user.hash) {
     return json({ error: 'Invalid email or password' }, 401, origin);
   }
@@ -162,24 +153,48 @@ async function handleLogout(request, env, origin) {
   return json({ ok: true }, 200, origin);
 }
 
-async function handleGetQuestionnaire(request, env, origin) {
-  const email = await getSessionEmail(request, env);
-  if (!email) return json({ error: 'Not authenticated' }, 401, origin);
+// ---------- Assessment modules ----------
 
-  const raw = await env.PORTAL_KV.get(`responses:${email}`);
-  return json({ responses: raw ? JSON.parse(raw) : null }, 200, origin);
+function loadModules(raw) {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    // Records from the pre-module schema have budget/riskAnswers at the top
+    // level; they were test data and are intentionally not migrated.
+    return parsed && typeof parsed.modules === 'object' ? parsed.modules : {};
+  } catch {
+    return {};
+  }
 }
 
-const BUDGET_CATEGORIES = [
+function num(value, { min = 0, max = Infinity } = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min || n > max) return null;
+  return n;
+}
+
+const EXPERIENCE_LEVELS = ['beginner', 'intermediate', 'advanced', 'expert'];
+const RISK_QUESTION_COUNT = 5;
+
+const BUDGET_EXPENSE_CATEGORIES = [
   'housing',
+  'utilities',
   'groceries',
   'transportation',
-  'investments',
+  'insurance',
+  'healthcare',
   'debt',
+  'childcareEducation',
   'discretionary',
   'other',
 ];
-const EXPERIENCE_LEVELS = ['beginner', 'intermediate', 'advanced', 'expert'];
+
+const NETWORTH_ASSETS = ['cash', 'brokerage', 'retirement', 'realEstate', 'businessEquity', 'otherAssets'];
+const NETWORTH_LIABILITIES = ['mortgage', 'studentLoans', 'autoLoans', 'creditCards', 'businessDebt', 'otherDebts'];
+
+const EQUITY_TYPES = ['rsu', 'options', 'espp', 'partnership', 'none'];
+const OLD_PLAN_OPTIONS = ['none', 'one', 'multiple'];
+const STOCK_CONCENTRATION = ['none', 'under5', '5to15', '15to30', 'over30'];
 
 function riskCategoryForScore(score) {
   if (score <= 9) return 'Conservative';
@@ -189,59 +204,211 @@ function riskCategoryForScore(score) {
   return 'Aggressive';
 }
 
-async function handleSaveQuestionnaire(request, env, origin) {
+function allocationForCategory(category) {
+  return {
+    Conservative: { stocks: 25, bonds: 55, cash: 20 },
+    'Moderately Conservative': { stocks: 40, bonds: 45, cash: 15 },
+    Moderate: { stocks: 55, bonds: 35, cash: 10 },
+    'Moderately Aggressive': { stocks: 70, bonds: 25, cash: 5 },
+    Aggressive: { stocks: 85, bonds: 12, cash: 3 },
+  }[category];
+}
+
+const MODULE_VALIDATORS = {
+  risk(body) {
+    if (!EXPERIENCE_LEVELS.includes(body.experienceLevel)) {
+      return { error: 'experienceLevel is required' };
+    }
+    if (!body.answers || typeof body.answers !== 'object') {
+      return { error: 'answers is required' };
+    }
+    const answers = {};
+    let score = 0;
+    for (let i = 1; i <= RISK_QUESTION_COUNT; i++) {
+      const value = Number(body.answers[i]);
+      if (!Number.isInteger(value) || value < 1 || value > 5) {
+        return { error: `answers.${i} must be an integer 1-5` };
+      }
+      answers[i] = value;
+      score += value;
+    }
+    const category = riskCategoryForScore(score);
+    return {
+      data: {
+        experienceLevel: body.experienceLevel,
+        answers,
+        score,
+        category,
+        suggestedAllocation: allocationForCategory(category),
+        goalShortTerm: String(body.goalShortTerm || '').slice(0, 1000),
+        goalMediumTerm: String(body.goalMediumTerm || '').slice(0, 1000),
+        goalLongTerm: String(body.goalLongTerm || '').slice(0, 1000),
+      },
+    };
+  },
+
+  budget(body) {
+    const monthlyIncome = num(body.monthlyIncome, { max: 10_000_000 });
+    if (monthlyIncome === null) return { error: 'monthlyIncome must be a non-negative number' };
+    const monthlySavings = num(body.monthlySavings, { max: 10_000_000 });
+    if (monthlySavings === null) return { error: 'monthlySavings must be a non-negative number' };
+
+    if (!body.expenses || typeof body.expenses !== 'object') {
+      return { error: 'expenses is required' };
+    }
+    const expenses = {};
+    let totalExpenses = 0;
+    for (const key of BUDGET_EXPENSE_CATEGORIES) {
+      const value = num(body.expenses[key], { max: 10_000_000 });
+      if (value === null) return { error: `expenses.${key} must be a non-negative number` };
+      expenses[key] = value;
+      totalExpenses += value;
+    }
+
+    const surplus = monthlyIncome - totalExpenses - monthlySavings;
+    const savingsRate = monthlyIncome > 0 ? Math.round((monthlySavings / monthlyIncome) * 1000) / 10 : 0;
+    return { data: { monthlyIncome, expenses, monthlySavings, totalExpenses, surplus, savingsRate } };
+  },
+
+  retirement(body) {
+    const currentAge = num(body.currentAge, { min: 18, max: 99 });
+    if (currentAge === null) return { error: 'currentAge must be between 18 and 99' };
+    const targetAge = num(body.targetAge, { min: 19, max: 100 });
+    if (targetAge === null || targetAge <= currentAge) {
+      return { error: 'targetAge must be greater than currentAge' };
+    }
+    const currentSavings = num(body.currentSavings, { max: 1_000_000_000 });
+    if (currentSavings === null) return { error: 'currentSavings must be a non-negative number' };
+    const monthlyContribution = num(body.monthlyContribution, { max: 10_000_000 });
+    if (monthlyContribution === null) return { error: 'monthlyContribution must be a non-negative number' };
+    const employerMatchMonthly = num(body.employerMatchMonthly, { max: 10_000_000 });
+    if (employerMatchMonthly === null) return { error: 'employerMatchMonthly must be a non-negative number' };
+    const desiredMonthlyIncome = num(body.desiredMonthlyIncome, { max: 10_000_000 });
+    if (desiredMonthlyIncome === null) return { error: 'desiredMonthlyIncome must be a non-negative number' };
+    if (!OLD_PLAN_OPTIONS.includes(body.oldEmployerPlans)) {
+      return { error: 'oldEmployerPlans must be one of: ' + OLD_PLAN_OPTIONS.join(', ') };
+    }
+
+    // Deterministic 6% nominal annual growth assumption, compounded monthly.
+    const months = Math.round((targetAge - currentAge) * 12);
+    const monthlyRate = 0.06 / 12;
+    const contribution = monthlyContribution + employerMatchMonthly;
+    let balance = currentSavings;
+    for (let m = 0; m < months; m++) {
+      balance = balance * (1 + monthlyRate) + contribution;
+    }
+    const projectedBalance = Math.round(balance);
+    // 4% rule: sustainable nest egg = 25x annual income need.
+    const targetNestEgg = Math.round(desiredMonthlyIncome * 12 * 25);
+    const readinessPct =
+      targetNestEgg > 0 ? Math.min(999, Math.round((projectedBalance / targetNestEgg) * 100)) : null;
+
+    return {
+      data: {
+        currentAge,
+        targetAge,
+        currentSavings,
+        monthlyContribution,
+        employerMatchMonthly,
+        desiredMonthlyIncome,
+        oldEmployerPlans: body.oldEmployerPlans,
+        projectedBalance,
+        targetNestEgg,
+        readinessPct,
+      },
+    };
+  },
+
+  networth(body) {
+    if (!body.assets || typeof body.assets !== 'object' || !body.liabilities || typeof body.liabilities !== 'object') {
+      return { error: 'assets and liabilities are required' };
+    }
+    const assets = {};
+    let totalAssets = 0;
+    for (const key of NETWORTH_ASSETS) {
+      const value = num(body.assets[key], { max: 10_000_000_000 });
+      if (value === null) return { error: `assets.${key} must be a non-negative number` };
+      assets[key] = value;
+      totalAssets += value;
+    }
+    const liabilities = {};
+    let totalLiabilities = 0;
+    for (const key of NETWORTH_LIABILITIES) {
+      const value = num(body.liabilities[key], { max: 10_000_000_000 });
+      if (value === null) return { error: `liabilities.${key} must be a non-negative number` };
+      liabilities[key] = value;
+      totalLiabilities += value;
+    }
+    return {
+      data: { assets, liabilities, totalAssets, totalLiabilities, netWorth: totalAssets - totalLiabilities },
+    };
+  },
+
+  compensation(body) {
+    const baseSalary = num(body.baseSalary, { max: 100_000_000 });
+    if (baseSalary === null) return { error: 'baseSalary must be a non-negative number' };
+    const annualBonus = num(body.annualBonus, { max: 100_000_000 });
+    if (annualBonus === null) return { error: 'annualBonus must be a non-negative number' };
+    const annualEquityValue = num(body.annualEquityValue, { max: 100_000_000 });
+    if (annualEquityValue === null) return { error: 'annualEquityValue must be a non-negative number' };
+
+    if (!Array.isArray(body.equityTypes) || !body.equityTypes.every((t) => EQUITY_TYPES.includes(t))) {
+      return { error: 'equityTypes must be an array of: ' + EQUITY_TYPES.join(', ') };
+    }
+    const contributionPct = num(body.contributionPct, { max: 100 });
+    if (contributionPct === null) return { error: 'contributionPct must be between 0 and 100' };
+    const employerMatchPct = num(body.employerMatchPct, { max: 100 });
+    if (employerMatchPct === null) return { error: 'employerMatchPct must be between 0 and 100' };
+    if (!STOCK_CONCENTRATION.includes(body.employerStockConcentration)) {
+      return { error: 'employerStockConcentration must be one of: ' + STOCK_CONCENTRATION.join(', ') };
+    }
+
+    const totalComp = baseSalary + annualBonus + annualEquityValue;
+    return {
+      data: {
+        baseSalary,
+        annualBonus,
+        annualEquityValue,
+        equityTypes: [...new Set(body.equityTypes)],
+        contributionPct,
+        employerMatchPct,
+        hsaEligible: !!body.hsaEligible,
+        deferredComp: !!body.deferredComp,
+        employerStockConcentration: body.employerStockConcentration,
+        totalComp,
+        concentrationFlag: ['15to30', 'over30'].includes(body.employerStockConcentration),
+      },
+    };
+  },
+};
+
+async function handleGetAssessments(request, env, origin) {
   const email = await getSessionEmail(request, env);
   if (!email) return json({ error: 'Not authenticated' }, 401, origin);
+
+  const raw = await env.PORTAL_KV.get(`responses:${email}`);
+  return json({ modules: loadModules(raw) }, 200, origin);
+}
+
+async function handleSaveAssessment(request, env, origin, moduleName) {
+  const email = await getSessionEmail(request, env);
+  if (!email) return json({ error: 'Not authenticated' }, 401, origin);
+
+  const validator = MODULE_VALIDATORS[moduleName];
+  if (!validator) return json({ error: 'Unknown assessment module' }, 404, origin);
 
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, origin);
 
-  const { budget, experienceLevel, riskAnswers, goalShortTerm, goalMediumTerm, goalLongTerm } = body;
+  const result = validator(body);
+  if (result.error) return json({ error: result.error }, 400, origin);
 
-  if (!budget || typeof budget !== 'object') {
-    return json({ error: 'budget is required' }, 400, origin);
-  }
-  const normalizedBudget = {};
-  for (const key of BUDGET_CATEGORIES) {
-    const value = Number(budget[key]);
-    if (!Number.isFinite(value) || value < 0) {
-      return json({ error: `budget.${key} must be a non-negative number` }, 400, origin);
-    }
-    normalizedBudget[key] = value;
-  }
+  const raw = await env.PORTAL_KV.get(`responses:${email}`);
+  const modules = loadModules(raw);
+  modules[moduleName] = { ...result.data, updatedAt: new Date().toISOString() };
 
-  if (!EXPERIENCE_LEVELS.includes(experienceLevel)) {
-    return json({ error: 'experienceLevel is required' }, 400, origin);
-  }
-
-  if (!riskAnswers || typeof riskAnswers !== 'object') {
-    return json({ error: 'riskAnswers is required' }, 400, origin);
-  }
-  const normalizedRiskAnswers = {};
-  let riskScore = 0;
-  for (let i = 1; i <= 5; i++) {
-    const value = Number(riskAnswers[i]);
-    if (!Number.isInteger(value) || value < 1 || value > 5) {
-      return json({ error: `riskAnswers.${i} must be an integer 1-5` }, 400, origin);
-    }
-    normalizedRiskAnswers[i] = value;
-    riskScore += value;
-  }
-
-  const responses = {
-    budget: normalizedBudget,
-    experienceLevel,
-    riskAnswers: normalizedRiskAnswers,
-    riskScore,
-    riskCategory: riskCategoryForScore(riskScore),
-    goalShortTerm: goalShortTerm || '',
-    goalMediumTerm: goalMediumTerm || '',
-    goalLongTerm: goalLongTerm || '',
-    updatedAt: new Date().toISOString(),
-  };
-
-  await env.PORTAL_KV.put(`responses:${email}`, JSON.stringify(responses));
-  return json({ responses }, 200, origin);
+  await env.PORTAL_KV.put(`responses:${email}`, JSON.stringify({ modules }));
+  return json({ module: modules[moduleName], modules }, 200, origin);
 }
 
 async function handleAdminClients(request, env, origin) {
@@ -266,7 +433,7 @@ async function handleAdminClients(request, env, origin) {
       clients.push({
         name: user.name,
         email: user.email,
-        responses: responsesRaw ? JSON.parse(responsesRaw) : null,
+        modules: loadModules(responsesRaw),
       });
     }
     cursor = page.cursor;
@@ -295,11 +462,12 @@ export default {
       if (url.pathname === '/api/logout' && request.method === 'POST') {
         return await handleLogout(request, env, origin);
       }
-      if (url.pathname === '/api/questionnaire' && request.method === 'GET') {
-        return await handleGetQuestionnaire(request, env, origin);
+      if (url.pathname === '/api/assessments' && request.method === 'GET') {
+        return await handleGetAssessments(request, env, origin);
       }
-      if (url.pathname === '/api/questionnaire' && request.method === 'POST') {
-        return await handleSaveQuestionnaire(request, env, origin);
+      const saveMatch = url.pathname.match(/^\/api\/assessments\/([a-z]+)$/);
+      if (saveMatch && request.method === 'POST') {
+        return await handleSaveAssessment(request, env, origin, saveMatch[1]);
       }
       if (url.pathname === '/api/admin/clients' && request.method === 'GET') {
         return await handleAdminClients(request, env, origin);
