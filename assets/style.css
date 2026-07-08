@@ -38,7 +38,7 @@ body {
 .topbar-inner {
   max-width: 900px;
   margin: 0 auto;
-  padding: 12px 24px 12px 8px;
+  padding: 12px 24px 12px 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -54,9 +54,9 @@ body {
 }
 
 .brand-logo {
-  height: 100px;
+  height: 80px;
   width: auto;
-  margin-left: -12px;
+  margin-left: -30px;
 }
 
 .brand-text {
