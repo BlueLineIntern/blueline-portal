@@ -11,7 +11,33 @@ $users = @{}
 $sessions = @{}
 $responses = @{}
 $onboardings = @{}
+$onbSecrets = @{}
 $script:onbCounter = 0
+
+# Fixed-window rate limiting, mirroring worker.js. [limit, windowSeconds].
+$rateLimits = @{ login = @(10, 300); register = @(5, 3600); onboardingStart = @(20, 3600) }
+$rateState = @{}
+
+function Test-RateLimit($scope, $ip) {
+    $limit = $rateLimits[$scope][0]
+    $windowMs = $rateLimits[$scope][1] * 1000
+    $key = "$scope`:$ip"
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $rec = $rateState[$key]
+    if (-not $rec -or ($now - $rec.windowStart) -ge $windowMs) {
+        $rateState[$key] = @{ count = 1; windowStart = $now }
+        return $true
+    }
+    if ($rec.count -ge $limit) { return $false }
+    $rec.count++
+    return $true
+}
+
+function Get-ClientIp($ctx) {
+    $ip = $ctx.Request.Headers['CF-Connecting-IP']
+    if ($ip) { return $ip }
+    return $ctx.Request.RemoteEndPoint.Address.ToString()
+}
 
 function Send-Json($ctx, $code, $obj) {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($obj | ConvertTo-Json -Depth 12))
@@ -137,6 +163,7 @@ while ($listener.IsListening) {
         $method = $ctx.Request.HttpMethod
 
         if ($path -eq '/api/register' -and $method -eq 'POST') {
+            if (-not (Test-RateLimit 'register' (Get-ClientIp $ctx))) { Send-Json $ctx 429 @{ error = 'Too many attempts. Please try again later.' }; continue }
             $body = Read-Body $ctx
             if ($users.ContainsKey($body.email)) { Send-Json $ctx 409 @{ error = 'An account with this email already exists' }; continue }
             $users[$body.email] = @{ name = $body.name; email = $body.email; password = $body.password }
@@ -145,6 +172,7 @@ while ($listener.IsListening) {
             Send-Json $ctx 201 @{ token = $token; name = $body.name; email = $body.email }
         }
         elseif ($path -eq '/api/login' -and $method -eq 'POST') {
+            if (-not (Test-RateLimit 'login' (Get-ClientIp $ctx))) { Send-Json $ctx 429 @{ error = 'Too many login attempts. Please try again later.' }; continue }
             $body = Read-Body $ctx
             $u = $users[$body.email]
             if (-not $u -or $u.password -ne $body.password) { Send-Json $ctx 401 @{ error = 'Invalid email or password' }; continue }
@@ -174,24 +202,33 @@ while ($listener.IsListening) {
             Send-Json $ctx 200 @{ module = $module; modules = $responses[$email] }
         }
         elseif ($path -eq '/api/onboarding/start' -and $method -eq 'POST') {
+            if (-not (Test-RateLimit 'onboardingStart' (Get-ClientIp $ctx))) { Send-Json $ctx 429 @{ error = 'Too many onboarding sessions started. Please try again later.' }; continue }
             $script:onbCounter++
             $id = 'BLA-ONB-{0}-{1:d4}' -f (Get-Date).Year, $script:onbCounter
+            $writeToken = New-Token
+            $onbSecrets[$id] = $writeToken
             $onboardings[$id] = @{
                 onboardingId = $id
                 startTime = (Get-Date).ToString('o')
                 completionTime = $null
                 currentStep = 0
                 data = @{}
+                deleted = $false
                 updatedAt = (Get-Date).ToString('o')
             }
-            Send-Json $ctx 201 @{ onboardingId = $id; startTime = $onboardings[$id].startTime }
+            Send-Json $ctx 201 @{ onboardingId = $id; writeToken = $writeToken; startTime = $onboardings[$id].startTime }
         }
         elseif ($path -match '^/api/onboarding/(BLA-ONB-\d{4}-\d{4})$' -and $method -eq 'POST') {
             $id = $Matches[1]
+            $provided = $ctx.Request.Headers['X-Onboarding-Token']
+            if (-not $onbSecrets.ContainsKey($id) -or $provided -ne $onbSecrets[$id]) {
+                Send-Json $ctx 401 @{ error = 'Invalid or missing onboarding write token' }; continue
+            }
             if (-not $onboardings.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Unknown onboarding id' }; continue }
+            $rec = $onboardings[$id]
+            if ($rec.deleted) { Send-Json $ctx 410 @{ error = 'This onboarding record has been removed' }; continue }
             $body = Read-Body $ctx
             if (-not $body -or $body.onboardingId -ne $id) { Send-Json $ctx 400 @{ error = 'Body must include a matching onboardingId' }; continue }
-            $rec = $onboardings[$id]
             $rec.completionTime = $body.completionTime
             $rec.currentStep = [int]$body.currentStep
             $rec.data = $body.data
@@ -201,9 +238,19 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/onboarding' -and $method -eq 'GET') {
             Send-Json $ctx 200 @{ records = @($onboardings.Values) }
         }
-        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})$' -and $method -eq 'DELETE') {
-            $onboardings.Remove($Matches[1])
+        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})/restore$' -and $method -eq 'POST') {
+            $id = $Matches[1]
+            if (-not $onboardings.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Not found or already purged' }; continue }
+            $onboardings[$id].deleted = $false
+            $onboardings[$id].Remove('deletedAt')
             Send-Json $ctx 200 @{ ok = $true }
+        }
+        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})$' -and $method -eq 'DELETE') {
+            $id = $Matches[1]
+            if (-not $onboardings.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Not found' }; continue }
+            $onboardings[$id].deleted = $true
+            $onboardings[$id]['deletedAt'] = (Get-Date).ToString('o')
+            Send-Json $ctx 200 @{ ok = $true; deletedAt = $onboardings[$id]['deletedAt'] }
         }
         elseif ($path -eq '/api/admin/clients' -and $method -eq 'GET') {
             $clients = @($users.Values | ForEach-Object {

@@ -25,6 +25,7 @@
   .onb-card-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .onb-card-header h1 { margin: 0; }
   #refresh-status { font-size: 0.8rem; }
+  .onb-trash-heading { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 1.05rem; color: var(--text-muted); }
 
   /* Client detail view */
   #detail-view, #onb-detail-view { max-width: 900px; margin: 0 auto; }
@@ -161,6 +162,22 @@
         </thead>
         <tbody id="onboarding-body"></tbody>
       </table>
+
+      <div class="hidden" id="onb-trash-wrap">
+        <h2 class="onb-trash-heading" id="onb-trash-heading"></h2>
+        <p class="admin-empty">Deleted submissions are recoverable for 30 days, then automatically purged.</p>
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>Onboarding ID</th>
+              <th>Name</th>
+              <th>Deleted</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="onb-trash-body"></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="hidden" id="onb-detail-view">
@@ -442,41 +459,64 @@
 
     function renderOnboardings(records) {
       const body = document.getElementById('onboarding-body');
-      if (!records.length) {
-        body.innerHTML = '<tr><td colspan="10" class="admin-empty">No onboarding submissions yet.</td></tr>';
-        return;
-      }
-      body.innerHTML = records
-        .map((r, index) => {
-          const done = ONB_SECTIONS.filter(([k]) => r.data && r.data[k]).length;
-          const risk = r.data && r.data.risk
-            ? `${r.data.risk.score} / 100<br>${escapeHtml(r.data.risk.profile)}`
-            : missing();
-          return `<tr>
-            <td><button type="button" class="btn btn-secondary btn-small onb-detail-btn" data-index="${index}" ${done ? '' : 'disabled title="No data yet"'}>Details</button></td>
+      const trashWrap = document.getElementById('onb-trash-wrap');
+      const trashBody = document.getElementById('onb-trash-body');
+
+      // Split active vs soft-deleted, keeping each record's original index into
+      // allOnboardings so the Details buttons resolve correctly.
+      const activeRows = [];
+      const deletedRows = [];
+      records.forEach((r, index) => {
+        if (r.deleted) {
+          deletedRows.push(`<tr>
             <td>${escapeHtml(r.onboardingId)}</td>
             <td>${escapeHtml(onbClientName(r))}</td>
-            <td>${escapeHtml(onbClientEmail(r))}</td>
-            <td><span class="module-count">${done} / ${ONB_SECTIONS.length}</span></td>
-            <td>${risk}</td>
-            <td>${r.startTime ? new Date(r.startTime).toLocaleString() : missing()}</td>
-            <td>${r.completionTime ? new Date(r.completionTime).toLocaleString() : '<span class="cell-missing">In progress</span>'}</td>
-            <td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : missing()}</td>
-            <td><button type="button" class="btn btn-ghost btn-small onb-delete-btn" data-id="${escapeHtml(r.onboardingId)}" title="Delete this test submission">Delete</button></td>
-          </tr>`;
-        })
-        .join('');
+            <td>${r.deletedAt ? new Date(r.deletedAt).toLocaleString() : missing()}</td>
+            <td><button type="button" class="btn btn-secondary btn-small onb-restore-btn" data-id="${escapeHtml(r.onboardingId)}">Restore</button></td>
+          </tr>`);
+          return;
+        }
+        const done = ONB_SECTIONS.filter(([k]) => r.data && r.data[k]).length;
+        const risk = r.data && r.data.risk
+          ? `${r.data.risk.score} / 100<br>${escapeHtml(r.data.risk.profile)}`
+          : missing();
+        activeRows.push(`<tr>
+          <td><button type="button" class="btn btn-secondary btn-small onb-detail-btn" data-index="${index}" ${done ? '' : 'disabled title="No data yet"'}>Details</button></td>
+          <td>${escapeHtml(r.onboardingId)}</td>
+          <td>${escapeHtml(onbClientName(r))}</td>
+          <td>${escapeHtml(onbClientEmail(r))}</td>
+          <td><span class="module-count">${done} / ${ONB_SECTIONS.length}</span></td>
+          <td>${risk}</td>
+          <td>${r.startTime ? new Date(r.startTime).toLocaleString() : missing()}</td>
+          <td>${r.completionTime ? new Date(r.completionTime).toLocaleString() : '<span class="cell-missing">In progress</span>'}</td>
+          <td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : missing()}</td>
+          <td><button type="button" class="btn btn-ghost btn-small onb-delete-btn" data-id="${escapeHtml(r.onboardingId)}" title="Delete this test submission">Delete</button></td>
+        </tr>`);
+      });
+
+      body.innerHTML = activeRows.length
+        ? activeRows.join('')
+        : '<tr><td colspan="10" class="admin-empty">No onboarding submissions yet.</td></tr>';
       body.querySelectorAll('.onb-detail-btn').forEach((btn) => {
         btn.addEventListener('click', () => showOnbDetail(Number(btn.dataset.index)));
       });
       body.querySelectorAll('.onb-delete-btn').forEach((btn) => {
         btn.addEventListener('click', () => deleteOnboarding(btn.dataset.id));
       });
+
+      trashWrap.classList.toggle('hidden', deletedRows.length === 0);
+      if (deletedRows.length) {
+        document.getElementById('onb-trash-heading').textContent = `Deleted (${deletedRows.length})`;
+        trashBody.innerHTML = deletedRows.join('');
+        trashBody.querySelectorAll('.onb-restore-btn').forEach((btn) => {
+          btn.addEventListener('click', () => restoreOnboarding(btn.dataset.id));
+        });
+      }
     }
 
     async function deleteOnboarding(onboardingId) {
       if (!adminToken) return;
-      if (!confirm(`Delete onboarding submission ${onboardingId}? This cannot be undone.`)) return;
+      if (!confirm(`Delete onboarding submission ${onboardingId}? It moves to the deleted list and can be restored within 30 days.`)) return;
       try {
         const res = await fetch(`/api/admin/onboarding/${encodeURIComponent(onboardingId)}`, {
           method: 'DELETE',
@@ -489,6 +529,23 @@
         await loadAdminData({ showStatus: true });
       } catch (err) {
         document.getElementById('refresh-status').textContent = `Delete failed: ${err.message}`;
+      }
+    }
+
+    async function restoreOnboarding(onboardingId) {
+      if (!adminToken) return;
+      try {
+        const res = await fetch(`/api/admin/onboarding/${encodeURIComponent(onboardingId)}/restore`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'Failed to restore');
+        }
+        await loadAdminData({ showStatus: true });
+      } catch (err) {
+        document.getElementById('refresh-status').textContent = `Restore failed: ${err.message}`;
       }
     }
 

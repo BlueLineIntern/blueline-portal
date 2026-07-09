@@ -3,45 +3,118 @@
  *
  * Requires a KV namespace binding called PORTAL_KV (see wrangler.toml).
  * KV layout:
- *   user:<email>          -> { name, email, salt, hash, iterations }
- *   session:<token>       -> email                         (TTL'd)
- *   responses:<email>     -> { modules: { risk, budget, retirement, networth, compensation } }
- *   onboarding:<id>       -> onboarding POC record (sample/test data only)
- *   onboarding_counter    -> sequence number for onboarding ids
+ *   user:<email>               -> { name, email, salt, hash, iterations }
+ *   session:<token>            -> email                    (TTL'd)
+ *   responses:<email>          -> { modules: {...} }
+ *   onboarding:<id>            -> onboarding POC record (sample/test data only)
+ *   onboarding_secret:<id>     -> per-session write token  (TTL'd, never returned)
+ *   onboarding_counter         -> sequence number for onboarding ids
+ *   rl:<scope>:<ip>            -> { count, windowStart }    (TTL'd, rate limiting)
  *
  * Endpoints:
- *   POST /api/register              { name, email, password }
- *   POST /api/login                 { email, password }
- *   POST /api/logout                (Authorization: Bearer <token>)
- *   GET  /api/assessments           (Authorization: Bearer <token>)
- *   POST /api/assessments/:module   { ...module fields }    (Authorization: Bearer <token>)
- *   POST /api/onboarding/start      -> { onboardingId }     (no auth — POC test data only)
- *   POST /api/onboarding/:id        { onboardingId, currentStep, completionTime, data }
- *   GET  /api/admin/clients         (Authorization: Bearer <ADMIN_TOKEN secret>)
- *   GET    /api/admin/onboarding      (Authorization: Bearer <ADMIN_TOKEN secret>)
- *   DELETE /api/admin/onboarding/:id  (Authorization: Bearer <ADMIN_TOKEN secret>)
+ *   POST   /api/register                    { name, email, password }
+ *   POST   /api/login                       { email, password }
+ *   POST   /api/logout                      (Authorization: Bearer <token>)
+ *   GET    /api/assessments                 (Authorization: Bearer <token>)
+ *   POST   /api/assessments/:module         (Authorization: Bearer <token>)
+ *   POST   /api/onboarding/start            -> { onboardingId, writeToken }
+ *   POST   /api/onboarding/:id              (X-Onboarding-Token: <writeToken>)
+ *   GET    /api/admin/clients               (Authorization: Bearer <ADMIN_TOKEN>)
+ *   GET    /api/admin/onboarding            (Authorization: Bearer <ADMIN_TOKEN>)
+ *   DELETE /api/admin/onboarding/:id        (Authorization: Bearer <ADMIN_TOKEN>) — soft delete
+ *   POST   /api/admin/onboarding/:id/restore (Authorization: Bearer <ADMIN_TOKEN>)
  *
  * Set the admin secret with: wrangler secret put ADMIN_TOKEN
+ * Optionally restrict browser origins with: wrangler secret put ALLOWED_ORIGIN
+ *   (comma-separated list; defaults to the Worker's own origin only)
+ *
+ * NOTE: This remains a proof-of-concept-grade system. It is NOT hardened for
+ * real client PII: there is still no per-admin identity/audit log, no
+ * application-level encryption, and the onboarding flow is unauthenticated
+ * beyond a per-session write token. See STATUS.md "Known gaps".
  */
 
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const PBKDF2_ITERATIONS = 100000;
+const ONBOARDING_TTL_SECONDS = 60 * 60 * 24 * 30; // secrets + soft-deleted records expire after 30 days
 
-function corsHeaders(origin) {
-  return {
-    'Access-Control-Allow-Origin': origin || '*',
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Credentials': 'true',
-  };
+// Fixed-window rate limits: [max requests, window in seconds].
+const RATE_LIMITS = {
+  login: [10, 300], // 10 attempts / 5 min per IP
+  register: [5, 3600], // 5 new accounts / hour per IP
+  onboardingStart: [20, 3600], // 20 new onboardings / hour per IP
+};
+
+// ---------- CORS ----------
+// Frontend and API are same-origin, so real browser traffic never needs
+// permissive CORS. We only ever echo an origin we explicitly allow (the
+// Worker's own origin, plus anything in ALLOWED_ORIGIN). No credentials mode:
+// auth uses bearer tokens, not cookies.
+
+function resolveCorsOrigin(request, url, env) {
+  const reqOrigin = request.headers.get('Origin');
+  if (!reqOrigin) return null; // same-origin or non-browser client
+  const allowed = new Set([url.origin]);
+  if (env.ALLOWED_ORIGIN) {
+    for (const o of env.ALLOWED_ORIGIN.split(',')) {
+      const trimmed = o.trim();
+      if (trimmed) allowed.add(trimmed);
+    }
+  }
+  return allowed.has(reqOrigin) ? reqOrigin : null;
 }
 
-function json(data, status, origin) {
+function corsHeaders(corsOrigin) {
+  const headers = {
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Onboarding-Token',
+    Vary: 'Origin',
+  };
+  if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
+  return headers;
+}
+
+function json(data, status, corsOrigin) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(corsOrigin) },
   });
 }
+
+// ---------- Rate limiting ----------
+// KV-backed fixed window. KV is eventually consistent, so this is a brute-force
+// speed bump, not a hard concurrency guarantee — bursts racing the same window
+// may slightly under-count. Good enough to blunt credential stuffing; a real
+// deployment should layer Cloudflare's native rate-limiting rules on top.
+
+async function checkRateLimit(env, scope, ip) {
+  const [limit, windowSec] = RATE_LIMITS[scope];
+  const key = `rl:${scope}:${ip}`;
+  const now = Date.now();
+  let rec = null;
+  try {
+    const raw = await env.PORTAL_KV.get(key);
+    if (raw) rec = JSON.parse(raw);
+  } catch {}
+
+  if (!rec || now - rec.windowStart >= windowSec * 1000) {
+    rec = { count: 1, windowStart: now };
+    await env.PORTAL_KV.put(key, JSON.stringify(rec), { expirationTtl: windowSec });
+    return true;
+  }
+  if (rec.count >= limit) return false;
+  rec.count += 1;
+  // Keep the original window's remaining TTL rather than resetting it.
+  const remaining = Math.max(1, windowSec - Math.floor((now - rec.windowStart) / 1000));
+  await env.PORTAL_KV.put(key, JSON.stringify(rec), { expirationTtl: remaining });
+  return true;
+}
+
+function clientIp(request) {
+  return request.headers.get('CF-Connecting-IP') || 'unknown';
+}
+
+// ---------- Crypto helpers ----------
 
 function bufToHex(buf) {
   return Array.from(new Uint8Array(buf))
@@ -79,6 +152,15 @@ function randomHex(byteLength) {
   return bufToHex(bytes.buffer);
 }
 
+// Constant-time string comparison to avoid leaking token/hash length or
+// prefix through response timing.
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 function isValidEmail(email) {
   return typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
@@ -90,23 +172,29 @@ async function getSessionEmail(request, env) {
   return env.PORTAL_KV.get(`session:${match[1]}`);
 }
 
-async function handleRegister(request, env, origin) {
+// ---------- Auth ----------
+
+async function handleRegister(request, env, cors) {
+  if (!(await checkRateLimit(env, 'register', clientIp(request)))) {
+    return json({ error: 'Too many attempts. Please try again later.' }, 429, cors);
+  }
+
   const body = await request.json().catch(() => null);
-  if (!body) return json({ error: 'Invalid JSON body' }, 400, origin);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
 
   const { name, email, password } = body;
   if (!name || !isValidEmail(email) || !password || password.length < 8) {
     return json(
       { error: 'name, a valid email, and a password of at least 8 characters are required' },
       400,
-      origin
+      cors
     );
   }
 
   const normalizedEmail = email.trim().toLowerCase();
   const existing = await env.PORTAL_KV.get(`user:${normalizedEmail}`);
   if (existing) {
-    return json({ error: 'An account with this email already exists' }, 409, origin);
+    return json({ error: 'An account with this email already exists' }, 409, cors);
   }
 
   const salt = randomHex(16);
@@ -120,43 +208,47 @@ async function handleRegister(request, env, origin) {
   const token = randomHex(32);
   await env.PORTAL_KV.put(`session:${token}`, normalizedEmail, { expirationTtl: SESSION_TTL_SECONDS });
 
-  return json({ token, name, email: normalizedEmail }, 201, origin);
+  return json({ token, name, email: normalizedEmail }, 201, cors);
 }
 
-async function handleLogin(request, env, origin) {
+async function handleLogin(request, env, cors) {
+  if (!(await checkRateLimit(env, 'login', clientIp(request)))) {
+    return json({ error: 'Too many login attempts. Please try again later.' }, 429, cors);
+  }
+
   const body = await request.json().catch(() => null);
-  if (!body) return json({ error: 'Invalid JSON body' }, 400, origin);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
 
   const { email, password } = body;
   if (!isValidEmail(email) || !password) {
-    return json({ error: 'Email and password are required' }, 400, origin);
+    return json({ error: 'Email and password are required' }, 400, cors);
   }
 
   const normalizedEmail = email.trim().toLowerCase();
   const userRaw = await env.PORTAL_KV.get(`user:${normalizedEmail}`);
   if (!userRaw) {
-    return json({ error: 'Invalid email or password' }, 401, origin);
+    return json({ error: 'Invalid email or password' }, 401, cors);
   }
 
   const user = JSON.parse(userRaw);
   const attemptedHash = await hashPassword(password, user.salt, user.iterations);
-  if (attemptedHash !== user.hash) {
-    return json({ error: 'Invalid email or password' }, 401, origin);
+  if (!timingSafeEqual(attemptedHash, user.hash)) {
+    return json({ error: 'Invalid email or password' }, 401, cors);
   }
 
   const token = randomHex(32);
   await env.PORTAL_KV.put(`session:${token}`, normalizedEmail, { expirationTtl: SESSION_TTL_SECONDS });
 
-  return json({ token, name: user.name, email: normalizedEmail }, 200, origin);
+  return json({ token, name: user.name, email: normalizedEmail }, 200, cors);
 }
 
-async function handleLogout(request, env, origin) {
+async function handleLogout(request, env, cors) {
   const authHeader = request.headers.get('Authorization') || '';
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   if (match) {
     await env.PORTAL_KV.delete(`session:${match[1]}`);
   }
-  return json({ ok: true }, 200, origin);
+  return json({ ok: true }, 200, cors);
 }
 
 // ---------- Assessment modules ----------
@@ -388,119 +480,164 @@ const MODULE_VALIDATORS = {
   },
 };
 
-async function handleGetAssessments(request, env, origin) {
+async function handleGetAssessments(request, env, cors) {
   const email = await getSessionEmail(request, env);
-  if (!email) return json({ error: 'Not authenticated' }, 401, origin);
+  if (!email) return json({ error: 'Not authenticated' }, 401, cors);
 
   const raw = await env.PORTAL_KV.get(`responses:${email}`);
-  return json({ modules: loadModules(raw) }, 200, origin);
+  return json({ modules: loadModules(raw) }, 200, cors);
 }
 
-async function handleSaveAssessment(request, env, origin, moduleName) {
+async function handleSaveAssessment(request, env, cors, moduleName) {
   const email = await getSessionEmail(request, env);
-  if (!email) return json({ error: 'Not authenticated' }, 401, origin);
+  if (!email) return json({ error: 'Not authenticated' }, 401, cors);
 
   const validator = MODULE_VALIDATORS[moduleName];
-  if (!validator) return json({ error: 'Unknown assessment module' }, 404, origin);
+  if (!validator) return json({ error: 'Unknown assessment module' }, 404, cors);
 
   const body = await request.json().catch(() => null);
-  if (!body) return json({ error: 'Invalid JSON body' }, 400, origin);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
 
   const result = validator(body);
-  if (result.error) return json({ error: result.error }, 400, origin);
+  if (result.error) return json({ error: result.error }, 400, cors);
 
   const raw = await env.PORTAL_KV.get(`responses:${email}`);
   const modules = loadModules(raw);
   modules[moduleName] = { ...result.data, updatedAt: new Date().toISOString() };
 
   await env.PORTAL_KV.put(`responses:${email}`, JSON.stringify({ modules }));
-  return json({ module: modules[moduleName], modules }, 200, origin);
+  return json({ module: modules[moduleName], modules }, 200, cors);
 }
 
 // ---------- Onboarding proof of concept ----------
-// Unauthenticated by design: the POC has no client accounts and holds
-// sample/test data only. Records must be created via /start before saves
-// are accepted, and payload size is capped.
+// Sample/test data only. Each session is issued a per-session write token at
+// /start; every save must present it via the X-Onboarding-Token header. This
+// stops anyone who guesses a (sequential, predictable) onboarding id from
+// overwriting someone else's in-progress record. It is NOT full client auth —
+// there is no account, no login — but it closes the "anyone can POST to any id"
+// hole. The token is stored under a separate key and never returned by the
+// admin endpoints.
 
 const ONBOARDING_ID_PATTERN = /^BLA-ONB-\d{4}-\d{4}$/;
 const ONBOARDING_MAX_BYTES = 100_000;
 
-async function handleOnboardingStart(request, env, origin) {
+async function handleOnboardingStart(request, env, cors) {
+  if (!(await checkRateLimit(env, 'onboardingStart', clientIp(request)))) {
+    return json({ error: 'Too many onboarding sessions started. Please try again later.' }, 429, cors);
+  }
+
   // KV has no atomic increment; a race here can skip or repeat a number.
   // Acceptable for a proof of concept.
   const n = (Number(await env.PORTAL_KV.get('onboarding_counter')) || 0) + 1;
   await env.PORTAL_KV.put('onboarding_counter', String(n));
   const onboardingId = `BLA-ONB-${new Date().getFullYear()}-${String(n).padStart(4, '0')}`;
+
+  const writeToken = randomHex(24);
+  await env.PORTAL_KV.put(`onboarding_secret:${onboardingId}`, writeToken, {
+    expirationTtl: ONBOARDING_TTL_SECONDS,
+  });
+
   const record = {
     onboardingId,
     startTime: new Date().toISOString(),
     completionTime: null,
     currentStep: 0,
     data: {},
+    deleted: false,
     updatedAt: new Date().toISOString(),
   };
   await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
-  return json({ onboardingId, startTime: record.startTime }, 201, origin);
+  return json({ onboardingId, writeToken, startTime: record.startTime }, 201, cors);
 }
 
-async function handleOnboardingSave(request, env, origin, onboardingId) {
+async function handleOnboardingSave(request, env, cors, onboardingId) {
   if (!ONBOARDING_ID_PATTERN.test(onboardingId)) {
-    return json({ error: 'Invalid onboarding id' }, 400, origin);
+    return json({ error: 'Invalid onboarding id' }, 400, cors);
   }
+
+  const providedToken = request.headers.get('X-Onboarding-Token') || '';
+  const expectedToken = await env.PORTAL_KV.get(`onboarding_secret:${onboardingId}`);
+  if (!expectedToken || !timingSafeEqual(providedToken, expectedToken)) {
+    return json({ error: 'Invalid or missing onboarding write token' }, 401, cors);
+  }
+
   const existingRaw = await env.PORTAL_KV.get(`onboarding:${onboardingId}`);
   if (!existingRaw) {
-    return json({ error: 'Unknown onboarding id — call /api/onboarding/start first' }, 404, origin);
+    return json({ error: 'Unknown onboarding id — call /api/onboarding/start first' }, 404, cors);
+  }
+  const existing = JSON.parse(existingRaw);
+  if (existing.deleted) {
+    return json({ error: 'This onboarding record has been removed' }, 410, cors);
   }
 
   const text = await request.text();
   if (text.length > ONBOARDING_MAX_BYTES) {
-    return json({ error: 'Payload too large' }, 413, origin);
+    return json({ error: 'Payload too large' }, 413, cors);
   }
   let body;
   try {
     body = JSON.parse(text);
   } catch {
-    return json({ error: 'Invalid JSON body' }, 400, origin);
+    return json({ error: 'Invalid JSON body' }, 400, cors);
   }
   if (!body || body.onboardingId !== onboardingId || !body.data || typeof body.data !== 'object') {
-    return json({ error: 'Body must include a matching onboardingId and a data object' }, 400, origin);
+    return json({ error: 'Body must include a matching onboardingId and a data object' }, 400, cors);
   }
 
-  const existing = JSON.parse(existingRaw);
   const record = {
     onboardingId,
     startTime: existing.startTime,
     completionTime: typeof body.completionTime === 'string' ? body.completionTime : existing.completionTime,
     currentStep: Number.isInteger(body.currentStep) ? body.currentStep : existing.currentStep,
     data: body.data,
+    deleted: false,
     updatedAt: new Date().toISOString(),
   };
   await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
-  return json({ ok: true, updatedAt: record.updatedAt }, 200, origin);
+  return json({ ok: true, updatedAt: record.updatedAt }, 200, cors);
 }
 
 function isAdmin(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   const providedToken = match ? match[1] : '';
-  return !!env.ADMIN_TOKEN && providedToken === env.ADMIN_TOKEN;
+  return !!env.ADMIN_TOKEN && timingSafeEqual(providedToken, env.ADMIN_TOKEN);
 }
 
-async function handleAdminDeleteOnboarding(request, env, origin, onboardingId) {
-  if (!isAdmin(request, env)) {
-    return json({ error: 'Not authorized' }, 401, origin);
-  }
-  if (!ONBOARDING_ID_PATTERN.test(onboardingId)) {
-    return json({ error: 'Invalid onboarding id' }, 400, origin);
-  }
-  await env.PORTAL_KV.delete(`onboarding:${onboardingId}`);
-  return json({ ok: true }, 200, origin);
+// Soft delete: mark the record and give it (and its write secret) a 30-day TTL
+// so it can be restored within that window, then auto-purges. No hard delete
+// from the admin UI, so a misclick isn't instantly destructive.
+async function handleAdminDeleteOnboarding(request, env, cors, onboardingId) {
+  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
+  if (!ONBOARDING_ID_PATTERN.test(onboardingId)) return json({ error: 'Invalid onboarding id' }, 400, cors);
+
+  const raw = await env.PORTAL_KV.get(`onboarding:${onboardingId}`);
+  if (!raw) return json({ error: 'Not found' }, 404, cors);
+  const record = JSON.parse(raw);
+  record.deleted = true;
+  record.deletedAt = new Date().toISOString();
+  await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record), {
+    expirationTtl: ONBOARDING_TTL_SECONDS,
+  });
+  return json({ ok: true, deletedAt: record.deletedAt }, 200, cors);
 }
 
-async function handleAdminOnboarding(request, env, origin) {
-  if (!isAdmin(request, env)) {
-    return json({ error: 'Not authorized' }, 401, origin);
-  }
+async function handleAdminRestoreOnboarding(request, env, cors, onboardingId) {
+  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
+  if (!ONBOARDING_ID_PATTERN.test(onboardingId)) return json({ error: 'Invalid onboarding id' }, 400, cors);
+
+  const raw = await env.PORTAL_KV.get(`onboarding:${onboardingId}`);
+  if (!raw) return json({ error: 'Not found or already purged' }, 404, cors);
+  const record = JSON.parse(raw);
+  record.deleted = false;
+  delete record.deletedAt;
+  // Re-put with no TTL so it stops counting down toward purge.
+  await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
+  return json({ ok: true }, 200, cors);
+}
+
+async function handleAdminOnboarding(request, env, cors) {
+  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
 
   const records = [];
   let cursor;
@@ -518,13 +655,11 @@ async function handleAdminOnboarding(request, env, origin) {
   } while (cursor);
 
   records.sort((a, b) => String(b.startTime).localeCompare(String(a.startTime)));
-  return json({ records }, 200, origin);
+  return json({ records }, 200, cors);
 }
 
-async function handleAdminClients(request, env, origin) {
-  if (!isAdmin(request, env)) {
-    return json({ error: 'Not authorized' }, 401, origin);
-  }
+async function handleAdminClients(request, env, cors) {
+  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
 
   const clients = [];
   let cursor;
@@ -546,58 +681,62 @@ async function handleAdminClients(request, env, origin) {
     if (page.list_complete) break;
   } while (cursor);
 
-  return json({ clients }, 200, origin);
+  return json({ clients }, 200, cors);
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const origin = request.headers.get('Origin') || '*';
+    const cors = resolveCorsOrigin(request, url, env);
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(origin) });
+      return new Response(null, { status: 204, headers: corsHeaders(cors) });
     }
 
     try {
       if (url.pathname === '/api/register' && request.method === 'POST') {
-        return await handleRegister(request, env, origin);
+        return await handleRegister(request, env, cors);
       }
       if (url.pathname === '/api/login' && request.method === 'POST') {
-        return await handleLogin(request, env, origin);
+        return await handleLogin(request, env, cors);
       }
       if (url.pathname === '/api/logout' && request.method === 'POST') {
-        return await handleLogout(request, env, origin);
+        return await handleLogout(request, env, cors);
       }
       if (url.pathname === '/api/assessments' && request.method === 'GET') {
-        return await handleGetAssessments(request, env, origin);
+        return await handleGetAssessments(request, env, cors);
       }
       const saveMatch = url.pathname.match(/^\/api\/assessments\/([a-z]+)$/);
       if (saveMatch && request.method === 'POST') {
-        return await handleSaveAssessment(request, env, origin, saveMatch[1]);
+        return await handleSaveAssessment(request, env, cors, saveMatch[1]);
       }
       if (url.pathname === '/api/onboarding/start' && request.method === 'POST') {
-        return await handleOnboardingStart(request, env, origin);
+        return await handleOnboardingStart(request, env, cors);
       }
       const onbMatch = url.pathname.match(/^\/api\/onboarding\/(BLA-ONB-\d{4}-\d{4})$/);
       if (onbMatch && request.method === 'POST') {
-        return await handleOnboardingSave(request, env, origin, onbMatch[1]);
+        return await handleOnboardingSave(request, env, cors, onbMatch[1]);
       }
       if (url.pathname === '/api/admin/clients' && request.method === 'GET') {
-        return await handleAdminClients(request, env, origin);
+        return await handleAdminClients(request, env, cors);
       }
       if (url.pathname === '/api/admin/onboarding' && request.method === 'GET') {
-        return await handleAdminOnboarding(request, env, origin);
+        return await handleAdminOnboarding(request, env, cors);
+      }
+      const onbRestoreMatch = url.pathname.match(/^\/api\/admin\/onboarding\/(BLA-ONB-\d{4}-\d{4})\/restore$/);
+      if (onbRestoreMatch && request.method === 'POST') {
+        return await handleAdminRestoreOnboarding(request, env, cors, onbRestoreMatch[1]);
       }
       const onbDeleteMatch = url.pathname.match(/^\/api\/admin\/onboarding\/(BLA-ONB-\d{4}-\d{4})$/);
       if (onbDeleteMatch && request.method === 'DELETE') {
-        return await handleAdminDeleteOnboarding(request, env, origin, onbDeleteMatch[1]);
+        return await handleAdminDeleteOnboarding(request, env, cors, onbDeleteMatch[1]);
       }
       if (url.pathname.startsWith('/api/')) {
-        return json({ error: 'Not found' }, 404, origin);
+        return json({ error: 'Not found' }, 404, cors);
       }
       return env.ASSETS.fetch(request);
     } catch (err) {
-      return json({ error: 'Internal server error' }, 500, origin);
+      return json({ error: 'Internal server error' }, 500, cors);
     }
   },
 };

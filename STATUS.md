@@ -65,17 +65,41 @@ audit_record.json.
 `budget`/`riskAnswers`) are ignored by `loadModules()` — those were test data.
 Clients from that era just see an empty dashboard.
 
-## Known gaps / flagged but not addressed
-- No rate limiting on login/register.
-- No data retention policy or encryption beyond Cloudflare defaults for client PII
-  (names, emails, compensation, net worth, risk answers) in KV. The portal now
-  collects substantially more sensitive data (salary, equity, net worth) than before.
-- `ADMIN_TOKEN` grants full read access to all client data, no per-user audit log.
+## Security hardening done (quick fixes, "1–4")
+- **Rate limiting** (KV fixed-window, per `CF-Connecting-IP`): login 10/5min,
+  register 5/hr, onboarding-start 20/hr → 429 past the limit. KV is eventually
+  consistent, so this is a brute-force speed bump, not a hard guarantee; layer
+  Cloudflare native rate-limiting rules on top for production.
+- **CORS locked down**: no longer reflects arbitrary origins. `resolveCorsOrigin()`
+  only echoes the Worker's own origin (or entries in the optional `ALLOWED_ORIGIN`
+  secret). `Allow-Credentials` dropped (auth is bearer-token, not cookies).
+- **Onboarding write auth**: `/api/onboarding/start` issues a per-session
+  `writeToken` (stored under `onboarding_secret:<id>`, never returned by admin
+  endpoints, 30-day TTL). Every save must present it via `X-Onboarding-Token`.
+  Closes the "anyone can POST to a guessed sequential id" hole. Frontend stores
+  the token in localStorage; local-only fallback (id prefix `L`) still applies if
+  `/start` fails (e.g. rate-limited).
+- **Soft delete + restore**: admin Delete marks `deleted:true` with a 30-day TTL
+  instead of destroying the record; a "Deleted (N)" trash table offers Restore
+  (`POST /api/admin/onboarding/:id/restore`). Records auto-purge after the window.
+- Added `timingSafeEqual()` for password-hash, admin-token, and write-token
+  comparisons.
+
+## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
+- `ADMIN_TOKEN` is still a single shared secret: no per-staff identity, no audit
+  log of who viewed/exported/deleted what. This is the biggest structural gap.
+- No data retention policy for client-portal PII, and no application-level
+  encryption beyond Cloudflare's at-rest defaults. (Onboarding POC records now do
+  auto-expire when soft-deleted, but active records never age out.)
+- No access logging / anomaly alerting on admin endpoints.
+- Not code: as an RIA handling client PII, a written information security program
+  (WISP) under Reg S-P / GLBA is required — policies, incident response, vendor
+  risk assessment for Cloudflare. Needs compliance counsel, not an engineer.
 - Only one Cloudflare account/login in use (fsabin@blueline-advisors.com) — no
-  documented plan for what happens to account ownership if that changes.
+  documented succession/break-glass plan.
 - Site is on the `workers.dev` subdomain, not a custom `blueline-advisors.com` domain.
 - No Node.js on this machine — `worker.js` is not executed locally; it's verified by
-  review and exercised only once deployed. The mock server duplicates its math.
+  review and exercised via `dev-server.ps1`, which mirrors its logic (kept in sync).
 
 ## To continue in a new chat
 Tell Claude: "Continue work on the BlueLine Advisors portal — read STATUS.md and

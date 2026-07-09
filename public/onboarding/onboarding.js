@@ -41,30 +41,36 @@ function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-// IDs are issued by the server so they're unique across browsers. If the
-// server is unreachable, fall back to a local id (marked so admin data isn't
-// expected for it).
+// IDs are issued by the server so they're unique across browsers. The server
+// also issues a per-session write token that must accompany every save, so a
+// guessed id can't be used to overwrite someone else's record. If the server
+// is unreachable, fall back to a local id (marked so admin data isn't expected
+// for it).
 async function requestOnboardingId() {
   try {
     const res = await fetch("/api/onboarding/start", { method: "POST" });
     if (res.ok) {
       const data = await res.json();
-      if (data.onboardingId) return { id: data.onboardingId, local: false };
+      if (data.onboardingId) return { id: data.onboardingId, writeToken: data.writeToken, local: false };
     }
   } catch {}
   const n = (Number(localStorage.getItem(COUNTER_KEY)) || 0) + 1;
   localStorage.setItem(COUNTER_KEY, String(n));
-  return { id: `BLA-ONB-${new Date().getFullYear()}-L${String(n).padStart(3, "0")}`, local: true };
+  return { id: `BLA-ONB-${new Date().getFullYear()}-L${String(n).padStart(3, "0")}`, writeToken: null, local: true };
 }
 
 // Push the current state to the server so the BlueLine team can review
 // submissions in the admin view. Fire-and-forget: a failed sync never blocks
-// the user, and the full record is re-sent on every step.
+// the user, and the full record is re-sent on every step. The write token
+// proves this browser owns the session.
 function syncToServer() {
-  if (!state.onboardingId || state.localOnly) return;
+  if (!state.onboardingId || state.localOnly || !state.writeToken) return;
   fetch(`/api/onboarding/${encodeURIComponent(state.onboardingId)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Onboarding-Token": state.writeToken,
+    },
     body: JSON.stringify({
       onboardingId: state.onboardingId,
       currentStep: state.currentStep,
@@ -322,6 +328,7 @@ document.getElementById("start-btn").addEventListener("click", async () => {
     const issued = await requestOnboardingId();
     btn.disabled = false;
     state.onboardingId = issued.id;
+    state.writeToken = issued.writeToken;
     state.localOnly = issued.local;
     state.startTime = nowIso();
     saveState();
