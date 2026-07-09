@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="assets/style.css" />
 <style>
   .admin-container { max-width: 1500px; }
-  #clients-card { overflow-x: auto; }
+  #clients-card, #onboarding-card { overflow-x: auto; }
   .admin-table { width: 100%; min-width: 1200px; border-collapse: collapse; margin-top: 20px; }
   .admin-table th, .admin-table td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
   .admin-table td.wrap { white-space: normal; max-width: 240px; }
@@ -19,6 +19,9 @@
   .cell-negative { color: var(--error); font-weight: 600; }
   .module-count { font-weight: 700; color: var(--navy); }
   .btn-small { padding: 6px 14px; font-size: 0.85rem; }
+  /* style.css's base .btn-ghost is white-on-transparent for the navy topbar;
+     everywhere on this page it sits on a white card, so it needs dark text. */
+  .btn-ghost { color: var(--navy); border: 1px solid var(--border); }
   .onb-card-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .onb-card-header h1 { margin: 0; }
   #refresh-status { font-size: 0.8rem; }
