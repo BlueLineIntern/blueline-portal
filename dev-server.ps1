@@ -201,6 +201,10 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/onboarding' -and $method -eq 'GET') {
             Send-Json $ctx 200 @{ records = @($onboardings.Values) }
         }
+        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})$' -and $method -eq 'DELETE') {
+            $onboardings.Remove($Matches[1])
+            Send-Json $ctx 200 @{ ok = $true }
+        }
         elseif ($path -eq '/api/admin/clients' -and $method -eq 'GET') {
             $clients = @($users.Values | ForEach-Object {
                 $mods = if ($responses.ContainsKey($_.email)) { $responses[$_.email] } else { @{} }

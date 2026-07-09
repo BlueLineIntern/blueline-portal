@@ -153,6 +153,7 @@
             <th>Started</th>
             <th>Completed</th>
             <th>Last Updated</th>
+            <th></th>
           </tr>
         </thead>
         <tbody id="onboarding-body"></tbody>
@@ -439,7 +440,7 @@
     function renderOnboardings(records) {
       const body = document.getElementById('onboarding-body');
       if (!records.length) {
-        body.innerHTML = '<tr><td colspan="9" class="admin-empty">No onboarding submissions yet.</td></tr>';
+        body.innerHTML = '<tr><td colspan="10" class="admin-empty">No onboarding submissions yet.</td></tr>';
         return;
       }
       body.innerHTML = records
@@ -458,12 +459,34 @@
             <td>${r.startTime ? new Date(r.startTime).toLocaleString() : missing()}</td>
             <td>${r.completionTime ? new Date(r.completionTime).toLocaleString() : '<span class="cell-missing">In progress</span>'}</td>
             <td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : missing()}</td>
+            <td><button type="button" class="btn btn-ghost btn-small onb-delete-btn" data-id="${escapeHtml(r.onboardingId)}" title="Delete this test submission">Delete</button></td>
           </tr>`;
         })
         .join('');
       body.querySelectorAll('.onb-detail-btn').forEach((btn) => {
         btn.addEventListener('click', () => showOnbDetail(Number(btn.dataset.index)));
       });
+      body.querySelectorAll('.onb-delete-btn').forEach((btn) => {
+        btn.addEventListener('click', () => deleteOnboarding(btn.dataset.id));
+      });
+    }
+
+    async function deleteOnboarding(onboardingId) {
+      if (!adminToken) return;
+      if (!confirm(`Delete onboarding submission ${onboardingId}? This cannot be undone.`)) return;
+      try {
+        const res = await fetch(`/api/admin/onboarding/${encodeURIComponent(onboardingId)}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'Failed to delete');
+        }
+        await loadAdminData({ showStatus: true });
+      } catch (err) {
+        document.getElementById('refresh-status').textContent = `Delete failed: ${err.message}`;
+      }
     }
 
     function onbRows(pairs) {

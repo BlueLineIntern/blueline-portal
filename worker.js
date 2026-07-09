@@ -18,7 +18,8 @@
  *   POST /api/onboarding/start      -> { onboardingId }     (no auth — POC test data only)
  *   POST /api/onboarding/:id        { onboardingId, currentStep, completionTime, data }
  *   GET  /api/admin/clients         (Authorization: Bearer <ADMIN_TOKEN secret>)
- *   GET  /api/admin/onboarding      (Authorization: Bearer <ADMIN_TOKEN secret>)
+ *   GET    /api/admin/onboarding      (Authorization: Bearer <ADMIN_TOKEN secret>)
+ *   DELETE /api/admin/onboarding/:id  (Authorization: Bearer <ADMIN_TOKEN secret>)
  *
  * Set the admin secret with: wrangler secret put ADMIN_TOKEN
  */
@@ -29,7 +30,7 @@ const PBKDF2_ITERATIONS = 100000;
 function corsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': origin || '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Credentials': 'true',
   };
@@ -485,6 +486,17 @@ function isAdmin(request, env) {
   return !!env.ADMIN_TOKEN && providedToken === env.ADMIN_TOKEN;
 }
 
+async function handleAdminDeleteOnboarding(request, env, origin, onboardingId) {
+  if (!isAdmin(request, env)) {
+    return json({ error: 'Not authorized' }, 401, origin);
+  }
+  if (!ONBOARDING_ID_PATTERN.test(onboardingId)) {
+    return json({ error: 'Invalid onboarding id' }, 400, origin);
+  }
+  await env.PORTAL_KV.delete(`onboarding:${onboardingId}`);
+  return json({ ok: true }, 200, origin);
+}
+
 async function handleAdminOnboarding(request, env, origin) {
   if (!isAdmin(request, env)) {
     return json({ error: 'Not authorized' }, 401, origin);
@@ -575,6 +587,10 @@ export default {
       }
       if (url.pathname === '/api/admin/onboarding' && request.method === 'GET') {
         return await handleAdminOnboarding(request, env, origin);
+      }
+      const onbDeleteMatch = url.pathname.match(/^\/api\/admin\/onboarding\/(BLA-ONB-\d{4}-\d{4})$/);
+      if (onbDeleteMatch && request.method === 'DELETE') {
+        return await handleAdminDeleteOnboarding(request, env, origin, onbDeleteMatch[1]);
       }
       if (url.pathname.startsWith('/api/')) {
         return json({ error: 'Not found' }, 404, origin);
