@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BlueLine Advisors — Onboarding (Proof of Concept)</title>
+<link rel="stylesheet" href="onboarding.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <img src="../assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" class="brand-logo" />
+      <span class="poc-badge">Proof of Concept — Sample Data Only</span>
+    </div>
+  </header>
+
+  <div class="progress-wrap">
+    <div class="progress-meta">
+      <span id="progress-label">Step 1 of 12</span>
+      <span id="progress-id"></span>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+  </div>
+
+  <main class="container">
+
+    <!-- 1. WELCOME -->
+    <section class="step" id="step-welcome">
+      <div class="card">
+        <h1>Welcome to BlueLine Advisors</h1>
+        <p>We're glad you're here. This short onboarding walks you through consent,
+        disclosures, and a series of questions that help us understand your household,
+        your goals, and how you think about risk — so your first meeting with your
+        advisor is as productive as possible.</p>
+        <p>It takes about 15–20 minutes. Your progress is saved in this browser, so you
+        can leave and come back.</p>
+        <p class="poc-note">This is a <strong>proof of concept</strong>. It simulates the onboarding
+        workflow using sample documents and test data only. It does not open accounts,
+        collect sensitive identifiers, or onboard a real client.</p>
+        <div class="nav-row nav-row-end">
+          <button class="btn btn-primary" id="start-btn">Start Onboarding</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. ELECTRONIC CONSENT -->
+    <section class="step hidden" id="step-consent">
+      <div class="card">
+        <h1>Electronic Consent</h1>
+        <p class="sample-language">"I consent to receive documents electronically and
+        understand this is a test proof of concept."</p>
+
+        <div class="form-grid">
+          <div class="field">
+            <label for="consent-name">Full Name <span class="req">*</span></label>
+            <input type="text" id="consent-name" required />
+          </div>
+          <div class="field">
+            <label for="consent-email">Email <span class="req">*</span></label>
+            <input type="email" id="consent-email" required />
+          </div>
+        </div>
+
+        <label class="check-option">
+          <input type="checkbox" id="consent-ack" />
+          I acknowledge and consent. <span class="req">*</span>
+        </label>
+
+        <p class="form-error" id="consent-error"></p>
+      </div>
+    </section>
+
+    <!-- 3. REGULATORY DOCUMENTS -->
+    <section class="step hidden" id="step-regdocs">
+      <div class="card">
+        <h1>Regulatory Documents</h1>
+        <p>Please review and acknowledge receipt of each document below.
+        <em>(Sample documents — not actual firm filings.)</em></p>
+        <div id="regdoc-cards"></div>
+        <p class="form-error" id="regdocs-error"></p>
+      </div>
+    </section>
+
+    <!-- 4. ADVISORY AGREEMENT PLACEHOLDER -->
+    <section class="step hidden" id="step-agreement">
+      <div class="card">
+        <h1>Advisory Agreement</h1>
+        <p class="sample-language">Advisory Agreement e-signature will eventually be handled
+        through DocuSign. This proof of concept only records that the user reached this step.</p>
+        <label class="check-option">
+          <input type="checkbox" id="agreement-ack" />
+          I understand this is a placeholder. <span class="req">*</span>
+        </label>
+        <p class="form-error" id="agreement-error"></p>
+      </div>
+    </section>
+
+    <!-- 5. CLIENT PROFILE -->
+    <section class="step hidden" id="step-profile">
+      <div class="card">
+        <h1>Client Profile</h1>
+        <p><em>Use fake/test data only — no real personal details, no SSNs.</em></p>
+        <div class="form-grid" id="profile-grid"></div>
+        <p class="form-error" id="profile-error"></p>
+      </div>
+    </section>
+
+    <!-- 6. PLANNING DISCOVERY -->
+    <section class="step hidden" id="step-discovery">
+      <div class="card">
+        <h1>Planning Discovery</h1>
+        <p>Help us understand what matters to you.</p>
+
+        <div class="field">
+          <label for="disc-prompt">What prompted you to contact BlueLine? <span class="req">*</span></label>
+          <textarea id="disc-prompt" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="disc-priorities">What are your top three financial priorities? <span class="req">*</span></label>
+          <textarea id="disc-priorities" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="disc-worries">What keeps you awake financially?</label>
+          <textarea id="disc-worries" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="disc-success">What would make hiring BlueLine successful one year from now?</label>
+          <textarea id="disc-success" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="disc-life-events">Are there any major life events coming up?</label>
+          <select id="disc-life-events">
+            <option value="">Select one</option>
+            <option>None expected</option>
+            <option>Retirement</option>
+            <option>Job change</option>
+            <option>Sale of a business</option>
+            <option>Marriage or divorce</option>
+            <option>New child or grandchild</option>
+            <option>Relocation / home purchase</option>
+            <option>Inheritance expected</option>
+            <option>Other (describe below)</option>
+          </select>
+          <textarea id="disc-life-events-detail" rows="2" placeholder="Details (optional)"></textarea>
+        </div>
+        <div class="field">
+          <label for="disc-tax">Are there tax issues we should understand?</label>
+          <select id="disc-tax">
+            <option value="">Select one</option>
+            <option>No known issues</option>
+            <option>Yes (describe below)</option>
+            <option>Not sure</option>
+          </select>
+          <textarea id="disc-tax-detail" rows="2" placeholder="Details (optional)"></textarea>
+        </div>
+        <div class="field">
+          <label for="disc-estate">Are there estate planning issues we should understand?</label>
+          <select id="disc-estate">
+            <option value="">Select one</option>
+            <option>No known issues</option>
+            <option>Yes (describe below)</option>
+            <option>Not sure</option>
+          </select>
+          <textarea id="disc-estate-detail" rows="2" placeholder="Details (optional)"></textarea>
+        </div>
+        <div class="field">
+          <label for="disc-business">Are there business ownership issues we should understand?</label>
+          <select id="disc-business">
+            <option value="">Select one</option>
+            <option>No — I don't own a business</option>
+            <option>Yes (describe below)</option>
+            <option>Not sure</option>
+          </select>
+          <textarea id="disc-business-detail" rows="2" placeholder="Details (optional)"></textarea>
+        </div>
+        <p class="form-error" id="discovery-error"></p>
+      </div>
+    </section>
+
+    <!-- 7. FINANCIAL SNAPSHOT -->
+    <section class="step hidden" id="step-snapshot">
+      <div class="card">
+        <h1>Financial Snapshot</h1>
+        <p>Approximate ranges only — no account numbers, no exact balances.</p>
+        <h2 class="section-heading">Assets</h2>
+        <div class="form-grid" id="snapshot-assets"></div>
+        <h2 class="section-heading">Liabilities</h2>
+        <div class="form-grid" id="snapshot-liabilities"></div>
+        <h2 class="section-heading">Income &amp; Spending</h2>
+        <div class="form-grid" id="snapshot-income"></div>
+        <p class="form-error" id="snapshot-error"></p>
+      </div>
+    </section>
+
+    <!-- 8. RISK ASSESSMENT -->
+    <section class="step hidden" id="step-risk">
+      <div class="card">
+        <h1>Risk Assessment</h1>
+        <p>Answer each question as it best applies to you. <em>(Sample questions for the proof of concept.)</em></p>
+        <div id="risk-questions"></div>
+        <div class="risk-result hidden" id="risk-result">
+          <h2>Your Risk Profile</h2>
+          <p class="risk-score-line">Score: <strong id="risk-score-value"></strong> / 100</p>
+          <p class="risk-profile-line" id="risk-profile-value"></p>
+        </div>
+        <p class="form-error" id="risk-error"></p>
+      </div>
+    </section>
+
+    <!-- 9. DOCUMENT UPLOAD PLACEHOLDER -->
+    <section class="step hidden" id="step-uploads">
+      <div class="card">
+        <h1>Documents We'll Need Later</h1>
+        <p>Document upload is not part of this proof of concept. Check the items you can
+        provide later — we'll follow up with a secure way to share them.</p>
+        <h2 class="section-heading">Required later</h2>
+        <div id="uploads-required"></div>
+        <h2 class="section-heading">Optional later</h2>
+        <div id="uploads-optional"></div>
+        <p class="form-error" id="uploads-error"></p>
+      </div>
+    </section>
+
+    <!-- 10. PORTAL SETUP -->
+    <section class="step hidden" id="step-portal">
+      <div class="card">
+        <h1>Portal &amp; Scheduling Setup</h1>
+        <p>After onboarding, the BlueLine team will set up the following for you
+        <em>(placeholders in this proof of concept)</em>:</p>
+        <ul class="placeholder-list">
+          <li>eMoney planning portal invitation</li>
+          <li>Secure messaging</li>
+          <li>Calendar scheduling link</li>
+          <li>Custodian portal access (later phase)</li>
+        </ul>
+        <div class="form-grid">
+          <div class="field">
+            <label for="portal-format">Preferred meeting format <span class="req">*</span></label>
+            <select id="portal-format">
+              <option value="">Select one</option>
+              <option>Video call</option>
+              <option>In person</option>
+              <option>Phone</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="portal-time">Preferred meeting time <span class="req">*</span></label>
+            <select id="portal-time">
+              <option value="">Select one</option>
+              <option>Weekday mornings</option>
+              <option>Weekday afternoons</option>
+              <option>Weekday evenings</option>
+              <option>Flexible</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="portal-phone">Best phone number <span class="req">*</span></label>
+            <input type="tel" id="portal-phone" />
+          </div>
+          <div class="field">
+            <label for="portal-email">Best email <span class="req">*</span></label>
+            <input type="email" id="portal-email" />
+          </div>
+        </div>
+        <p class="form-error" id="portal-error"></p>
+      </div>
+    </section>
+
+    <!-- 11. FIRST MEETING PREP -->
+    <section class="step hidden" id="step-meetingprep">
+      <div class="card">
+        <h1>First Meeting Prep</h1>
+        <div class="field">
+          <label for="prep-accomplish">What would you most like to accomplish in the first meeting? <span class="req">*</span></label>
+          <textarea id="prep-accomplish" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="prep-questions">What questions should we answer first?</label>
+          <textarea id="prep-questions" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="prep-review">Is there anything you want reviewed before the meeting?</label>
+          <textarea id="prep-review" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="prep-attendees">Who else should attend the meeting?</label>
+          <input type="text" id="prep-attendees" />
+        </div>
+        <p class="form-error" id="meetingprep-error"></p>
+      </div>
+    </section>
+
+    <!-- 12. CONFIRMATION / EXPORT -->
+    <section class="step hidden" id="step-confirm">
+      <div class="card">
+        <h1>Onboarding Complete</h1>
+        <div id="confirm-summary"></div>
+        <h2 class="section-heading">Exports (sample data)</h2>
+        <p>Download the internal records generated from this onboarding:</p>
+        <div class="export-row">
+          <button class="btn btn-secondary" id="export-contacts">contacts.csv</button>
+          <button class="btn btn-secondary" id="export-notes">notes.csv</button>
+          <button class="btn btn-secondary" id="export-summary">onboarding_summary.html</button>
+          <button class="btn btn-secondary" id="export-audit">audit_record.json</button>
+        </div>
+        <div class="nav-row">
+          <button class="btn btn-ghost" id="restart-btn">Start a New Test Onboarding</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <div class="nav-bar hidden" id="nav-bar">
+    <div class="nav-bar-inner">
+      <button class="btn btn-ghost" id="prev-btn">← Previous</button>
+      <button class="btn btn-primary" id="next-btn">Continue →</button>
+    </div>
+  </div>
+
+  <!-- Fake document viewer modal -->
+  <div class="modal-backdrop hidden" id="doc-modal">
+    <div class="modal">
+      <h2 id="doc-modal-title"></h2>
+      <p class="doc-modal-version" id="doc-modal-version"></p>
+      <div class="doc-modal-body" id="doc-modal-body"></div>
+      <button class="btn btn-primary" id="doc-modal-close">Close</button>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <p>&copy; 2026 BlueLine Advisors. Proof of concept — sample data only. This tool does not onboard real clients.</p>
+  </footer>
+
+  <script src="onboarding.js"></script>
+</body>
+</html>

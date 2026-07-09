@@ -181,6 +181,7 @@ while ($listener.IsListening) {
         else {
             $rel = if ($path -eq '/') { 'index.html' } else { $path.TrimStart('/') }
             $file = Join-Path $root $rel
+            if (Test-Path $file -PathType Container) { $file = Join-Path $file 'index.html' }
             if (Test-Path $file -PathType Leaf) { Send-File $ctx $file }
             else { Send-Json $ctx 404 @{ error = 'Not found' } }
         }
