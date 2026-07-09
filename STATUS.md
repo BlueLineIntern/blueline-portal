@@ -48,6 +48,19 @@ All charts are dependency-free inline SVG generated in `render.js`.
 Admin table shows per-module key stats plus a Flags column (rollover opportunity,
 stock concentration, missing 401(k) match, negative cash flow).
 
+## Onboarding proof of concept (`/onboarding/`)
+Standalone 12-step wizard (`public/onboarding/`), sample/test data only, clearly
+labeled as a POC. Progress persists in localStorage AND syncs to the server:
+`POST /api/onboarding/start` issues sequential ids (`BLA-ONB-YYYY-NNNN`, KV key
+`onboarding_counter`), each step re-posts full state to
+`POST /api/onboarding/:id` (KV `onboarding:<id>`, 100KB cap, id must exist).
+These endpoints are UNauthenticated by design (POC users have no accounts) —
+anyone can create test records; do not put real client data through it.
+Admin page shows an "Onboarding Submissions" table (`GET /api/admin/onboarding`,
+ADMIN_TOKEN-gated) with per-record Details + print view. Client-side exports on
+the confirmation page: contacts.csv, notes.csv, onboarding_summary.html,
+audit_record.json.
+
 **Legacy data:** records saved before the module rework (top-level
 `budget`/`riskAnswers`) are ignored by `loadModules()` — those were test data.
 Clients from that era just see an empty dashboard.

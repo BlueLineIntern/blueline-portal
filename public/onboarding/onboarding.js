@@ -41,10 +41,37 @@ function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function newOnboardingId() {
+// IDs are issued by the server so they're unique across browsers. If the
+// server is unreachable, fall back to a local id (marked so admin data isn't
+// expected for it).
+async function requestOnboardingId() {
+  try {
+    const res = await fetch("/api/onboarding/start", { method: "POST" });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.onboardingId) return { id: data.onboardingId, local: false };
+    }
+  } catch {}
   const n = (Number(localStorage.getItem(COUNTER_KEY)) || 0) + 1;
   localStorage.setItem(COUNTER_KEY, String(n));
-  return `BLA-ONB-${new Date().getFullYear()}-${String(n).padStart(4, "0")}`;
+  return { id: `BLA-ONB-${new Date().getFullYear()}-L${String(n).padStart(3, "0")}`, local: true };
+}
+
+// Push the current state to the server so the BlueLine team can review
+// submissions in the admin view. Fire-and-forget: a failed sync never blocks
+// the user, and the full record is re-sent on every step.
+function syncToServer() {
+  if (!state.onboardingId || state.localOnly) return;
+  fetch(`/api/onboarding/${encodeURIComponent(state.onboardingId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      onboardingId: state.onboardingId,
+      currentStep: state.currentStep,
+      completionTime: state.completionTime,
+      data: state.data,
+    }),
+  }).catch(() => {});
 }
 
 function nowIso() {
@@ -288,9 +315,14 @@ function showStep(index) {
   window.scrollTo(0, 0);
 }
 
-document.getElementById("start-btn").addEventListener("click", () => {
+document.getElementById("start-btn").addEventListener("click", async () => {
   if (!state.onboardingId) {
-    state.onboardingId = newOnboardingId();
+    const btn = document.getElementById("start-btn");
+    btn.disabled = true;
+    const issued = await requestOnboardingId();
+    btn.disabled = false;
+    state.onboardingId = issued.id;
+    state.localOnly = issued.local;
     state.startTime = nowIso();
     saveState();
   }
@@ -306,6 +338,7 @@ document.getElementById("next-btn").addEventListener("click", () => {
   const collect = COLLECTORS[stepKey];
   if (collect && !collect()) return; // validation failed
   saveState();
+  syncToServer();
   if (state.currentStep < STEPS.length - 1) showStep(state.currentStep + 1);
 });
 

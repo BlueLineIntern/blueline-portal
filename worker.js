@@ -6,6 +6,8 @@
  *   user:<email>          -> { name, email, salt, hash, iterations }
  *   session:<token>       -> email                         (TTL'd)
  *   responses:<email>     -> { modules: { risk, budget, retirement, networth, compensation } }
+ *   onboarding:<id>       -> onboarding POC record (sample/test data only)
+ *   onboarding_counter    -> sequence number for onboarding ids
  *
  * Endpoints:
  *   POST /api/register              { name, email, password }
@@ -13,7 +15,10 @@
  *   POST /api/logout                (Authorization: Bearer <token>)
  *   GET  /api/assessments           (Authorization: Bearer <token>)
  *   POST /api/assessments/:module   { ...module fields }    (Authorization: Bearer <token>)
+ *   POST /api/onboarding/start      -> { onboardingId }     (no auth — POC test data only)
+ *   POST /api/onboarding/:id        { onboardingId, currentStep, completionTime, data }
  *   GET  /api/admin/clients         (Authorization: Bearer <ADMIN_TOKEN secret>)
+ *   GET  /api/admin/onboarding      (Authorization: Bearer <ADMIN_TOKEN secret>)
  *
  * Set the admin secret with: wrangler secret put ADMIN_TOKEN
  */
@@ -411,12 +416,101 @@ async function handleSaveAssessment(request, env, origin, moduleName) {
   return json({ module: modules[moduleName], modules }, 200, origin);
 }
 
-async function handleAdminClients(request, env, origin) {
+// ---------- Onboarding proof of concept ----------
+// Unauthenticated by design: the POC has no client accounts and holds
+// sample/test data only. Records must be created via /start before saves
+// are accepted, and payload size is capped.
+
+const ONBOARDING_ID_PATTERN = /^BLA-ONB-\d{4}-\d{4}$/;
+const ONBOARDING_MAX_BYTES = 100_000;
+
+async function handleOnboardingStart(request, env, origin) {
+  // KV has no atomic increment; a race here can skip or repeat a number.
+  // Acceptable for a proof of concept.
+  const n = (Number(await env.PORTAL_KV.get('onboarding_counter')) || 0) + 1;
+  await env.PORTAL_KV.put('onboarding_counter', String(n));
+  const onboardingId = `BLA-ONB-${new Date().getFullYear()}-${String(n).padStart(4, '0')}`;
+  const record = {
+    onboardingId,
+    startTime: new Date().toISOString(),
+    completionTime: null,
+    currentStep: 0,
+    data: {},
+    updatedAt: new Date().toISOString(),
+  };
+  await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
+  return json({ onboardingId, startTime: record.startTime }, 201, origin);
+}
+
+async function handleOnboardingSave(request, env, origin, onboardingId) {
+  if (!ONBOARDING_ID_PATTERN.test(onboardingId)) {
+    return json({ error: 'Invalid onboarding id' }, 400, origin);
+  }
+  const existingRaw = await env.PORTAL_KV.get(`onboarding:${onboardingId}`);
+  if (!existingRaw) {
+    return json({ error: 'Unknown onboarding id — call /api/onboarding/start first' }, 404, origin);
+  }
+
+  const text = await request.text();
+  if (text.length > ONBOARDING_MAX_BYTES) {
+    return json({ error: 'Payload too large' }, 413, origin);
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400, origin);
+  }
+  if (!body || body.onboardingId !== onboardingId || !body.data || typeof body.data !== 'object') {
+    return json({ error: 'Body must include a matching onboardingId and a data object' }, 400, origin);
+  }
+
+  const existing = JSON.parse(existingRaw);
+  const record = {
+    onboardingId,
+    startTime: existing.startTime,
+    completionTime: typeof body.completionTime === 'string' ? body.completionTime : existing.completionTime,
+    currentStep: Number.isInteger(body.currentStep) ? body.currentStep : existing.currentStep,
+    data: body.data,
+    updatedAt: new Date().toISOString(),
+  };
+  await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
+  return json({ ok: true, updatedAt: record.updatedAt }, 200, origin);
+}
+
+function isAdmin(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   const providedToken = match ? match[1] : '';
+  return !!env.ADMIN_TOKEN && providedToken === env.ADMIN_TOKEN;
+}
 
-  if (!env.ADMIN_TOKEN || providedToken !== env.ADMIN_TOKEN) {
+async function handleAdminOnboarding(request, env, origin) {
+  if (!isAdmin(request, env)) {
+    return json({ error: 'Not authorized' }, 401, origin);
+  }
+
+  const records = [];
+  let cursor;
+  do {
+    const page = await env.PORTAL_KV.list({ prefix: 'onboarding:', cursor });
+    for (const key of page.keys) {
+      const raw = await env.PORTAL_KV.get(key.name);
+      if (!raw) continue;
+      try {
+        records.push(JSON.parse(raw));
+      } catch {}
+    }
+    cursor = page.cursor;
+    if (page.list_complete) break;
+  } while (cursor);
+
+  records.sort((a, b) => String(b.startTime).localeCompare(String(a.startTime)));
+  return json({ records }, 200, origin);
+}
+
+async function handleAdminClients(request, env, origin) {
+  if (!isAdmin(request, env)) {
     return json({ error: 'Not authorized' }, 401, origin);
   }
 
@@ -469,8 +563,18 @@ export default {
       if (saveMatch && request.method === 'POST') {
         return await handleSaveAssessment(request, env, origin, saveMatch[1]);
       }
+      if (url.pathname === '/api/onboarding/start' && request.method === 'POST') {
+        return await handleOnboardingStart(request, env, origin);
+      }
+      const onbMatch = url.pathname.match(/^\/api\/onboarding\/(BLA-ONB-\d{4}-\d{4})$/);
+      if (onbMatch && request.method === 'POST') {
+        return await handleOnboardingSave(request, env, origin, onbMatch[1]);
+      }
       if (url.pathname === '/api/admin/clients' && request.method === 'GET') {
         return await handleAdminClients(request, env, origin);
+      }
+      if (url.pathname === '/api/admin/onboarding' && request.method === 'GET') {
+        return await handleAdminOnboarding(request, env, origin);
       }
       if (url.pathname.startsWith('/api/')) {
         return json({ error: 'Not found' }, 404, origin);

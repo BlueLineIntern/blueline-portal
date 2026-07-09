@@ -21,7 +21,10 @@
   .btn-small { padding: 6px 14px; font-size: 0.85rem; }
 
   /* Client detail view */
-  #detail-view { max-width: 900px; margin: 0 auto; }
+  #detail-view, #onb-detail-view { max-width: 900px; margin: 0 auto; }
+  .onb-section { margin-top: 20px; }
+  .onb-section h2 { margin: 0 0 10px; font-size: 1.15rem; }
+  .onb-section .not-done { color: var(--text-muted); font-style: italic; }
   .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
   .detail-header h1 { margin: 0; }
   .detail-header-actions { display: flex; gap: 12px; }
@@ -34,7 +37,7 @@
   @media print {
     /* Print exactly the detail view as a branded client report */
     body { background: #fff; }
-    .topbar, .footer, #token-card, #clients-card, .detail-header-actions { display: none !important; }
+    .topbar, .footer, #token-card, #clients-card, #onboarding-card, .detail-header-actions { display: none !important; }
     .container { padding: 0; max-width: none; }
 
     .print-header {
@@ -126,6 +129,52 @@
       </table>
     </div>
 
+    <div class="card hidden" id="onboarding-card">
+      <h1>Onboarding Submissions (Proof of Concept)</h1>
+      <p class="admin-empty">Test-data submissions from the /onboarding/ workflow. Records update live as users move through the steps.</p>
+      <table class="admin-table" id="onboarding-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Onboarding ID</th>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Progress</th>
+            <th>Risk</th>
+            <th>Started</th>
+            <th>Completed</th>
+            <th>Last Updated</th>
+          </tr>
+        </thead>
+        <tbody id="onboarding-body"></tbody>
+      </table>
+    </div>
+
+    <div class="hidden" id="onb-detail-view">
+      <div class="print-header">
+        <div class="print-header-title">
+          <h1>Onboarding Summary</h1>
+          <p id="onb-print-client-line"></p>
+          <p id="onb-print-date-line"></p>
+          <p>Prepared by BlueLine Advisors — proof of concept, sample data only.</p>
+        </div>
+        <div class="print-header-logo">
+          <img src="assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" />
+        </div>
+      </div>
+      <div class="detail-header">
+        <div>
+          <h1 id="onb-detail-name"></h1>
+          <p class="detail-client-email" id="onb-detail-meta"></p>
+        </div>
+        <div class="detail-header-actions">
+          <button type="button" class="btn btn-primary" id="onb-print-btn">Print / Save PDF</button>
+          <button type="button" class="btn btn-secondary" id="onb-back-btn">← Back to Submissions</button>
+        </div>
+      </div>
+      <div id="onb-detail-content"></div>
+    </div>
+
     <div class="hidden" id="detail-view">
       <div class="print-header">
         <div class="print-header-title">
@@ -162,6 +211,7 @@
     const detailView = document.getElementById('detail-view');
 
     let allClients = [];
+    let allOnboardings = [];
 
     tokenForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -169,16 +219,22 @@
       const token = document.getElementById('admin-token').value;
 
       try {
-        const res = await fetch('/api/admin/clients', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to load clients');
+        const headers = { Authorization: `Bearer ${token}` };
+        const [clientsRes, onbRes] = await Promise.all([
+          fetch('/api/admin/clients', { headers }),
+          fetch('/api/admin/onboarding', { headers }),
+        ]);
+        const data = await clientsRes.json();
+        if (!clientsRes.ok) throw new Error(data.error || 'Failed to load clients');
+        const onbData = await onbRes.json().catch(() => ({ records: [] }));
 
         allClients = data.clients;
+        allOnboardings = (onbRes.ok && onbData.records) || [];
         renderClients(allClients);
+        renderOnboardings(allOnboardings);
         tokenCard.classList.add('hidden');
         clientsCard.classList.remove('hidden');
+        document.getElementById('onboarding-card').classList.remove('hidden');
       } catch (err) {
         tokenError.textContent = err.message;
       }
@@ -299,15 +355,168 @@
       }).join('');
 
       clientsCard.classList.add('hidden');
+      document.getElementById('onboarding-card').classList.add('hidden');
       detailView.classList.remove('hidden');
       window.scrollTo(0, 0);
     }
+
+    // ---------- Onboarding POC submissions ----------
+
+    const ONB_SECTIONS = [
+      ['consent', 'Electronic Consent'], ['regdocs', 'Regulatory Documents'],
+      ['agreement', 'Advisory Agreement Placeholder'], ['profile', 'Client Profile'],
+      ['discovery', 'Planning Discovery'], ['snapshot', 'Financial Snapshot'],
+      ['risk', 'Risk Assessment'], ['uploads', 'Document Upload Placeholder'],
+      ['portal', 'Portal Setup'], ['meetingprep', 'First Meeting Prep'],
+    ];
+
+    function onbClientName(r) {
+      const p = (r.data && r.data.profile) || {};
+      const c = (r.data && r.data.consent) || {};
+      return [p.firstName, p.lastName].filter(Boolean).join(' ') || c.name || '—';
+    }
+
+    function onbClientEmail(r) {
+      const p = (r.data && r.data.profile) || {};
+      const c = (r.data && r.data.consent) || {};
+      return p.email || c.email || '—';
+    }
+
+    function renderOnboardings(records) {
+      const body = document.getElementById('onboarding-body');
+      if (!records.length) {
+        body.innerHTML = '<tr><td colspan="9" class="admin-empty">No onboarding submissions yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = records
+        .map((r, index) => {
+          const done = ONB_SECTIONS.filter(([k]) => r.data && r.data[k]).length;
+          const risk = r.data && r.data.risk
+            ? `${r.data.risk.score} / 100<br>${escapeHtml(r.data.risk.profile)}`
+            : missing();
+          return `<tr>
+            <td><button type="button" class="btn btn-secondary btn-small onb-detail-btn" data-index="${index}" ${done ? '' : 'disabled title="No data yet"'}>Details</button></td>
+            <td>${escapeHtml(r.onboardingId)}</td>
+            <td>${escapeHtml(onbClientName(r))}</td>
+            <td>${escapeHtml(onbClientEmail(r))}</td>
+            <td><span class="module-count">${done} / ${ONB_SECTIONS.length}</span></td>
+            <td>${risk}</td>
+            <td>${r.startTime ? new Date(r.startTime).toLocaleString() : missing()}</td>
+            <td>${r.completionTime ? new Date(r.completionTime).toLocaleString() : '<span class="cell-missing">In progress</span>'}</td>
+            <td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : missing()}</td>
+          </tr>`;
+        })
+        .join('');
+      body.querySelectorAll('.onb-detail-btn').forEach((btn) => {
+        btn.addEventListener('click', () => showOnbDetail(Number(btn.dataset.index)));
+      });
+    }
+
+    function onbRows(pairs) {
+      const rows = pairs
+        .filter(([, v]) => v != null && v !== '')
+        .map(([label, v]) => `<div class="stat-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(v)}</strong></div>`)
+        .join('');
+      return rows ? `<div class="stat-rows">${rows}</div>` : '<p class="not-done">No details recorded.</p>';
+    }
+
+    function onbSection(title, data, buildRows) {
+      const inner = data ? buildRows(data) : '<p class="not-done">Not completed.</p>';
+      return `<div class="card onb-section"><h2>${escapeHtml(title)}</h2>${inner}</div>`;
+    }
+
+    function showOnbDetail(index) {
+      const r = allOnboardings[index];
+      if (!r) return;
+      const d = r.data || {};
+
+      document.getElementById('onb-detail-name').textContent = onbClientName(r);
+      document.getElementById('onb-detail-meta').textContent =
+        `${r.onboardingId} · ${onbClientEmail(r)} · ${r.completionTime ? 'Completed' : 'In progress'}`;
+      document.getElementById('onb-print-client-line').textContent =
+        `Client: ${onbClientName(r)} (${onbClientEmail(r)}) — ${r.onboardingId}`;
+      document.getElementById('onb-print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
+
+      const detail = (answer, extra) => [answer, extra].filter(Boolean).join(' — ');
+
+      document.getElementById('onb-detail-content').innerHTML = [
+        onbSection('Electronic Consent', d.consent, (c) => onbRows([
+          ['Name', c.name], ['Email', c.email],
+          ['Consented', c.consented ? 'Yes' : 'No'],
+          ['Timestamp', c.timestamp && new Date(c.timestamp).toLocaleString()],
+        ])),
+        onbSection('Regulatory Documents', d.regdocs, (g) => onbRows(
+          Object.values(g.documents || {}).map((doc) =>
+            [`${doc.name} (${doc.version})`, doc.acknowledgedAt ? `Acknowledged ${new Date(doc.acknowledgedAt).toLocaleString()}` : '—'])
+        )),
+        onbSection('Advisory Agreement Placeholder', d.agreement, (a) => onbRows([
+          ['Placeholder acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No'],
+          ['Timestamp', a.timestamp && new Date(a.timestamp).toLocaleString()],
+        ])),
+        onbSection('Client Profile', d.profile, (p) => onbRows([
+          ['Name', [p.firstName, p.lastName].filter(Boolean).join(' ')],
+          ['Preferred name', p.preferredName], ['Email', p.email], ['Phone', p.phone],
+          ['Address', [p.street, p.city, p.state, p.zip].filter(Boolean).join(', ')],
+          ['Date of birth (test data)', p.dob], ['Marital status', p.maritalStatus],
+          ['Spouse / partner', p.spouseName],
+          ['Employer / occupation', [p.employer, p.occupation].filter(Boolean).join(' — ')],
+          ['Trusted contact', [p.trustedContactName, p.trustedContactPhone].filter(Boolean).join(' — ')],
+          ['CPA', p.cpaName], ['Attorney', p.attorneyName],
+          ['Preferred communication', p.preferredCommunication],
+        ])),
+        onbSection('Planning Discovery', d.discovery, (v) => onbRows([
+          ['What prompted contact', v.prompt], ['Top three priorities', v.priorities],
+          ['Keeps them awake', v.worries], ['One-year success definition', v.success],
+          ['Major life events', detail(v.lifeEvents, v.lifeEventsDetail)],
+          ['Tax issues', detail(v.tax, v.taxDetail)],
+          ['Estate issues', detail(v.estate, v.estateDetail)],
+          ['Business issues', detail(v.business, v.businessDetail)],
+        ])),
+        onbSection('Financial Snapshot (ranges)', d.snapshot, (s) => onbRows([
+          ['Cash', s.cashRange], ['Investment accounts', s.investmentRange],
+          ['Retirement accounts', s.retirementRange], ['Real estate', s.realEstateRange],
+          ['Business value', s.businessRange], ['Mortgage', s.mortgageRange],
+          ['Other debt', s.otherDebtRange], ['Annual income', s.incomeRange],
+          ['Annual spending', s.spendingRange],
+        ])),
+        onbSection('Risk Assessment', d.risk, (k) => onbRows([
+          ['Score', k.score != null ? `${k.score} / 100` : null],
+          ['Profile', k.profile],
+          ['Completed', k.timestamp && new Date(k.timestamp).toLocaleString()],
+        ])),
+        onbSection('Documents (upload placeholder)', d.uploads, (u) => onbRows(
+          Object.values(u).map((item) => [item.label, item.willProvideLater ? 'Will provide later' : 'Not confirmed'])
+        )),
+        onbSection('Portal Setup', d.portal, (po) => onbRows([
+          ['Meeting format', po.meetingFormat], ['Meeting time', po.meetingTime],
+          ['Best phone', po.bestPhone], ['Best email', po.bestEmail],
+        ])),
+        onbSection('First Meeting Prep', d.meetingprep, (m) => onbRows([
+          ['Wants to accomplish', m.accomplish], ['Questions to answer first', m.questions],
+          ['Review before meeting', m.review], ['Additional attendees', m.attendees],
+        ])),
+      ].join('');
+
+      clientsCard.classList.add('hidden');
+      document.getElementById('onboarding-card').classList.add('hidden');
+      document.getElementById('onb-detail-view').classList.remove('hidden');
+      window.scrollTo(0, 0);
+    }
+
+    document.getElementById('onb-print-btn').addEventListener('click', () => window.print());
+    document.getElementById('onb-back-btn').addEventListener('click', () => {
+      document.getElementById('onb-detail-view').classList.add('hidden');
+      clientsCard.classList.remove('hidden');
+      document.getElementById('onboarding-card').classList.remove('hidden');
+      window.scrollTo(0, 0);
+    });
 
     document.getElementById('detail-print-btn').addEventListener('click', () => window.print());
 
     document.getElementById('detail-back-btn').addEventListener('click', () => {
       detailView.classList.add('hidden');
       clientsCard.classList.remove('hidden');
+      document.getElementById('onboarding-card').classList.remove('hidden');
       window.scrollTo(0, 0);
     });
   </script>

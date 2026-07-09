@@ -10,6 +10,8 @@ $port = 8787
 $users = @{}
 $sessions = @{}
 $responses = @{}
+$onboardings = @{}
+$script:onbCounter = 0
 
 function Send-Json($ctx, $code, $obj) {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($obj | ConvertTo-Json -Depth 12))
@@ -170,6 +172,34 @@ while ($listener.IsListening) {
             if (-not $responses.ContainsKey($email)) { $responses[$email] = @{} }
             $responses[$email][$moduleName] = $module
             Send-Json $ctx 200 @{ module = $module; modules = $responses[$email] }
+        }
+        elseif ($path -eq '/api/onboarding/start' -and $method -eq 'POST') {
+            $script:onbCounter++
+            $id = 'BLA-ONB-{0}-{1:d4}' -f (Get-Date).Year, $script:onbCounter
+            $onboardings[$id] = @{
+                onboardingId = $id
+                startTime = (Get-Date).ToString('o')
+                completionTime = $null
+                currentStep = 0
+                data = @{}
+                updatedAt = (Get-Date).ToString('o')
+            }
+            Send-Json $ctx 201 @{ onboardingId = $id; startTime = $onboardings[$id].startTime }
+        }
+        elseif ($path -match '^/api/onboarding/(BLA-ONB-\d{4}-\d{4})$' -and $method -eq 'POST') {
+            $id = $Matches[1]
+            if (-not $onboardings.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Unknown onboarding id' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body -or $body.onboardingId -ne $id) { Send-Json $ctx 400 @{ error = 'Body must include a matching onboardingId' }; continue }
+            $rec = $onboardings[$id]
+            $rec.completionTime = $body.completionTime
+            $rec.currentStep = [int]$body.currentStep
+            $rec.data = $body.data
+            $rec.updatedAt = (Get-Date).ToString('o')
+            Send-Json $ctx 200 @{ ok = $true; updatedAt = $rec.updatedAt }
+        }
+        elseif ($path -eq '/api/admin/onboarding' -and $method -eq 'GET') {
+            Send-Json $ctx 200 @{ records = @($onboardings.Values) }
         }
         elseif ($path -eq '/api/admin/clients' -and $method -eq 'GET') {
             $clients = @($users.Values | ForEach-Object {
