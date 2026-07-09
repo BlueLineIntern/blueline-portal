@@ -19,6 +19,9 @@
   .cell-negative { color: var(--error); font-weight: 600; }
   .module-count { font-weight: 700; color: var(--navy); }
   .btn-small { padding: 6px 14px; font-size: 0.85rem; }
+  .onb-card-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .onb-card-header h1 { margin: 0; }
+  #refresh-status { font-size: 0.8rem; }
 
   /* Client detail view */
   #detail-view, #onb-detail-view { max-width: 900px; margin: 0 auto; }
@@ -130,8 +133,14 @@
     </div>
 
     <div class="card hidden" id="onboarding-card">
-      <h1>Onboarding Submissions (Proof of Concept)</h1>
-      <p class="admin-empty">Test-data submissions from the /onboarding/ workflow. Records update live as users move through the steps.</p>
+      <div class="onb-card-header">
+        <h1>Onboarding Submissions (Proof of Concept)</h1>
+        <button type="button" class="btn btn-secondary btn-small" id="refresh-btn">↻ Refresh</button>
+      </div>
+      <p class="admin-empty">Test-data submissions from the /onboarding/ workflow. New submissions are saved
+      to the server as soon as the client moves to the next step — click Refresh (or wait; this table
+      auto-refreshes every 20 seconds) to see them here.</p>
+      <p class="admin-empty" id="refresh-status"></p>
       <table class="admin-table" id="onboarding-table">
         <thead>
           <tr>
@@ -212,6 +221,47 @@
 
     let allClients = [];
     let allOnboardings = [];
+    let adminToken = null;
+    let pollTimer = null;
+    const POLL_INTERVAL_MS = 20000;
+
+    // Only re-fetches/re-renders while a summary table is on screen — not
+    // while a detail view (client or onboarding) is open, so an in-progress
+    // read isn't yanked out from under the person looking at it.
+    function tablesAreVisible() {
+      return !clientsCard.classList.contains('hidden') || !document.getElementById('onboarding-card').classList.contains('hidden');
+    }
+
+    async function loadAdminData({ showStatus = false } = {}) {
+      if (!adminToken) return;
+      const statusEl = document.getElementById('refresh-status');
+      if (showStatus) statusEl.textContent = 'Refreshing…';
+      try {
+        const headers = { Authorization: `Bearer ${adminToken}` };
+        const [clientsRes, onbRes] = await Promise.all([
+          fetch('/api/admin/clients', { headers }),
+          fetch('/api/admin/onboarding', { headers }),
+        ]);
+        const data = await clientsRes.json();
+        if (!clientsRes.ok) throw new Error(data.error || 'Failed to load clients');
+        const onbData = await onbRes.json().catch(() => ({ records: [] }));
+
+        allClients = data.clients;
+        allOnboardings = (onbRes.ok && onbData.records) || [];
+        renderClients(allClients);
+        renderOnboardings(allOnboardings);
+        if (showStatus) statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        if (showStatus) statusEl.textContent = `Refresh failed: ${err.message}`;
+      }
+    }
+
+    function startPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(() => {
+        if (tablesAreVisible()) loadAdminData();
+      }, POLL_INTERVAL_MS);
+    }
 
     tokenForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -228,6 +278,7 @@
         if (!clientsRes.ok) throw new Error(data.error || 'Failed to load clients');
         const onbData = await onbRes.json().catch(() => ({ records: [] }));
 
+        adminToken = token;
         allClients = data.clients;
         allOnboardings = (onbRes.ok && onbData.records) || [];
         renderClients(allClients);
@@ -235,10 +286,13 @@
         tokenCard.classList.add('hidden');
         clientsCard.classList.remove('hidden');
         document.getElementById('onboarding-card').classList.remove('hidden');
+        startPolling();
       } catch (err) {
         tokenError.textContent = err.message;
       }
     });
+
+    document.getElementById('refresh-btn').addEventListener('click', () => loadAdminData({ showStatus: true }));
 
     function money(n) {
       const v = Number(n || 0);
