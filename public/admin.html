@@ -23,6 +23,7 @@
      everywhere on this page it sits on a white card, so it needs dark text. */
   .btn-ghost { color: var(--navy); border: 1px solid var(--border); }
   .onb-card-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .onb-card-actions { display: flex; gap: 10px; align-items: center; }
   .onb-card-header h1 { margin: 0; }
   #refresh-status { font-size: 0.8rem; }
   .onb-trash-heading { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 1.05rem; color: var(--text-muted); }
@@ -141,7 +142,10 @@
     <div class="card hidden" id="onboarding-card">
       <div class="onb-card-header">
         <h1>Onboarding Submissions (Proof of Concept)</h1>
-        <button type="button" class="btn btn-secondary btn-small" id="refresh-btn">↻ Refresh</button>
+        <div class="onb-card-actions">
+          <button type="button" class="btn btn-ghost btn-small hidden" id="toggle-deleted-btn"></button>
+          <button type="button" class="btn btn-secondary btn-small" id="refresh-btn">↻ Refresh</button>
+        </div>
       </div>
       <p class="admin-empty">Test-data submissions from the /onboarding/ workflow. New submissions are saved
       to the server as soon as the client moves to the next step — click Refresh (or wait; this table
@@ -245,6 +249,7 @@
     let allClients = [];
     let allOnboardings = [];
     let adminToken = null;
+    let showDeleted = false;
     let pollTimer = null;
     const POLL_INTERVAL_MS = 20000;
 
@@ -316,6 +321,10 @@
     });
 
     document.getElementById('refresh-btn').addEventListener('click', () => loadAdminData({ showStatus: true }));
+    document.getElementById('toggle-deleted-btn').addEventListener('click', () => {
+      showDeleted = !showDeleted;
+      renderOnboardings(allOnboardings);
+    });
 
     function money(n) {
       const v = Number(n || 0);
@@ -506,13 +515,22 @@
         btn.addEventListener('click', () => deleteOnboarding(btn.dataset.id));
       });
 
-      trashWrap.classList.toggle('hidden', deletedRows.length === 0);
+      const toggleBtn = document.getElementById('toggle-deleted-btn');
       if (deletedRows.length) {
+        toggleBtn.classList.remove('hidden');
+        toggleBtn.textContent = `${showDeleted ? 'Hide' : 'Show'} deleted (${deletedRows.length})`;
         document.getElementById('onb-trash-heading').textContent = `Deleted (${deletedRows.length})`;
         trashBody.innerHTML = deletedRows.join('');
         trashBody.querySelectorAll('.onb-restore-btn').forEach((btn) => {
           btn.addEventListener('click', () => restoreOnboarding(btn.dataset.id));
         });
+        trashWrap.classList.toggle('hidden', !showDeleted);
+      } else {
+        // Nothing deleted: hide the toggle and the list, and reset the state so
+        // it doesn't stay "expanded" the next time something is deleted.
+        toggleBtn.classList.add('hidden');
+        trashWrap.classList.add('hidden');
+        showDeleted = false;
       }
     }
 
