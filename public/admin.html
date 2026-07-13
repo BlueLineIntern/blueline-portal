@@ -41,6 +41,21 @@
   .detail-client-email { color: var(--text-muted); margin: 4px 0 0; }
   .detail-empty-module { color: var(--text-muted); margin: 14px 0 0; }
 
+  /* Mobile / phone layout */
+  @media (max-width: 640px) {
+    .admin-container { padding-left: 12px; padding-right: 12px; }
+    .onb-card-header { flex-direction: column; align-items: flex-start; }
+    .onb-card-actions { width: 100%; }
+    .onb-card-actions .btn { flex: 1; }
+    .detail-header { flex-direction: column; align-items: flex-start; }
+    .detail-header-actions { width: 100%; }
+    .detail-header-actions .btn { flex: 1; }
+    .onb-signature, #detail-view, #onb-detail-view { max-width: 100%; }
+    /* Wide data tables stay usable via horizontal scroll on their card */
+    .admin-table { min-width: 720px; }
+    .token-form { max-width: 100%; }
+  }
+
   /* Print report header — hidden on screen, shown when printing */
   .print-header { display: none; }
 

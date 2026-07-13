@@ -908,3 +908,94 @@ h2 {
     width: 64px;
   }
 }
+
+/* ---------- Mobile / phone layout ---------- */
+@media (max-width: 640px) {
+  /* Topbar + logo: the desktop logo uses a large negative margin to crop the
+     image's built-in whitespace, which pushed it off the left edge on phones.
+     Re-balance padding against the margin so the box sits flush at x=0. */
+  .topbar-inner {
+    padding: 6px 16px;
+    gap: 10px;
+  }
+  .brand-logo {
+    height: 50px;
+    margin-left: -16px;
+  }
+  .nav-auth {
+    gap: 10px;
+    font-size: 0.85rem;
+  }
+  #nav-username {
+    max-width: 40vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .nav-auth .btn {
+    padding: 8px 12px;
+    font-size: 0.85rem;
+  }
+
+  /* Roomier tap targets, tighter page gutters */
+  .container {
+    padding: 24px 16px;
+  }
+  .card {
+    padding: 22px 18px;
+  }
+  h1 {
+    font-size: 1.55rem;
+  }
+  h2 {
+    font-size: 1.2rem;
+  }
+
+  /* Header rows stack instead of squeezing side by side */
+  .dashboard-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .dashboard-header .btn {
+    align-self: flex-start;
+  }
+
+  /* Home hub: single column, full-width action buttons */
+  .hub-grid {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+  .hub-card {
+    padding: 24px 20px;
+  }
+  .hub-card-btn {
+    align-self: stretch;
+    text-align: center;
+  }
+
+  /* Module cards + action rows */
+  .module-card {
+    padding: 22px 18px;
+  }
+  .module-card-footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .form-actions {
+    flex-direction: column-reverse;
+  }
+  .form-actions .btn {
+    width: 100%;
+    margin-top: 0;
+  }
+
+  /* Prevent iOS zoom-on-focus: inputs must be >= 16px */
+  .form input,
+  .form select,
+  .form textarea,
+  .budget-field input[type="number"] {
+    font-size: 16px;
+  }
+}
