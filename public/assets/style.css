@@ -270,6 +270,79 @@ h2 {
   margin-bottom: 20px;
 }
 
+/* Home hub */
+.hub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 24px;
+  margin-top: 8px;
+  max-width: 920px;
+}
+
+.hub-card {
+  display: flex;
+  flex-direction: column;
+  padding: 30px 32px;
+}
+
+.hub-card-icon {
+  width: 54px;
+  height: 54px;
+  border-radius: 12px;
+  background: var(--navy);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+
+.hub-card-icon svg {
+  width: 30px;
+  height: 30px;
+  fill: var(--sky);
+  stroke: var(--sky);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hub-card h2 {
+  margin: 0 0 10px;
+  font-family: Georgia, serif;
+  color: var(--navy);
+  font-size: 1.35rem;
+}
+
+.hub-card-desc {
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin: 0 0 18px;
+  flex: 1;
+}
+
+.hub-card-status {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--navy);
+  margin: 0 0 8px;
+  min-height: 1.2em;
+}
+
+.hub-card-status-note {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.hub-card-progress {
+  margin-bottom: 18px;
+  min-height: 8px;
+}
+
+.hub-card-btn {
+  align-self: flex-start;
+  text-decoration: none;
+  display: inline-block;
+}
+
 .summary-list {
   display: grid;
   grid-template-columns: 220px 1fr;

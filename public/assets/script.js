@@ -44,7 +44,7 @@ async function apiRequest(path, { method = "GET", body, auth = false } = {}) {
 
 // ---------- View management ----------
 
-const VIEW_IDS = ["auth", "dashboard", "risk", "budget", "retirement", "networth", "compensation"];
+const VIEW_IDS = ["auth", "home", "dashboard", "risk", "budget", "retirement", "networth", "compensation"];
 
 function showView(name) {
   VIEW_IDS.forEach((id) => document.getElementById(`view-${id}`).classList.add("hidden"));
@@ -127,7 +127,46 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
   showView("auth");
 });
 
-// ---------- Dashboard ----------
+// ---------- Home hub ----------
+
+function renderHome() {
+  const session = getSession();
+  document.getElementById("home-welcome").textContent = session ? `Welcome, ${session.name}` : "Welcome";
+
+  const completed = MODULES.filter((mod) => currentModules[mod.key]).length;
+  const statusEl = document.getElementById("home-fpa-status");
+  statusEl.textContent =
+    completed === 0
+      ? "Not started"
+      : completed === MODULES.length
+        ? "All assessments complete ✓"
+        : `${completed} of ${MODULES.length} assessments complete`;
+  document.getElementById("home-fpa-fill").style.width = `${(completed / MODULES.length) * 100}%`;
+  document.getElementById("home-open-fpa").textContent = completed === 0 ? "Start Analysis" : "Open Analysis";
+}
+
+// Land here after login: fetch assessment progress (which also validates the
+// session), then show the hub with both offerings.
+async function loadHome() {
+  try {
+    const data = await apiRequest("/api/assessments", { auth: true });
+    currentModules = data.modules || {};
+  } catch (err) {
+    if (err.message.includes("authenticated")) {
+      clearSession();
+      updateNav();
+      showView("auth");
+      return;
+    }
+  }
+  renderHome();
+  showView("home");
+}
+
+document.getElementById("home-open-fpa").addEventListener("click", () => loadDashboard());
+document.getElementById("dashboard-home-btn").addEventListener("click", () => loadHome());
+
+// ---------- Financial Picture Analysis (assessment dashboard) ----------
 
 let currentModules = {};
 
@@ -450,7 +489,7 @@ document.getElementById("compensation-form").addEventListener("submit", async (e
 
 async function enterApp() {
   updateNav();
-  await loadDashboard();
+  await loadHome();
 }
 
 (function init() {

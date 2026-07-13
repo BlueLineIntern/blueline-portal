@@ -11,7 +11,7 @@ Single Cloudflare Worker serves both the static frontend (`public/`) and the API
 (`worker.js`), same origin — no CORS needed. Data lives in a Cloudflare KV
 namespace called `PORTAL_KV`.
 
-- `public/index.html` / `public/assets/style.css` / `public/assets/script.js` — client-facing login, five onboarding assessment modules, dashboard with SVG charts
+- `public/index.html` / `public/assets/style.css` / `public/assets/script.js` — client-facing login; after login users land on a **home hub** (`view-home`) with two tiles: **"Financial Picture Analysis"** (the five-assessment dashboard, `view-dashboard`, with live x-of-5 progress) and **"New Client Onboarding"** (links to `/onboarding/`). Dashboard has a "← Back to Home" button; module back-buttons return to the dashboard.
 - `public/assets/render.js` — shared chart builders (`donutChart`, `riskGauge`, `projectionChart`, `balanceBars`, `statBar`), module metadata (`MODULES`), and per-module result renderers; loaded by both index.html and admin.html
 - `public/admin.html` — internal staff view, gated by `ADMIN_TOKEN` secret (separate from client logins): summary table of all clients plus a per-client "Details" view that renders the client's full dashboard (same charts/flags the client sees, via render.js)
 - `worker.js` — register/login/logout, per-module assessment save/load, admin listing
