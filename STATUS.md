@@ -61,6 +61,17 @@ ADMIN_TOKEN-gated) with per-record Details + print view. Client-side exports on
 the confirmation page: contacts.csv, notes.csv, onboarding_summary.html,
 audit_record.json.
 
+**Signature capture (step 4):** the Advisory Agreement step has a drawable
+signature pad (`<canvas>` + Pointer Events — mouse, trackpad, touch, pen). The
+drawing is stored on the agreement record as a PNG data URL
+(`agreement.signatureDataUrl`) alongside `typedName` and `signedAt`, restored
+onto the canvas when navigating back, and rendered in the confirmation summary,
+the `onboarding_summary.html` export, and the admin detail/print view. Advancing
+is blocked until something is actually drawn. Sample data only — explicitly
+labeled "not a legally binding signature." NOTE: the coordinate math divides by
+the canvas's displayed width, so it only works when the canvas has non-zero
+layout size (a normal browser); a 0×0 viewport yields a blank pad.
+
 **Legacy data:** records saved before the module rework (top-level
 `budget`/`riskAnswers`) are ignored by `loadModules()` — those were test data.
 Clients from that era just see an empty dashboard.

@@ -32,6 +32,8 @@
   .onb-section { margin-top: 20px; }
   .onb-section h2 { margin: 0 0 10px; font-size: 1.15rem; }
   .onb-section .not-done { color: var(--text-muted); font-style: italic; }
+  .onb-signature { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px; max-width: 400px; margin-top: 12px; }
+  .onb-signature img { display: block; width: 100%; height: auto; }
   .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
   .detail-header h1 { margin: 0; }
   .detail-header-actions { display: flex; gap: 12px; }
@@ -586,10 +588,18 @@
           Object.values(g.documents || {}).map((doc) =>
             [`${doc.name} (${doc.version})`, doc.acknowledgedAt ? `Acknowledged ${new Date(doc.acknowledgedAt).toLocaleString()}` : '—'])
         )),
-        onbSection('Advisory Agreement Placeholder', d.agreement, (a) => onbRows([
-          ['Placeholder acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No'],
-          ['Timestamp', a.timestamp && new Date(a.timestamp).toLocaleString()],
-        ])),
+        onbSection('Advisory Agreement', d.agreement, (a) => {
+          const rows = onbRows([
+            ['Acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No'],
+            ['Typed name', a.typedName],
+            ['Signed at', a.signedAt && new Date(a.signedAt).toLocaleString()],
+          ]);
+          const sig = a.signatureDataUrl
+            ? `<div class="onb-signature"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Client signature" /></div>
+               <p class="not-done">Sample signature — proof of concept, not legally binding.</p>`
+            : '<p class="not-done">No signature captured.</p>';
+          return rows + sig;
+        }),
         onbSection('Client Profile', d.profile, (p) => onbRows([
           ['Name', [p.firstName, p.lastName].filter(Boolean).join(' ')],
           ['Preferred name', p.preferredName], ['Email', p.email], ['Phone', p.phone],

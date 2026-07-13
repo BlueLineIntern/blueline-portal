@@ -295,6 +295,99 @@ document.getElementById("doc-modal-close").addEventListener("click", () => {
   document.getElementById("doc-modal").classList.add("hidden");
 });
 
+// ---------- Signature pad ----------
+// Drawable canvas for the advisory-agreement step. Captures mouse, trackpad,
+// touch, and pen input via Pointer Events, and exports the drawing as a PNG
+// data URL stored on the agreement record. Sample data only — not a legally
+// binding signature.
+
+let signatureHasInk = false;
+let signaturePadReady = false;
+
+function markSigned(hasInk) {
+  signatureHasInk = hasInk;
+  const wrap = document.querySelector(".signature-wrap");
+  if (wrap) wrap.classList.toggle("signed", hasInk);
+}
+
+function initSignaturePad() {
+  const canvas = document.getElementById("signature-pad");
+  if (!canvas || signaturePadReady) return;
+  signaturePadReady = true;
+
+  const ctx = canvas.getContext("2d");
+  ctx.lineWidth = 2.2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "#1c2530";
+
+  let drawing = false;
+
+  // Canvas is a fixed 600x180 internal bitmap shown at a responsive CSS width;
+  // scale pointer coordinates from displayed size to bitmap size.
+  function pos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    drawing = true;
+    const p = pos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    try { canvas.setPointerCapture(e.pointerId); } catch {}
+    e.preventDefault();
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    if (!signatureHasInk) markSigned(true);
+    e.preventDefault();
+  });
+  const stop = (e) => {
+    if (!drawing) return;
+    drawing = false;
+    e.preventDefault();
+  };
+  canvas.addEventListener("pointerup", stop);
+  canvas.addEventListener("pointercancel", stop);
+  canvas.addEventListener("pointerleave", stop);
+
+  document.getElementById("signature-clear").addEventListener("click", () => {
+    clearSignature();
+    if (state.data.agreement) {
+      delete state.data.agreement.signatureDataUrl;
+      delete state.data.agreement.signedAt;
+      saveState();
+    }
+  });
+}
+
+function clearSignature() {
+  const canvas = document.getElementById("signature-pad");
+  if (!canvas) return;
+  canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+  markSigned(false);
+}
+
+function restoreSignature(dataUrl) {
+  const canvas = document.getElementById("signature-pad");
+  if (!canvas || !dataUrl) return;
+  const ctx = canvas.getContext("2d");
+  const img = new Image();
+  img.onload = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    markSigned(true);
+  };
+  img.src = dataUrl;
+}
+
 // ---------- Navigation ----------
 
 function showStep(index) {
@@ -358,6 +451,7 @@ document.getElementById("restart-btn").addEventListener("click", () => {
   });
   document.querySelectorAll("select").forEach((el) => (el.value = ""));
   document.getElementById("risk-result").classList.add("hidden");
+  clearSignature();
   showStep(0);
 });
 
@@ -398,10 +492,22 @@ const COLLECTORS = {
   },
 
   agreement() {
-    if (!document.getElementById("agreement-ack").checked) {
-      return setError("agreement-error", "Please confirm you understand this is a placeholder.");
+    const canvas = document.getElementById("signature-pad");
+    if (!signatureHasInk) {
+      return setError("agreement-error", "Please sign in the box above using your mouse, trackpad, or finger.");
     }
-    state.data.agreement = { onboardingId: state.onboardingId, placeholderAcknowledged: true, timestamp: nowIso() };
+    if (!document.getElementById("agreement-ack").checked) {
+      return setError("agreement-error", "Please confirm you understand this is a proof of concept.");
+    }
+    const existing = state.data.agreement || {};
+    state.data.agreement = {
+      onboardingId: state.onboardingId,
+      placeholderAcknowledged: true,
+      typedName: document.getElementById("agreement-typed-name").value.trim(),
+      signatureDataUrl: canvas.toDataURL("image/png"),
+      signedAt: existing.signedAt || nowIso(),
+      timestamp: nowIso(),
+    };
     return setError("agreement-error", "");
   },
 
@@ -520,7 +626,12 @@ const POPULATORS = {
     });
   },
   agreement() {
-    document.getElementById("agreement-ack").checked = !!(state.data.agreement && state.data.agreement.placeholderAcknowledged);
+    initSignaturePad();
+    const a = state.data.agreement;
+    document.getElementById("agreement-ack").checked = !!(a && a.placeholderAcknowledged);
+    document.getElementById("agreement-typed-name").value = (a && a.typedName) || "";
+    if (a && a.signatureDataUrl) restoreSignature(a.signatureDataUrl);
+    else clearSignature();
   },
   profile() {
     const d = state.data.profile;
@@ -633,8 +744,15 @@ function missingItems() {
 function renderConfirmation() {
   const p = state.data.profile || {};
   const r = state.data.risk || {};
+  const a = state.data.agreement || {};
   const sections = completedSections();
   const missing = missingItems();
+
+  const signatureBlock = a.signatureDataUrl
+    ? `<h2 class="section-heading">Advisory Agreement Signature</h2>
+       <p>Captured ${a.signedAt ? escapeHtml(new Date(a.signedAt).toLocaleString()) : ""}${a.typedName ? " · " + escapeHtml(a.typedName) : ""} — sample data, not legally binding.</p>
+       <div class="signature-review"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Captured signature" /></div>`
+    : "";
 
   document.getElementById("confirm-summary").innerHTML = `
     <div class="summary-block">
@@ -644,6 +762,7 @@ function renderConfirmation() {
       <div class="summary-row"><span>Risk profile</span><strong>${escapeHtml(r.profile || "—")}</strong></div>
       <div class="summary-row"><span>Completed sections</span><strong class="summary-ok">${sections.length} of 10</strong></div>
     </div>
+    ${signatureBlock}
     <h2 class="section-heading">Completed</h2>
     <ul>${sections.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>
     <h2 class="section-heading">Outstanding items</h2>
@@ -731,9 +850,20 @@ function buildSummaryHtml() {
   const r = state.data.risk || {};
   const po = state.data.portal || {};
   const m = state.data.meetingprep || {};
+  const a = state.data.agreement || {};
   const name = [p.firstName, p.lastName].filter(Boolean).join(" ");
   const row = (label, value) =>
     `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value || "—")}</td></tr>`;
+
+  const signatureSection = a.signatureDataUrl
+    ? `<h2>Advisory Agreement Signature</h2>
+<table>
+${row("Typed name", a.typedName)}
+${row("Signed at", a.signedAt ? new Date(a.signedAt).toLocaleString() : "")}
+</table>
+<div class="signature-box"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Captured signature" /></div>
+<p class="poc" style="margin-top:6px">Sample signature captured in the proof of concept — not a legally binding signature.</p>`
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8" />
@@ -749,6 +879,8 @@ function buildSummaryHtml() {
   td:first-child { font-weight: 700; color: #1B2A4A; width: 260px; }
   .flag { background: #fdf3e6; border-left: 3px solid #F2A65A; padding: 8px 12px; margin: 6px 0; }
   .poc { color: #7a5220; font-size: 0.85rem; margin-top: 30px; }
+  .signature-box { border: 1px solid #dfe6ee; border-radius: 8px; padding: 8px; max-width: 400px; background: #fff; }
+  .signature-box img { display: block; width: 100%; height: auto; }
 </style></head><body>
 <div class="header">
   <h1>BlueLine Advisors — Onboarding Summary</h1>
@@ -806,6 +938,8 @@ ${row("Score", r.score != null ? `${r.score} / 100` : "")}
 ${row("Profile", r.profile)}
 </table>
 
+${signatureSection}
+
 <h2>Communication & Meeting Preferences</h2>
 <table>
 ${row("Meeting format", po.meetingFormat)}
@@ -852,6 +986,9 @@ function buildAuditJson() {
       regulatory_documents_acknowledged: regdocsAcknowledged,
       document_versions: documentVersions,
       advisory_agreement_placeholder_timestamp: (state.data.agreement && state.data.agreement.timestamp) || null,
+      advisory_agreement_signature_captured: !!(state.data.agreement && state.data.agreement.signatureDataUrl),
+      advisory_agreement_signed_at: (state.data.agreement && state.data.agreement.signedAt) || null,
+      advisory_agreement_typed_name: (state.data.agreement && state.data.agreement.typedName) || null,
       risk_score: (state.data.risk && state.data.risk.score) ?? null,
       risk_profile: (state.data.risk && state.data.risk.profile) || null,
       completed_sections: completedSections(),

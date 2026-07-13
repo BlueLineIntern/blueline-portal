@@ -83,15 +83,34 @@
       </div>
     </section>
 
-    <!-- 4. ADVISORY AGREEMENT PLACEHOLDER -->
+    <!-- 4. ADVISORY AGREEMENT -->
     <section class="step hidden" id="step-agreement">
       <div class="card">
         <h1>Advisory Agreement</h1>
-        <p class="sample-language">Advisory Agreement e-signature will eventually be handled
-        through DocuSign. This proof of concept only records that the user reached this step.</p>
+        <p class="sample-language">Sample advisory agreement text would appear here. In production,
+        e-signature would be handled through a provider such as DocuSign. For this proof of concept,
+        sign in the box below to see how signature capture works — this is sample data and is
+        <strong>not a legally binding signature</strong>.</p>
+
+        <div class="field">
+          <label for="agreement-typed-name">Type your full legal name (sample data)</label>
+          <input type="text" id="agreement-typed-name" />
+        </div>
+
+        <label class="sig-label">Sign below <span class="req">*</span>
+          <span class="sig-hint">— draw with your mouse, trackpad, or finger</span></label>
+        <div class="signature-wrap">
+          <canvas id="signature-pad" class="signature-pad" width="600" height="180"></canvas>
+          <div class="signature-baseline"><span class="signature-x">&times;</span></div>
+          <span class="signature-placeholder" id="signature-placeholder">Sign here</span>
+        </div>
+        <div class="signature-actions">
+          <button type="button" class="btn btn-ghost" id="signature-clear">Clear signature</button>
+        </div>
+
         <label class="check-option">
           <input type="checkbox" id="agreement-ack" />
-          I understand this is a placeholder. <span class="req">*</span>
+          I understand this is a proof of concept and not a legally binding signature. <span class="req">*</span>
         </label>
         <p class="form-error" id="agreement-error"></p>
       </div>

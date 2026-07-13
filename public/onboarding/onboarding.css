@@ -204,6 +204,64 @@ input:focus, select:focus, textarea:focus {
 .regdoc-version { font-size: 0.85rem; color: var(--text-muted); }
 .regdoc-ack { font-size: 0.95rem; }
 
+/* Signature pad */
+.sig-label {
+  display: block;
+  margin-top: 22px;
+  margin-bottom: 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--navy);
+}
+.sig-hint { font-weight: 400; color: var(--text-muted); font-size: 0.85rem; }
+.signature-wrap {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+  max-width: 600px;
+}
+.signature-pad {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: none; /* let us draw instead of scrolling on touch devices */
+  cursor: crosshair;
+  position: relative;
+  z-index: 2;
+}
+/* A faint baseline with an "x" cue, sitting behind the drawing surface. */
+.signature-baseline {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 34px;
+  border-bottom: 1px solid #c3cedb;
+  z-index: 1;
+  pointer-events: none;
+}
+.signature-x {
+  position: absolute;
+  left: -2px;
+  bottom: 0;
+  color: #c3cedb;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.signature-placeholder {
+  position: absolute;
+  left: 32px;
+  bottom: 40px;
+  color: #cdd7e2;
+  font-style: italic;
+  font-size: 0.95rem;
+  z-index: 1;
+  pointer-events: none;
+}
+.signature-wrap.signed .signature-placeholder { display: none; }
+.signature-actions { display: flex; gap: 12px; margin-top: 10px; }
+
 /* Risk questions */
 .risk-question {
   border: 1px solid var(--border);
@@ -267,6 +325,14 @@ input:focus, select:focus, textarea:focus {
 .summary-ok { color: var(--ok); }
 .summary-missing { color: #c97e2c; }
 .export-row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+.signature-review {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+  max-width: 400px;
+}
+.signature-review img { display: block; width: 100%; height: auto; }
 
 /* Modal */
 .modal-backdrop {
