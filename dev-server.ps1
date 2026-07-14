@@ -14,6 +14,12 @@ $assignments = @{}  # email -> array of assigned module keys ($null / absent = a
 $onboardings = @{}
 $onbSecrets = @{}
 $script:onbCounter = 0
+$adminSessions = @{}  # admin session token -> admin email
+# DEV ONLY credentials. The real worker uses ADMIN_EMAILS + the ADMIN_PASSWORD
+# secret; this throwaway password exists only so the mock can be exercised
+# locally and is intentionally NOT the production password.
+$adminEmails = @('fsabin@blueline-advisors.com', 'jyoung@blueline-advisors.com')
+$adminDevPassword = 'dev-admin-pass'
 
 # Fixed-window rate limiting, mirroring worker.js. [limit, windowSeconds].
 $rateLimits = @{ login = @(10, 300); register = @(5, 3600); onboardingStart = @(20, 3600) }
@@ -66,6 +72,12 @@ function Read-Body($ctx) {
 function Get-SessionEmail($ctx) {
     $auth = $ctx.Request.Headers['Authorization']
     if ($auth -match '^Bearer\s+(.+)$') { return $sessions[$Matches[1]] }
+    return $null
+}
+
+function Get-AdminEmail($ctx) {
+    $auth = $ctx.Request.Headers['Authorization']
+    if ($auth -match '^Bearer\s+(.+)$') { return $adminSessions[$Matches[1]] }
     return $null
 }
 
@@ -376,6 +388,21 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/logout' -and $method -eq 'POST') {
             Send-Json $ctx 200 @{ ok = $true }
         }
+        elseif ($path -eq '/api/admin/login' -and $method -eq 'POST') {
+            $body = Read-Body $ctx
+            $email = ([string]$body.email).Trim().ToLower()
+            if (($adminEmails -notcontains $email) -or ([string]$body.password -ne $adminDevPassword)) {
+                Send-Json $ctx 401 @{ error = 'Invalid email or password' }; continue
+            }
+            $token = New-Token
+            $adminSessions[$token] = $email
+            Send-Json $ctx 200 @{ token = $token; email = $email }
+        }
+        elseif ($path -eq '/api/admin/logout' -and $method -eq 'POST') {
+            $auth = $ctx.Request.Headers['Authorization']
+            if ($auth -match '^Bearer\s+(.+)$') { $adminSessions.Remove($Matches[1]) }
+            Send-Json $ctx 200 @{ ok = $true }
+        }
         elseif ($path -eq '/api/assessments' -and $method -eq 'GET') {
             $email = Get-SessionEmail $ctx
             if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
@@ -401,6 +428,7 @@ while ($listener.IsListening) {
             Send-Json $ctx 200 @{ assignments = $asg }
         }
         elseif ($path -match '^/api/admin/assignments/(.+)$' -and $method -eq 'POST') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $email = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
             if (-not $users.ContainsKey($email)) { Send-Json $ctx 404 @{ error = 'Unknown client' }; continue }
             $body = Read-Body $ctx
@@ -443,9 +471,11 @@ while ($listener.IsListening) {
             Send-Json $ctx 200 @{ ok = $true; updatedAt = $rec.updatedAt }
         }
         elseif ($path -eq '/api/admin/onboarding' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             Send-Json $ctx 200 @{ records = @($onboardings.Values) }
         }
         elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})/restore$' -and $method -eq 'POST') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $id = $Matches[1]
             if (-not $onboardings.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Not found or already purged' }; continue }
             $onboardings[$id].deleted = $false
@@ -453,6 +483,7 @@ while ($listener.IsListening) {
             Send-Json $ctx 200 @{ ok = $true }
         }
         elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})$' -and $method -eq 'DELETE') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $id = $Matches[1]
             if (-not $onboardings.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Not found' }; continue }
             $onboardings[$id].deleted = $true
@@ -460,6 +491,7 @@ while ($listener.IsListening) {
             Send-Json $ctx 200 @{ ok = $true; deletedAt = $onboardings[$id]['deletedAt'] }
         }
         elseif ($path -eq '/api/admin/clients' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $clients = @($users.Values | ForEach-Object {
                 $mods = if ($responses.ContainsKey($_.email)) { $responses[$_.email] } else { @{} }
                 $asg = if ($assignments.ContainsKey($_.email)) { @($assignments[$_.email]) } else { $null }

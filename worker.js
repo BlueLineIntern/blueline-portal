@@ -23,30 +23,40 @@
  *   POST   /api/assessments/:module         (Authorization: Bearer <token>)
  *   POST   /api/onboarding/start            -> { onboardingId, writeToken }
  *   POST   /api/onboarding/:id              (X-Onboarding-Token: <writeToken>)
- *   GET    /api/admin/clients               (Authorization: Bearer <ADMIN_TOKEN>)
- *   GET    /api/admin/onboarding            (Authorization: Bearer <ADMIN_TOKEN>)
- *   DELETE /api/admin/onboarding/:id        (Authorization: Bearer <ADMIN_TOKEN>) — soft delete
- *   POST   /api/admin/onboarding/:id/restore (Authorization: Bearer <ADMIN_TOKEN>)
+ *   POST   /api/admin/login                 { email, password } -> { token, email }
+ *   POST   /api/admin/logout                (Authorization: Bearer <admin session>)
+ *   GET    /api/admin/clients               (Authorization: Bearer <admin session>)
+ *   GET    /api/admin/onboarding            (Authorization: Bearer <admin session>)
+ *   DELETE /api/admin/onboarding/:id        (Authorization: Bearer <admin session>) — soft delete
+ *   POST   /api/admin/onboarding/:id/restore (Authorization: Bearer <admin session>)
  *
- * Set the admin secret with: wrangler secret put ADMIN_TOKEN
+ * Admins sign in with one of ADMIN_EMAILS plus the shared password in the
+ * ADMIN_PASSWORD secret; set it with: wrangler secret put ADMIN_PASSWORD
  * Optionally restrict browser origins with: wrangler secret put ALLOWED_ORIGIN
  *   (comma-separated list; defaults to the Worker's own origin only)
  *
- * NOTE: This remains a proof-of-concept-grade system. It is NOT hardened for
- * real client PII: there is still no per-admin identity/audit log, no
- * application-level encryption, and the onboarding flow is unauthenticated
- * beyond a per-session write token. See STATUS.md "Known gaps".
+ * NOTE: This remains a proof-of-concept-grade system. Admin access now uses
+ * per-email login + sessions and writes an audit log, but there is still no
+ * application-level encryption of client PII, and the onboarding flow is
+ * unauthenticated beyond a per-session write token. See STATUS.md "Known gaps".
  */
 
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const PBKDF2_ITERATIONS = 100000;
 const ONBOARDING_TTL_SECONDS = 60 * 60 * 24 * 30; // secrets + soft-deleted records expire after 30 days
 
+// Admin staff sign in with one of these emails plus the shared password held in
+// the ADMIN_PASSWORD secret. Sessions are shorter-lived than client sessions.
+const ADMIN_EMAILS = ['fsabin@blueline-advisors.com', 'jyoung@blueline-advisors.com'];
+const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 12; // 12 hours
+const AUDIT_TTL_SECONDS = 60 * 60 * 24 * 400; // audit entries retained ~13 months
+
 // Fixed-window rate limits: [max requests, window in seconds].
 const RATE_LIMITS = {
   login: [10, 300], // 10 attempts / 5 min per IP
   register: [5, 3600], // 5 new accounts / hour per IP
   onboardingStart: [20, 3600], // 20 new onboardings / hour per IP
+  adminlogin: [10, 300], // 10 admin login attempts / 5 min per IP
 };
 
 // ---------- CORS ----------
@@ -251,6 +261,73 @@ async function handleLogout(request, env, cors) {
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   if (match) {
     await env.PORTAL_KV.delete(`session:${match[1]}`);
+  }
+  return json({ ok: true }, 200, cors);
+}
+
+// ---------- Admin auth ----------
+// Two hardcoded staff emails (ADMIN_EMAILS) share one password stored in the
+// ADMIN_PASSWORD secret (set with: wrangler secret put ADMIN_PASSWORD). A
+// successful login mints a short-lived admin session token; every admin
+// endpoint resolves that token back to the staff email via getAdminEmail so
+// actions can be attributed in the audit log.
+
+async function logAudit(env, email, action, detail) {
+  try {
+    const ts = new Date().toISOString();
+    await env.PORTAL_KV.put(
+      `audit:${ts}:${randomHex(4)}`,
+      JSON.stringify({ ts, email: email || 'unknown', action, detail: detail == null ? null : detail }),
+      { expirationTtl: AUDIT_TTL_SECONDS }
+    );
+  } catch {
+    // An audit-log write must never break the underlying request.
+  }
+}
+
+async function getAdminEmail(request, env) {
+  const authHeader = request.headers.get('Authorization') || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) return null;
+  return env.PORTAL_KV.get(`admin_session:${match[1]}`);
+}
+
+async function handleAdminLogin(request, env, cors) {
+  if (!(await checkRateLimit(env, 'adminlogin', clientIp(request)))) {
+    return json({ error: 'Too many login attempts. Please try again later.' }, 429, cors);
+  }
+
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+
+  const { email, password } = body;
+  if (!isValidEmail(email) || !password) {
+    return json({ error: 'Email and password are required' }, 400, cors);
+  }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  // Check both conditions regardless so the response time doesn't reveal
+  // whether the email alone was valid.
+  const emailOk = ADMIN_EMAILS.includes(normalizedEmail);
+  const passOk = !!env.ADMIN_PASSWORD && timingSafeEqual(String(password), env.ADMIN_PASSWORD);
+  if (!emailOk || !passOk) {
+    return json({ error: 'Invalid email or password' }, 401, cors);
+  }
+
+  const token = randomHex(32);
+  await env.PORTAL_KV.put(`admin_session:${token}`, normalizedEmail, {
+    expirationTtl: ADMIN_SESSION_TTL_SECONDS,
+  });
+  await logAudit(env, normalizedEmail, 'login', null);
+
+  return json({ token, email: normalizedEmail }, 200, cors);
+}
+
+async function handleAdminLogout(request, env, cors) {
+  const authHeader = request.headers.get('Authorization') || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (match) {
+    await env.PORTAL_KV.delete(`admin_session:${match[1]}`);
   }
   return json({ ok: true }, 200, cors);
 }
@@ -1007,7 +1084,8 @@ async function handleGetAssignments(request, env, cors) {
 }
 
 async function handleAdminSetAssignments(request, env, cors, rawEmail) {
-  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
 
   const email = String(rawEmail || '').trim().toLowerCase();
   if (!isValidEmail(email)) return json({ error: 'Invalid client email' }, 400, cors);
@@ -1023,6 +1101,7 @@ async function handleAdminSetAssignments(request, env, cors, rawEmail) {
   const clean = ASSIGNABLE_KEYS.filter((k) => set.has(k));
 
   await env.PORTAL_KV.put(`assignments:${email}`, JSON.stringify(clean));
+  await logAudit(env, adminEmail, 'set-assignments', { client: email, assignments: clean });
   return json({ assignments: clean }, 200, cors);
 }
 
@@ -1114,18 +1193,13 @@ async function handleOnboardingSave(request, env, cors, onboardingId) {
   return json({ ok: true, updatedAt: record.updatedAt }, 200, cors);
 }
 
-function isAdmin(request, env) {
-  const authHeader = request.headers.get('Authorization') || '';
-  const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  const providedToken = match ? match[1] : '';
-  return !!env.ADMIN_TOKEN && timingSafeEqual(providedToken, env.ADMIN_TOKEN);
-}
 
 // Soft delete: mark the record and give it (and its write secret) a 30-day TTL
 // so it can be restored within that window, then auto-purges. No hard delete
 // from the admin UI, so a misclick isn't instantly destructive.
 async function handleAdminDeleteOnboarding(request, env, cors, onboardingId) {
-  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   if (!ONBOARDING_ID_PATTERN.test(onboardingId)) return json({ error: 'Invalid onboarding id' }, 400, cors);
 
   const raw = await env.PORTAL_KV.get(`onboarding:${onboardingId}`);
@@ -1136,11 +1210,13 @@ async function handleAdminDeleteOnboarding(request, env, cors, onboardingId) {
   await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record), {
     expirationTtl: ONBOARDING_TTL_SECONDS,
   });
+  await logAudit(env, adminEmail, 'delete-onboarding', { onboardingId });
   return json({ ok: true, deletedAt: record.deletedAt }, 200, cors);
 }
 
 async function handleAdminRestoreOnboarding(request, env, cors, onboardingId) {
-  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   if (!ONBOARDING_ID_PATTERN.test(onboardingId)) return json({ error: 'Invalid onboarding id' }, 400, cors);
 
   const raw = await env.PORTAL_KV.get(`onboarding:${onboardingId}`);
@@ -1150,11 +1226,13 @@ async function handleAdminRestoreOnboarding(request, env, cors, onboardingId) {
   delete record.deletedAt;
   // Re-put with no TTL so it stops counting down toward purge.
   await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
+  await logAudit(env, adminEmail, 'restore-onboarding', { onboardingId });
   return json({ ok: true }, 200, cors);
 }
 
 async function handleAdminOnboarding(request, env, cors) {
-  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
 
   const records = [];
   let cursor;
@@ -1176,7 +1254,8 @@ async function handleAdminOnboarding(request, env, cors) {
 }
 
 async function handleAdminClients(request, env, cors) {
-  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
 
   const clients = [];
   let cursor;
@@ -1238,6 +1317,12 @@ export default {
       const onbMatch = url.pathname.match(/^\/api\/onboarding\/(BLA-ONB-\d{4}-\d{4})$/);
       if (onbMatch && request.method === 'POST') {
         return await handleOnboardingSave(request, env, cors, onbMatch[1]);
+      }
+      if (url.pathname === '/api/admin/login' && request.method === 'POST') {
+        return await handleAdminLogin(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/logout' && request.method === 'POST') {
+        return await handleAdminLogout(request, env, cors);
       }
       if (url.pathname === '/api/admin/clients' && request.method === 'GET') {
         return await handleAdminClients(request, env, cors);

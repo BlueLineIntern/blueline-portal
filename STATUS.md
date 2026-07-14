@@ -1,7 +1,7 @@
 # BlueLine Advisors Portal — Status
 
 **Live site:** https://blueline-portal.fsabin.workers.dev/
-**Admin view:** https://blueline-portal.fsabin.workers.dev/admin (needs the `ADMIN_TOKEN` secret set in Cloudflare)
+**Admin view:** https://blueline-portal.fsabin.workers.dev/admin (sign in with an `ADMIN_EMAILS` address + the `ADMIN_PASSWORD` secret set in Cloudflare)
 **Repo:** https://github.com/BlueLineIntern/blueline-portal
 **Local path:** `C:\Users\joshu\Documents\blueline-portal`
 **Cloudflare account:** fsabin@blueline-advisors.com (Worker + Pages: project name `blueline-portal`)
@@ -77,7 +77,7 @@ Admins can control which modules each client sees. KV key `assignments:<email>`
 keys = the 17 module keys + `onboardingWizard` (the New Client Onboarding link).
 - Client API: `GET /api/assignments` → `{ assignments: array|null }` (session-auth).
 - Admin API: `POST /api/admin/assignments/:email` `{ assignments: [keys] }`
-  (ADMIN_TOKEN-gated; filters to known keys, stores canonical order). Each client
+  (admin-session-gated; filters to known keys, stores canonical order). Each client
   in `GET /api/admin/clients` now also carries its `assignments`.
 - Client filtering (`script.js`): `refreshState()` fetches assessments +
   assignments together; `isAssigned(key)` gates the home hub (offerings, category
@@ -103,7 +103,7 @@ labeled as a POC. Progress persists in localStorage AND syncs to the server:
 These endpoints are UNauthenticated by design (POC users have no accounts) —
 anyone can create test records; do not put real client data through it.
 Admin page shows an "Onboarding Submissions" table (`GET /api/admin/onboarding`,
-ADMIN_TOKEN-gated) with per-record Details + print view. Client-side exports on
+admin-session-gated) with per-record Details + print view. Client-side exports on
 the confirmation page: contacts.csv, notes.csv, onboarding_summary.html,
 audit_record.json.
 
@@ -142,13 +142,38 @@ Clients from that era just see an empty dashboard.
 - Added `timingSafeEqual()` for password-hash, admin-token, and write-token
   comparisons.
 
+## Admin authentication (per-email login + sessions + audit log)
+Replaces the single bearer `ADMIN_TOKEN` with a login system:
+- **Emails** are hardcoded in `worker.js` `ADMIN_EMAILS`
+  (`fsabin@`/`jyoung@blueline-advisors.com`); the **shared password** lives only
+  in the `ADMIN_PASSWORD` Cloudflare secret (never in source or git).
+- `POST /api/admin/login` `{email,password}` → validates email ∈ ADMIN_EMAILS and
+  `timingSafeEqual(password, ADMIN_PASSWORD)`, mints an `admin_session:<token>`
+  KV entry (12-hour TTL), returns `{token,email}`. Rate-limited (`adminlogin`,
+  10/5min/IP). `POST /api/admin/logout` deletes the session.
+- Every admin endpoint now calls `getAdminEmail(request, env)` (resolves the
+  bearer token → session email) instead of comparing a static token; a missing/
+  expired session → 401. The admin page (`admin.html`) has an email+password
+  login card, shows "Signed in as <email>", persists the session in
+  localStorage (`blueline_admin_session`), auto-restores on load, and logs out
+  (clearing the server session so the old token is rejected).
+- **Audit log**: `logAudit()` writes `audit:<ts>:<rand>` KV entries (~13-month
+  TTL) on login, set-assignments, and onboarding delete/restore, each recording
+  `{ts,email,action,detail}`. Write-side only so far — no viewer UI yet.
+  (The local `dev-server.ps1` mirrors login/logout/session-gating with a
+  DEV-ONLY password `dev-admin-pass`; it does not implement the audit writes,
+  which have no frontend surface.)
+
 ## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
-- `ADMIN_TOKEN` is still a single shared secret: no per-staff identity, no audit
-  log of who viewed/exported/deleted what. This is the biggest structural gap.
-- No data retention policy for client-portal PII, and no application-level
-  encryption beyond Cloudflare's at-rest defaults. (Onboarding POC records now do
+- Admin now has per-email login, sessions, and a write-side audit log, but the
+  **password is shared** across both staff emails (no per-person password, no
+  MFA), and there is **no audit-log viewer UI** and no anomaly alerting yet.
+  Revoking one person means rotating the shared `ADMIN_PASSWORD` for both.
+- **No application-level encryption** of client PII beyond Cloudflare's at-rest
+  defaults — a Cloudflare-side compromise or leaked KV read would expose
+  plaintext assessment data. This is now the biggest structural gap.
+- No data retention policy for client-portal PII. (Onboarding POC records now do
   auto-expire when soft-deleted, but active records never age out.)
-- No access logging / anomaly alerting on admin endpoints.
 - Not code: as an RIA handling client PII, a written information security program
   (WISP) under Reg S-P / GLBA is required — policies, incident response, vendor
   risk assessment for Cloudflare. Needs compliance counsel, not an engineer.

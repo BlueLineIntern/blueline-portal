@@ -20,6 +20,10 @@
   /* style.css's base .btn-ghost is white-on-transparent for the navy topbar;
      everywhere on this page it sits on a white card, so it needs dark text. */
   .btn-ghost { color: var(--navy); border: 1px solid var(--border); }
+  /* …except the logout button, which sits back on the navy topbar. */
+  .topbar-right { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+  #admin-who { color: #fff; font-size: 0.85rem; opacity: 0.9; }
+  #admin-logout-btn { color: #fff; border-color: rgba(255, 255, 255, 0.5); }
   .onb-card-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .onb-card-actions { display: flex; gap: 10px; align-items: center; }
   .onb-card-header h1 { margin: 0; }
@@ -150,6 +154,10 @@
       <div class="brand">
         <img src="assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" class="brand-logo" />
       </div>
+      <div class="topbar-right hidden" id="admin-nav">
+        <span id="admin-who"></span>
+        <button type="button" class="btn btn-ghost btn-small" id="admin-logout-btn">Log out</button>
+      </div>
     </div>
   </header>
 
@@ -157,10 +165,12 @@
     <div class="card token-form" id="token-card">
       <h2>Admin Access</h2>
       <form id="token-form" class="form">
-        <label for="admin-token">Admin Token</label>
-        <input type="password" id="admin-token" required />
+        <label for="admin-email">Email</label>
+        <input type="email" id="admin-email" autocomplete="username" required />
+        <label for="admin-password">Password</label>
+        <input type="password" id="admin-password" autocomplete="current-password" required />
         <p class="form-error" id="token-error"></p>
-        <button type="submit" class="btn btn-primary">View Clients</button>
+        <button type="submit" class="btn btn-primary">Sign In</button>
       </form>
     </div>
 
@@ -292,10 +302,14 @@
     const clientSelect = document.getElementById('client-select');
     const tokenError = document.getElementById('token-error');
     const detailView = document.getElementById('detail-view');
+    const adminNav = document.getElementById('admin-nav');
+
+    const ADMIN_SESSION_KEY = 'blueline_admin_session';
 
     let allClients = [];
     let allOnboardings = [];
     let adminToken = null;
+    let adminEmail = null;
     let selectedEmail = '';
     let assignmentEditorEmail = ''; // which client the assignment editor is currently built for
     let showDeleted = false;
@@ -332,6 +346,7 @@
           fetch('/api/admin/clients', { headers }),
           fetch('/api/admin/onboarding', { headers }),
         ]);
+        if (clientsRes.status === 401) { showLogin(); return; }
         const data = await clientsRes.json();
         if (!clientsRes.ok) throw new Error(data.error || 'Failed to load clients');
         const onbData = await onbRes.json().catch(() => ({ records: [] }));
@@ -353,33 +368,74 @@
       }, POLL_INTERVAL_MS);
     }
 
+    // Reveal the admin UI for a validated session and pull the first data load.
+    function enterAdmin() {
+      document.getElementById('admin-who').textContent = `Signed in as ${adminEmail}`;
+      adminNav.classList.remove('hidden');
+      tokenCard.classList.add('hidden');
+      clientsCard.classList.remove('hidden');
+      document.getElementById('onboarding-card').classList.remove('hidden');
+      startPolling();
+      loadAdminData();
+    }
+
+    // Return to the login card and forget the session (client-side).
+    function showLogin() {
+      adminToken = null;
+      adminEmail = null;
+      localStorage.removeItem(ADMIN_SESSION_KEY);
+      adminNav.classList.add('hidden');
+      clientsCard.classList.add('hidden');
+      detailView.classList.add('hidden');
+      document.getElementById('assignment-card').classList.add('hidden');
+      document.getElementById('onboarding-card').classList.add('hidden');
+      document.getElementById('onb-detail-view').classList.add('hidden');
+      tokenCard.classList.remove('hidden');
+      selectedEmail = '';
+      assignmentEditorEmail = '';
+    }
+
     tokenForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       tokenError.textContent = '';
-      const token = document.getElementById('admin-token').value;
-
       try {
-        const headers = { Authorization: `Bearer ${token}` };
-        const [clientsRes, onbRes] = await Promise.all([
-          fetch('/api/admin/clients', { headers }),
-          fetch('/api/admin/onboarding', { headers }),
-        ]);
-        const data = await clientsRes.json();
-        if (!clientsRes.ok) throw new Error(data.error || 'Failed to load clients');
-        const onbData = await onbRes.json().catch(() => ({ records: [] }));
+        const res = await fetch('/api/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.getElementById('admin-email').value.trim(),
+            password: document.getElementById('admin-password').value,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Sign in failed');
 
-        adminToken = token;
-        allClients = data.clients;
-        allOnboardings = (onbRes.ok && onbData.records) || [];
-        renderClientPicker();
-        renderOnboardings(allOnboardings);
-        tokenCard.classList.add('hidden');
-        clientsCard.classList.remove('hidden');
-        document.getElementById('onboarding-card').classList.remove('hidden');
-        startPolling();
+        adminToken = data.token;
+        adminEmail = data.email;
+        localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ token: adminToken, email: adminEmail }));
+        document.getElementById('admin-password').value = '';
+        enterAdmin();
       } catch (err) {
         tokenError.textContent = err.message;
       }
+    });
+
+    document.getElementById('admin-logout-btn').addEventListener('click', async () => {
+      if (adminToken) {
+        try {
+          await fetch('/api/admin/logout', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${adminToken}` },
+          });
+        } catch (err) {
+          // ignore network errors on logout
+        }
+      }
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      showLogin();
     });
 
     document.getElementById('refresh-btn').addEventListener('click', () => loadAdminData({ showStatus: true }));
@@ -890,6 +946,23 @@
     });
 
     document.getElementById('detail-print-btn').addEventListener('click', () => window.print());
+
+    // Restore a saved admin session on load. An expired/invalid token falls
+    // back to the login card via loadAdminData's 401 handling.
+    (function initAdmin() {
+      const raw = localStorage.getItem(ADMIN_SESSION_KEY);
+      if (!raw) return;
+      try {
+        const saved = JSON.parse(raw);
+        if (saved && saved.token) {
+          adminToken = saved.token;
+          adminEmail = saved.email || '';
+          enterAdmin();
+        }
+      } catch {
+        localStorage.removeItem(ADMIN_SESSION_KEY);
+      }
+    })();
   </script>
 </body>
 </html>
