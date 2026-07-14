@@ -448,3 +448,457 @@ const MODULES = [
     renderResult: renderCompensationResult,
   },
 ];
+
+// ---------- Category module labels ----------
+
+const SPENDING_ESSENTIALS = [
+  ["housing", "Housing / Rent"],
+  ["utilities", "Utilities"],
+  ["groceries", "Groceries"],
+  ["transportation", "Transportation"],
+  ["healthcare", "Healthcare"],
+  ["insurance", "Insurance"],
+];
+
+const SPENDING_DISCRETIONARY = [
+  ["dining", "Dining Out"],
+  ["entertainment", "Entertainment"],
+  ["shopping", "Shopping"],
+  ["subscriptions", "Subscriptions"],
+  ["travel", "Travel"],
+  ["other", "Other"],
+];
+
+const DEBT_TYPES = [
+  ["creditCards", "Credit Cards"],
+  ["autoLoans", "Auto Loans"],
+  ["studentLoans", "Student Loans"],
+  ["personalLoans", "Personal / Other Loans"],
+];
+const DEBT_TYPE_LABELS = Object.fromEntries(DEBT_TYPES);
+
+const INSTRUMENT_OPTIONS = [
+  ["stocks", "Individual Stocks"],
+  ["bonds", "Bonds"],
+  ["mutualFunds", "Mutual Funds"],
+  ["etfs", "ETFs"],
+  ["options", "Options"],
+  ["crypto", "Crypto"],
+  ["realEstate", "Real Estate"],
+  ["annuities", "Annuities"],
+];
+const INSTRUMENT_LABELS = Object.fromEntries(INSTRUMENT_OPTIONS);
+
+const KNOWLEDGE_YEARS_LABELS = {
+  none: "No investing experience",
+  under3: "Under 3 years",
+  "3to10": "3–10 years",
+  over10: "More than 10 years",
+};
+
+const ESTATE_DOCS = [
+  ["will", "Will"],
+  ["trust", "Revocable Living Trust"],
+  ["financialPoa", "Durable Financial Power of Attorney"],
+  ["healthcareDirective", "Healthcare Directive / Proxy"],
+  ["hipaaAuthorization", "HIPAA Authorization"],
+];
+const ESTATE_DOC_LABELS = Object.fromEntries(ESTATE_DOCS);
+
+const BENEFICIARY_NAMED_LABELS = { all: "All of them", some: "Some of them", none: "None", na: "Not applicable" };
+const TOD_LABELS = { yes: "Yes", no: "No", na: "Not applicable" };
+const LAST_REVIEWED_LABELS = {
+  within1: "Within the last year",
+  "1to3": "1–3 years ago",
+  over3: "More than 3 years ago",
+  never: "Never",
+};
+const LIFE_EVENT_LABELS = {
+  marriage: "Marriage",
+  divorce: "Divorce",
+  birth: "Birth or adoption",
+  death: "Death in the family",
+  move: "Moved states",
+  none: "None of these",
+};
+
+const CHARITABLE_INTENT_LABELS = {
+  none: "No charitable plans",
+  annual: "Lifetime giving",
+  bequest: "Bequest in estate",
+  both: "Lifetime giving and a bequest",
+  unsure: "Not sure yet",
+};
+const ANNUAL_GIFTING_LABELS = { none: "None", family: "To family", charity: "To charity", both: "To family and charity" };
+const SPECIAL_CIRCUMSTANCE_LABELS = {
+  minorChildren: "Minor children",
+  specialNeeds: "Family member with special needs",
+  blendedFamily: "Blended family",
+  businessSuccession: "Business succession",
+  none: "None",
+};
+
+const COVERAGE_LINES = [
+  ["termLife", "Life Insurance"],
+  ["disability", "Disability Insurance"],
+  ["umbrella", "Umbrella Liability"],
+  ["longTermCare", "Long-Term Care"],
+  ["homeAuto", "Home & Auto"],
+];
+const COVERAGE_LINE_LABELS = Object.fromEntries(COVERAGE_LINES);
+
+const LTC_AGE_LABELS = { under40: "Under 40", "40to49": "40–49", "50to59": "50–59", "60plus": "60+" };
+const LTC_FUNDING_LABELS = {
+  insurance: "Long-term care insurance",
+  selfFund: "Self-fund from savings",
+  hybrid: "Hybrid life / LTC policy",
+  none: "No plan yet",
+};
+const YES_NO_UNSURE_LABELS = { yes: "Yes", no: "No", unsure: "Not sure" };
+
+/** Checklist rows with a yes / no / unsure marker and optional detail text. */
+function checklistRows(rows) {
+  const MARKERS = { yes: ["✓", "check-yes"], no: ["✕", "check-no"], unsure: ["?", "check-unsure"] };
+  return `<div class="check-rows">${rows
+    .map((r) => {
+      const [mark, cls] = MARKERS[r.status] || MARKERS.unsure;
+      return `<div class="check-row"><span class="check-marker ${cls}">${mark}</span>
+        <span class="check-label">${escapeHtml(r.label)}</span>
+        ${r.detail ? `<span class="check-detail">${escapeHtml(r.detail)}</span>` : ""}</div>`;
+    })
+    .join("")}</div>`;
+}
+
+// ---------- Category module result renderers ----------
+
+// 12 distinct hues so no two segments of the spending donut share a color.
+const SPENDING_COLORS = [...PALETTE, "#B56576", "#7A9E9F"];
+
+function renderSpendingResult(m) {
+  const segments = [
+    ...SPENDING_ESSENTIALS.map(([key, label], i) => ({
+      label,
+      value: (m.essentials && m.essentials[key]) || 0,
+      color: SPENDING_COLORS[i],
+    })),
+    ...SPENDING_DISCRETIONARY.map(([key, label], i) => ({
+      label,
+      value: (m.discretionary && m.discretionary[key]) || 0,
+      color: SPENDING_COLORS[i + 6],
+    })),
+  ];
+  const leftoverClass = m.leftover < 0 ? "negative" : "positive";
+  return `
+    ${donutChart(segments, { centerTop: fmtCompact(m.totalSpending), centerBottom: "spending/mo" })}
+    <div class="stat-rows">
+      <div class="stat-row"><span>Monthly Income</span><strong>${fmtMoney(m.monthlyIncome)}</strong></div>
+      <div class="stat-row"><span>Essential Spending</span><strong>${fmtMoney(m.totalEssentials)}</strong></div>
+      <div class="stat-row"><span>Discretionary Spending</span><strong>${fmtMoney(m.totalDiscretionary)}</strong></div>
+      <div class="stat-row"><span>Left Over Each Month</span><strong class="${leftoverClass}">${fmtMoney(m.leftover)}</strong></div>
+    </div>
+    ${statBar("Discretionary Share of Spending", m.discretionaryPct, m.highDiscretionary ? "#F2A65A" : "#6BAA75")}
+    ${m.overspending ? `<p class="result-flag">Spending exceeds income by ${fmtMoney(-m.leftover)} per month — the first planning priority.</p>` : ""}
+    ${m.highDiscretionary ? `<p class="result-flag">Discretionary purchases are ${m.discretionaryPct}% of total spending — a large lever if cash flow needs to improve.</p>` : ""}`;
+}
+
+function renderSavingsResult(m) {
+  const hasCoverage = m.monthsCovered != null;
+  const coveragePct = hasCoverage ? Math.min(100, (m.monthsCovered / m.targetMonths) * 100) : 0;
+  const barLabel = hasCoverage
+    ? `Emergency Fund: ${m.monthsCovered} of ${m.targetMonths} months`
+    : "Emergency Fund Coverage (no monthly expenses reported)";
+  const barColor = !hasCoverage ? "#9fb0bf" : m.funded ? "#6BAA75" : m.monthsCovered < 3 ? "#C0392B" : "#F2A65A";
+  return `
+    ${statBar(barLabel, coveragePct, barColor)}
+    <div class="stat-rows">
+      <div class="stat-row"><span>Emergency Fund Balance</span><strong>${fmtMoney(m.emergencyFund)}</strong></div>
+      <div class="stat-row"><span>Target (${m.targetMonths} months of expenses)</span><strong>${fmtMoney(m.targetAmount)}</strong></div>
+      <div class="stat-row"><span>Shortfall</span><strong class="${m.shortfall > 0 ? "negative" : "positive"}">${fmtMoney(m.shortfall)}</strong></div>
+      <div class="stat-row"><span>Months to Target (at current savings)</span><strong>${m.monthsToTarget == null ? "—" : m.monthsToTarget}</strong></div>
+    </div>
+    ${m.goalsNotes ? `<div class="stat-rows"><div class="stat-row"><span>Savings Goals</span><strong class="goal-text">${escapeHtml(m.goalsNotes)}</strong></div></div>` : ""}
+    ${hasCoverage && m.monthsCovered < 3 ? `<p class="result-flag">Less than 3 months of expenses in reserve — building the emergency fund comes before most other goals.</p>` : ""}`;
+}
+
+function renderDebtResult(m) {
+  const segments = DEBT_TYPES.map(([key, label], i) => ({
+    label,
+    value: (m.debts && m.debts[key] && m.debts[key].balance) || 0,
+    color: PALETTE[i % PALETTE.length],
+  }));
+  const highestLabel = m.highestRateType ? DEBT_TYPE_LABELS[m.highestRateType] || m.highestRateType : "";
+  return `
+    ${donutChart(segments, { centerTop: fmtCompact(m.totalDebt), centerBottom: "total debt" })}
+    <div class="stat-rows">
+      <div class="stat-row"><span>Total Debt</span><strong>${fmtMoney(m.totalDebt)}</strong></div>
+      <div class="stat-row"><span>Weighted Average Rate</span><strong>${m.weightedAvgRate}%</strong></div>
+      <div class="stat-row"><span>Monthly Debt Payments</span><strong>${fmtMoney(m.monthlyDebtPayments)}</strong></div>
+      <div class="stat-row"><span>Debt-to-Income</span><strong>${m.dtiPct == null ? "—" : `${m.dtiPct}%`}</strong></div>
+    </div>
+    ${m.dtiPct == null ? "" : statBar("Debt-to-Income Ratio", m.dtiPct, m.dtiPct >= 36 ? "#C0392B" : m.dtiPct >= 28 ? "#F2A65A" : "#6BAA75")}
+    ${m.highDti ? `<p class="result-flag">Debt payments are ${m.dtiPct}% of gross income — above the 36% level lenders and planners watch.</p>` : ""}
+    ${m.highInterest ? `<p class="result-flag">High-interest debt detected${highestLabel ? ` — ${highestLabel} carry the highest rate` : ""}; paying these down is usually the best guaranteed return.</p>` : ""}`;
+}
+
+function renderRiskCapacityResult(m) {
+  return `
+    <p class="headline-stat">Risk Capacity: <strong>${escapeHtml(m.level)}</strong></p>
+    ${statBar(`Capacity Score: ${m.score} / 25`, ((m.score - 5) / 20) * 100, "#4AABDB")}
+    <p class="result-note">Capacity measures your financial ability to take investment risk — time horizon, income
+    stability, and reserves. It is separate from risk tolerance (your willingness to take risk); your advisor
+    compares the two when building your portfolio.</p>`;
+}
+
+function renderBehaviorResult(m) {
+  return `
+    <p class="headline-stat">Investor Profile: <strong>${escapeHtml(m.profile)}</strong></p>
+    ${statBar(`Behavior Score: ${m.score} / 20`, ((m.score - 4) / 16) * 100, "#4AABDB")}
+    ${m.biggestConcern ? `<div class="stat-rows"><div class="stat-row"><span>Biggest Concern</span><strong class="goal-text">${escapeHtml(m.biggestConcern)}</strong></div></div>` : ""}
+    ${m.coachingFlag ? `<p class="result-flag">Responses suggest a strong urge to sell in downturns — plan for behavioral coaching during drawdowns.</p>` : ""}`;
+}
+
+function renderKnowledgeResult(m) {
+  const instruments = (m.instruments || []).map((k) => INSTRUMENT_LABELS[k] || k);
+  return `
+    <p class="headline-stat">Knowledge Level: <strong>${escapeHtml(m.level)}</strong></p>
+    ${statBar(`Knowledge Score: ${m.knowledgeScore} / 12`, (m.knowledgeScore / 12) * 100, "#4AABDB")}
+    <div class="stat-rows">
+      <div class="stat-row"><span>Years Investing</span><strong>${escapeHtml(KNOWLEDGE_YEARS_LABELS[m.yearsInvesting] || m.yearsInvesting)}</strong></div>
+      <div class="stat-row"><span>Instruments Used</span><strong class="goal-text">${instruments.length ? escapeHtml(instruments.join(", ")) : "—"}</strong></div>
+      <div class="stat-row"><span>Self-Rated Knowledge</span><strong>${m.selfRating} / 5</strong></div>
+      <div class="stat-row"><span>Worked With an Advisor</span><strong>${m.hadAdvisor ? "Yes" : "No"}</strong></div>
+    </div>`;
+}
+
+function renderEstateDocsResult(m) {
+  const rows = ESTATE_DOCS.map(([key, label]) => {
+    const doc = (m.documents && m.documents[key]) || {};
+    return { label, status: doc.status, detail: doc.year != null ? `Updated ${doc.year}` : "" };
+  });
+  const staleLabels = (m.stale || []).map((k) => ESTATE_DOC_LABELS[k] || k);
+  return `
+    ${checklistRows(rows)}
+    ${statBar("Document Completeness", m.completenessPct, m.completenessPct >= 80 ? "#6BAA75" : m.completenessPct >= 40 ? "#F2A65A" : "#C0392B")}
+    ${(m.missing || []).includes("will") ? `<p class="result-flag">No will in place — without one, state law decides how your assets pass. This is the first document to put in place.</p>` : ""}
+    ${staleLabels.length ? `<p class="result-flag">${escapeHtml(staleLabels.join(", "))} last updated 5+ years ago — review recommended.</p>` : ""}`;
+}
+
+function renderBeneficiariesResult(m) {
+  const gapAreas = [];
+  if (m.retirementAccounts === "some" || m.retirementAccounts === "none") gapAreas.push("retirement accounts");
+  if (m.lifePolicies === "some" || m.lifePolicies === "none") gapAreas.push("life insurance policies");
+  if (m.todBrokerage === "no") gapAreas.push("taxable brokerage accounts");
+  const events = (m.eventsSinceReview || []).map((k) => LIFE_EVENT_LABELS[k] || k);
+  return `
+    <div class="stat-rows">
+      <div class="stat-row"><span>Retirement Account Beneficiaries</span><strong>${escapeHtml(BENEFICIARY_NAMED_LABELS[m.retirementAccounts] || m.retirementAccounts)}</strong></div>
+      <div class="stat-row"><span>Life Insurance Beneficiaries</span><strong>${escapeHtml(BENEFICIARY_NAMED_LABELS[m.lifePolicies] || m.lifePolicies)}</strong></div>
+      <div class="stat-row"><span>Brokerage TOD Designations</span><strong>${escapeHtml(TOD_LABELS[m.todBrokerage] || m.todBrokerage)}</strong></div>
+      <div class="stat-row"><span>Last Reviewed</span><strong>${escapeHtml(LAST_REVIEWED_LABELS[m.lastReviewed] || m.lastReviewed)}</strong></div>
+      <div class="stat-row"><span>Life Events Since Review</span><strong>${events.length ? escapeHtml(events.join(", ")) : "None"}</strong></div>
+    </div>
+    ${m.gapCount > 0 ? `<p class="result-flag">Beneficiary gaps found: ${escapeHtml(gapAreas.join(", "))}.</p>` : ""}
+    ${(m.eventsSinceReview || []).includes("divorce") ? `<p class="result-flag">Update beneficiaries after divorce — outdated designations override wills.</p>` : ""}
+    ${m.reviewNeeded ? `<p class="result-flag">A beneficiary and titling review with your advisor is recommended.</p>` : ""}`;
+}
+
+function renderLegacyResult(m) {
+  const circumstances = (m.specialCircumstances || [])
+    .filter((k) => k !== "none")
+    .map((k) => SPECIAL_CIRCUMSTANCE_LABELS[k] || k);
+  const topics = m.discussionTopics || [];
+  return `
+    <div class="stat-rows">
+      <div class="stat-row"><span>Charitable Intentions</span><strong>${escapeHtml(CHARITABLE_INTENT_LABELS[m.charitableIntent] || m.charitableIntent)}</strong></div>
+      <div class="stat-row"><span>Annual Gifting</span><strong>${escapeHtml(ANNUAL_GIFTING_LABELS[m.annualGifting] || m.annualGifting)}</strong></div>
+      <div class="stat-row"><span>Special Circumstances</span><strong>${circumstances.length ? escapeHtml(circumstances.join(", ")) : "None"}</strong></div>
+    </div>
+    ${
+      topics.length
+        ? `<h3 class="result-subheading">Topics for your advisor</h3><ul class="topic-list">${topics
+            .map((t) => `<li>${escapeHtml(t)}</li>`)
+            .join("")}</ul>`
+        : `<p class="result-note">No specific legacy planning topics flagged — revisit as circumstances change.</p>`
+    }
+    ${m.legacyNotes ? `<div class="stat-rows"><div class="stat-row"><span>Notes</span><strong class="goal-text">${escapeHtml(m.legacyNotes)}</strong></div></div>` : ""}`;
+}
+
+function renderLifeInsuranceResult(m) {
+  const segments = [
+    { label: "Debts", value: m.debts || 0, color: PALETTE[0] },
+    { label: "Income Replacement", value: (m.annualIncome || 0) * (m.incomeYears || 0), color: PALETTE[1] },
+    { label: "Mortgage", value: m.mortgageBalance || 0, color: PALETTE[3] },
+    { label: "Education", value: m.educationCosts || 0, color: PALETTE[2] },
+  ];
+  const gapRow =
+    m.gap > 0
+      ? `<div class="stat-row"><span>Coverage Gap</span><strong class="negative">${fmtMoney(m.gap)}</strong></div>`
+      : `<div class="stat-row"><span>Coverage Surplus</span><strong class="positive">${fmtMoney(-m.gap)}</strong></div>`;
+  return `
+    ${donutChart(segments, { centerTop: fmtCompact(m.dimeNeed), centerBottom: "DIME need" })}
+    <div class="stat-rows">
+      <div class="stat-row"><span>Estimated Need (DIME)</span><strong>${fmtMoney(m.dimeNeed)}</strong></div>
+      <div class="stat-row"><span>Current Coverage</span><strong>${fmtMoney(m.currentCoverage)}</strong></div>
+      ${gapRow}
+    </div>
+    ${
+      m.coveragePct == null
+        ? ""
+        : statBar(`Coverage: ${m.coveragePct}% of estimated need`, Math.min(m.coveragePct, 100), m.coveragePct >= 100 ? "#6BAA75" : m.coveragePct >= 60 ? "#F2A65A" : "#C0392B")
+    }
+    ${m.underinsured ? `<p class="result-flag">Current coverage is ${fmtMoney(m.gap)} short of the DIME estimate — a term policy quote is worth reviewing.</p>` : ""}`;
+}
+
+function renderCoverageResult(m) {
+  const rows = COVERAGE_LINES.map(([key, label]) => {
+    const line = (m.lines && m.lines[key]) || {};
+    return { label, status: line.status, detail: line.amount != null ? fmtMoney(line.amount) : "" };
+  });
+  const gaps = m.gaps || [];
+  const otherGaps = gaps.filter((k) => k !== "disability" && k !== "umbrella").map((k) => COVERAGE_LINE_LABELS[k] || k);
+  return `
+    ${checklistRows(rows)}
+    ${statBar(`Coverage Lines in Place: ${m.coveredCount} of ${COVERAGE_LINES.length}`, (m.coveredCount / COVERAGE_LINES.length) * 100, m.coveredCount >= 4 ? "#6BAA75" : m.coveredCount >= 2 ? "#F2A65A" : "#C0392B")}
+    ${gaps.includes("disability") ? `<p class="result-flag">No disability insurance — future income is most families' largest asset, and it's the one most often left unprotected.</p>` : ""}
+    ${gaps.includes("umbrella") ? `<p class="result-flag">No umbrella liability policy — inexpensive protection against lawsuits and large claims.</p>` : ""}
+    ${otherGaps.length ? `<p class="result-flag">Other coverage gaps to review: ${escapeHtml(otherGaps.join(", "))}.</p>` : ""}`;
+}
+
+function renderLtcResult(m) {
+  return `
+    <p class="headline-stat">LTC Readiness: <strong>${escapeHtml(m.readiness)}</strong></p>
+    <div class="stat-rows">
+      <div class="stat-row"><span>Age Band</span><strong>${escapeHtml(LTC_AGE_LABELS[m.ageBand] || m.ageBand)}</strong></div>
+      <div class="stat-row"><span>Family History of LTC Needs</span><strong>${escapeHtml(YES_NO_UNSURE_LABELS[m.familyHistory] || m.familyHistory)}</strong></div>
+      <div class="stat-row"><span>Funding Plan</span><strong>${escapeHtml(LTC_FUNDING_LABELS[m.fundingPlan] || m.fundingPlan)}</strong></div>
+      <div class="stat-row"><span>Assets Earmarked for Care</span><strong>${m.assetsEarmarked === "yes" ? "Yes" : "No"}</strong></div>
+    </div>
+    ${m.timelyFlag ? `<p class="result-flag">No long-term care plan yet at an age where options are best — the prime LTC planning window is roughly ages 50–65.</p>` : ""}
+    <p class="result-note">Roughly 70% of people over 65 will need some form of long-term care during their lives.</p>`;
+}
+
+// ---------- Category structure (home hub) ----------
+
+const CATEGORY_MODULES = [
+  {
+    key: "spending",
+    title: "Spending Habits Review",
+    description: "Break your monthly spending into essentials and discretionary to see where the money actually goes.",
+    category: "budgeting",
+    renderResult: renderSpendingResult,
+  },
+  {
+    key: "savings",
+    title: "Emergency Fund & Savings Goals",
+    description: "Measure your emergency fund against a target and map the path to fully funded.",
+    category: "budgeting",
+    renderResult: renderSavingsResult,
+  },
+  {
+    key: "debt",
+    title: "Debt Management Review",
+    description: "List balances and rates so your advisor can prioritize the smartest payoff order.",
+    category: "budgeting",
+    renderResult: renderDebtResult,
+  },
+  {
+    key: "riskcapacity",
+    title: "Risk Capacity Analysis",
+    description: "Five questions about your finances that measure how much risk your situation can absorb.",
+    category: "riskassessment",
+    renderResult: renderRiskCapacityResult,
+  },
+  {
+    key: "behavior",
+    title: "Investor Behavior Profile",
+    description: "How you react when markets move — the habits that shape real-world returns.",
+    category: "riskassessment",
+    renderResult: renderBehaviorResult,
+  },
+  {
+    key: "knowledge",
+    title: "Investment Knowledge & Experience",
+    description: "Your investing background and comfort level, so advice lands at the right depth.",
+    category: "riskassessment",
+    renderResult: renderKnowledgeResult,
+  },
+  {
+    key: "estatedocs",
+    title: "Estate Document Checklist",
+    description: "A quick checklist of the five core estate documents and when they were last updated.",
+    category: "estate",
+    renderResult: renderEstateDocsResult,
+  },
+  {
+    key: "beneficiaries",
+    title: "Beneficiary & Titling Review",
+    description: "Confirm the right people are named on your accounts and policies — designations override wills.",
+    category: "estate",
+    renderResult: renderBeneficiariesResult,
+  },
+  {
+    key: "legacy",
+    title: "Legacy & Gifting Goals",
+    description: "Charitable, gifting, and family goals that shape how your estate plan is structured.",
+    category: "estate",
+    renderResult: renderLegacyResult,
+  },
+  {
+    key: "lifeinsurance",
+    title: "Life Insurance Needs (DIME)",
+    description: "A quick DIME estimate of how much life insurance your family would need.",
+    category: "insurance",
+    renderResult: renderLifeInsuranceResult,
+  },
+  {
+    key: "coverage",
+    title: "Insurance Coverage Inventory",
+    description: "An inventory of your insurance lines to spot gaps in your protection.",
+    category: "insurance",
+    renderResult: renderCoverageResult,
+  },
+  {
+    key: "ltc",
+    title: "Long-Term Care Readiness",
+    description: "Where you stand on planning for long-term care costs later in life.",
+    category: "insurance",
+    renderResult: renderLtcResult,
+  },
+];
+
+const CATEGORIES = [
+  {
+    key: "onboarding",
+    title: "Onboarding",
+    description: "Start here — the Financial Picture Analysis and the guided New Client Onboarding every new client completes.",
+    type: "onboarding",
+  },
+  {
+    key: "budgeting",
+    title: "Budgeting & Spending",
+    description: "Spending habits, emergency savings, and debt — the cash-flow foundation of your plan.",
+    type: "modules",
+    moduleKeys: ["spending", "savings", "debt"],
+  },
+  {
+    key: "riskassessment",
+    title: "Risk Assessment",
+    description: "A deeper look at your capacity, behavior, and experience with investment risk.",
+    type: "modules",
+    moduleKeys: ["riskcapacity", "behavior", "knowledge"],
+  },
+  {
+    key: "estate",
+    title: "Estate Planning",
+    description: "Documents, beneficiaries, and legacy goals — making sure your wishes are carried out.",
+    type: "modules",
+    moduleKeys: ["estatedocs", "beneficiaries", "legacy"],
+  },
+  {
+    key: "insurance",
+    title: "Insurance Planning",
+    description: "Life, disability, liability, and long-term care — protecting the plan against what can go wrong.",
+    type: "modules",
+    moduleKeys: ["lifeinsurance", "coverage", "ltc"],
+  },
+];

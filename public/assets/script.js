@@ -44,7 +44,11 @@ async function apiRequest(path, { method = "GET", body, auth = false } = {}) {
 
 // ---------- View management ----------
 
-const VIEW_IDS = ["auth", "home", "dashboard", "risk", "budget", "retirement", "networth", "compensation"];
+// FPA module sections are static in index.html; the 12 category module
+// sections are generated at boot (see "Generated category module forms").
+const VIEW_IDS = ["auth", "home", "dashboard", "category"]
+  .concat(MODULES.map((mod) => mod.key))
+  .concat(CATEGORY_MODULES.map((mod) => mod.key));
 
 function showView(name) {
   VIEW_IDS.forEach((id) => document.getElementById(`view-${id}`).classList.add("hidden"));
@@ -143,11 +147,34 @@ function renderHome() {
         : `${completed} of ${MODULES.length} assessments complete`;
   document.getElementById("home-fpa-fill").style.width = `${(completed / MODULES.length) * 100}%`;
   document.getElementById("home-open-fpa").textContent = completed === 0 ? "Start Analysis" : "Open Analysis";
+
+  const grid = document.getElementById("home-category-grid");
+  grid.innerHTML = CATEGORIES.filter((cat) => cat.type === "modules")
+    .map((cat) => {
+      const done = cat.moduleKeys.filter((key) => currentModules[key]).length;
+      const total = cat.moduleKeys.length;
+      const status =
+        done === 0 ? "Not started" : done === total ? "All assessments complete ✓" : `${done} of ${total} complete`;
+      return `
+        <div class="card hub-card">
+          <h2>${escapeHtml(cat.title)}</h2>
+          <p class="hub-card-desc">${escapeHtml(cat.description)}</p>
+          <p class="hub-card-status">${status}</p>
+          <div class="hub-card-progress progress-track"><div class="progress-fill" style="width:${(done / total) * 100}%"></div></div>
+          <button class="btn btn-primary hub-card-btn category-open-btn" data-category="${cat.key}">${done === 0 ? "Start" : "Open"}</button>
+        </div>`;
+    })
+    .join("");
+  grid.querySelectorAll(".category-open-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openCategory(btn.dataset.category));
+  });
 }
 
 // Land here after login: fetch assessment progress (which also validates the
 // session), then show the hub with both offerings.
 async function loadHome() {
+  const errorEl = document.getElementById("home-error");
+  errorEl.textContent = "";
   try {
     const data = await apiRequest("/api/assessments", { auth: true });
     currentModules = data.modules || {};
@@ -158,6 +185,7 @@ async function loadHome() {
       showView("auth");
       return;
     }
+    errorEl.textContent = "We couldn't load your latest progress — refresh to try again.";
   }
   renderHome();
   showView("home");
@@ -165,10 +193,42 @@ async function loadHome() {
 
 document.getElementById("home-open-fpa").addEventListener("click", () => loadDashboard());
 document.getElementById("dashboard-home-btn").addEventListener("click", () => loadHome());
+document.getElementById("category-home-btn").addEventListener("click", () => loadHome());
 
 // ---------- Financial Picture Analysis (assessment dashboard) ----------
 
 let currentModules = {};
+
+// Shared module card markup for the FPA dashboard and the category views.
+// Results and charts are intentionally not shown to clients — the advisor
+// walks through them in person (printable from the admin detail view).
+function moduleCardHtml(mod, index, data) {
+  if (!data) {
+    return `
+      <div class="card module-card module-card-empty">
+        <div class="module-card-header">
+          <span class="module-number">${index + 1}</span>
+          <h2>${escapeHtml(mod.title)}</h2>
+          <span class="status-badge status-pending">Not started</span>
+        </div>
+        <p class="module-description">${escapeHtml(mod.description)}</p>
+        <button class="btn btn-primary module-start-btn" data-module="${mod.key}">Start Assessment</button>
+      </div>`;
+  }
+  return `
+    <div class="card module-card">
+      <div class="module-card-header">
+        <span class="module-number done">✓</span>
+        <h2>${escapeHtml(mod.title)}</h2>
+        <span class="status-badge status-done">Completed</span>
+      </div>
+      <p class="module-description">Thank you — your responses have been submitted. Your advisor will review your results with you.</p>
+      <div class="module-card-footer">
+        <span class="updated-at-inline">Submitted ${data.updatedAt ? new Date(data.updatedAt).toLocaleDateString() : ""}</span>
+        <button class="btn btn-secondary module-start-btn" data-module="${mod.key}">Review / Edit Answers</button>
+      </div>
+    </div>`;
+}
 
 function renderDashboard() {
   const grid = document.getElementById("module-grid");
@@ -177,36 +237,7 @@ function renderDashboard() {
   document.getElementById("progress-note").textContent = `${completed} of ${MODULES.length} complete.`;
   document.getElementById("progress-fill").style.width = `${(completed / MODULES.length) * 100}%`;
 
-  grid.innerHTML = MODULES.map((mod, index) => {
-    const data = currentModules[mod.key];
-    if (!data) {
-      return `
-        <div class="card module-card module-card-empty">
-          <div class="module-card-header">
-            <span class="module-number">${index + 1}</span>
-            <h2>${escapeHtml(mod.title)}</h2>
-            <span class="status-badge status-pending">Not started</span>
-          </div>
-          <p class="module-description">${escapeHtml(mod.description)}</p>
-          <button class="btn btn-primary module-start-btn" data-module="${mod.key}">Start Assessment</button>
-        </div>`;
-    }
-    // Results and charts are intentionally not shown to clients — the advisor
-    // walks through them in person (printable from the admin detail view).
-    return `
-      <div class="card module-card">
-        <div class="module-card-header">
-          <span class="module-number done">✓</span>
-          <h2>${escapeHtml(mod.title)}</h2>
-          <span class="status-badge status-done">Completed</span>
-        </div>
-        <p class="module-description">Thank you — your responses have been submitted. Your advisor will review your results with you.</p>
-        <div class="module-card-footer">
-          <span class="updated-at-inline">Submitted ${data.updatedAt ? new Date(data.updatedAt).toLocaleDateString() : ""}</span>
-          <button class="btn btn-secondary module-start-btn" data-module="${mod.key}">Review / Edit Answers</button>
-        </div>
-      </div>`;
-  }).join("");
+  grid.innerHTML = MODULES.map((mod, index) => moduleCardHtml(mod, index, currentModules[mod.key])).join("");
 
   grid.querySelectorAll(".module-start-btn").forEach((btn) => {
     btn.addEventListener("click", () => openModuleForm(btn.dataset.module));
@@ -231,6 +262,51 @@ async function loadDashboard() {
 document.querySelectorAll(".back-btn").forEach((btn) => {
   btn.addEventListener("click", () => loadDashboard());
 });
+
+// ---------- Category views (one reusable section, re-rendered per category) ----------
+
+let currentCategoryKey = null;
+
+function renderCategory() {
+  const cat = CATEGORIES.find((c) => c.key === currentCategoryKey);
+  if (!cat || cat.type !== "modules") return;
+  const mods = cat.moduleKeys.map((key) => CATEGORY_MODULES.find((mod) => mod.key === key));
+  const completed = mods.filter((mod) => currentModules[mod.key]).length;
+
+  document.getElementById("category-title").textContent = cat.title;
+  document.getElementById("category-desc").textContent = cat.description;
+  document.getElementById("category-progress-note").textContent = `${completed} of ${mods.length} complete.`;
+  document.getElementById("category-progress-fill").style.width = `${(completed / mods.length) * 100}%`;
+
+  const grid = document.getElementById("category-module-grid");
+  grid.innerHTML = mods.map((mod, index) => moduleCardHtml(mod, index, currentModules[mod.key])).join("");
+  grid.querySelectorAll(".module-start-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openModuleForm(btn.dataset.module));
+  });
+}
+
+// Synchronous show (used after saves and by form Back buttons — no refetch).
+function showCategory(key) {
+  currentCategoryKey = key;
+  renderCategory();
+  showView("category");
+}
+
+// Entry from the home hub: show immediately, then refresh from the server.
+async function openCategory(key) {
+  showCategory(key);
+  try {
+    const data = await apiRequest("/api/assessments", { auth: true });
+    currentModules = data.modules || {};
+    renderCategory();
+  } catch (err) {
+    if (err.message.includes("authenticated")) {
+      clearSession();
+      updateNav();
+      showView("auth");
+    }
+  }
+}
 
 // ---------- Form builders (dynamic field grids) ----------
 
@@ -384,8 +460,13 @@ async function saveModule(key, payload, errorElId) {
   try {
     const data = await apiRequest(`/api/assessments/${key}`, { method: "POST", body: payload, auth: true });
     currentModules = data.modules || currentModules;
-    showView("dashboard");
-    renderDashboard();
+    const catMod = CATEGORY_MODULES.find((mod) => mod.key === key);
+    if (catMod) {
+      showCategory(catMod.category);
+    } else {
+      showView("dashboard");
+      renderDashboard();
+    }
   } catch (err) {
     errorEl.textContent = err.message;
   }
@@ -483,6 +564,574 @@ document.getElementById("compensation-form").addEventListener("submit", async (e
     },
     "compensation-error"
   );
+});
+
+// ---------- Generated category module forms ----------
+// Each of the 12 new modules is declared in MODULE_FORMS and its section DOM
+// (view-<key>, <key>-form, <key>-error) is built at boot by a small engine.
+// Field keys are dotted paths into the POST payload; number inputs read blank
+// as 0, selects are required, and radios are validated like the risk module.
+
+function setPath(obj, path, value) {
+  const parts = path.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    cur = cur[parts[i]] = cur[parts[i]] || {};
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+function getPath(obj, path) {
+  return path.split(".").reduce((cur, part) => (cur == null ? undefined : cur[part]), obj);
+}
+
+function fid(modKey, path) {
+  return `${modKey}-f-${path.replace(/\./g, "-")}`;
+}
+
+function specFieldHtml(modKey, f) {
+  switch (f.type) {
+    case "heading":
+      return (
+        `<h2 class="section-heading">${escapeHtml(f.label)}</h2>` +
+        (f.note ? `<p class="subtitle">${escapeHtml(f.note)}</p>` : "")
+      );
+    case "grid":
+      return `<div class="budget-grid">${f.fields
+        .map(
+          (fld) => `
+        <div class="budget-field">
+          <label for="${fid(modKey, fld.key)}">${escapeHtml(fld.label)}</label>
+          <input type="number" id="${fid(modKey, fld.key)}" min="${fld.min != null ? fld.min : 0}"${fld.max != null ? ` max="${fld.max}"` : ""} step="${fld.step || 1}" placeholder="0" />
+        </div>`
+        )
+        .join("")}</div>`;
+    case "select":
+      return `
+        <label for="${fid(modKey, f.key)}">${escapeHtml(f.label)}</label>
+        <select id="${fid(modKey, f.key)}" required>
+          <option value="" disabled selected>Select one</option>
+          ${f.options.map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join("")}
+        </select>`;
+    case "radios":
+      return f.questions
+        .map(
+          (q, i) => `
+        <fieldset class="risk-question">
+          <legend>${i + 1}. ${escapeHtml(q.legend)}</legend>
+          ${q.options
+            .map(
+              (opt, j) =>
+                `<label class="radio-option"><input type="radio" name="${modKey}-q${i + 1}" value="${j + 1}"${j === 0 ? " required" : ""} /> ${escapeHtml(opt)}</label>`
+            )
+            .join("")}
+        </fieldset>`
+        )
+        .join("");
+    case "checks":
+      return (
+        `<label>${escapeHtml(f.label)}</label>` +
+        (f.note ? `<p class="hint">${escapeHtml(f.note)}</p>` : "") +
+        `<div class="checkbox-group">${f.options
+          .map(
+            ([value, label]) =>
+              `<label class="radio-option"><input type="checkbox" name="${fid(modKey, f.key)}" value="${value}" /> ${escapeHtml(label)}</label>`
+          )
+          .join("")}</div>`
+      );
+    case "checkbox":
+      return `<div class="checkbox-group"><label class="radio-option"><input type="checkbox" id="${fid(modKey, f.key)}" /> ${escapeHtml(f.label)}</label></div>`;
+    case "textarea":
+      return `
+        <label for="${fid(modKey, f.key)}">${escapeHtml(f.label)}</label>
+        <textarea id="${fid(modKey, f.key)}" rows="${f.rows || 3}" maxlength="${f.maxlength || 1000}"${f.placeholder ? ` placeholder="${escapeHtml(f.placeholder)}"` : ""}></textarea>`;
+    case "statusRows":
+      return `<div class="status-rows">${f.rows
+        .map((r) => {
+          const extra = r.extra
+            ? `<input type="number" id="${fid(modKey, `${f.key}.${r.key}.${r.extra.field}`)}" min="${r.extra.min != null ? r.extra.min : 0}"${r.extra.max != null ? ` max="${r.extra.max}"` : ""} step="${r.extra.step || 1}" placeholder="${escapeHtml(r.extra.placeholder)}" aria-label="${escapeHtml(`${r.label} — ${r.extra.placeholder}`)}" />`
+            : `<span class="status-row-spacer"></span>`;
+          return `
+        <div class="status-row">
+          <span class="status-row-label">${escapeHtml(r.label)}</span>
+          <select id="${fid(modKey, `${f.key}.${r.key}.status`)}" required aria-label="${escapeHtml(`${r.label} — status`)}">
+            <option value="" disabled selected>Select one</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+            <option value="unsure">Not sure</option>
+          </select>
+          ${extra}
+        </div>`;
+        })
+        .join("")}</div>`;
+  }
+  return "";
+}
+
+function readSpecForm(modKey, spec) {
+  const payload = {};
+  spec.fields.forEach((f) => {
+    switch (f.type) {
+      case "grid":
+        f.fields.forEach((fld) => {
+          setPath(payload, fld.key, Number(document.getElementById(fid(modKey, fld.key)).value) || 0);
+        });
+        break;
+      case "select": {
+        const value = document.getElementById(fid(modKey, f.key)).value;
+        setPath(payload, f.key, f.number ? Number(value) : value);
+        break;
+      }
+      case "radios": {
+        const answers = {};
+        f.questions.forEach((q, i) => {
+          const checked = document.querySelector(`input[name="${modKey}-q${i + 1}"]:checked`);
+          if (checked) answers[i + 1] = Number(checked.value);
+        });
+        setPath(payload, f.key, answers);
+        break;
+      }
+      case "checks":
+        setPath(
+          payload,
+          f.key,
+          Array.from(document.querySelectorAll(`input[name="${fid(modKey, f.key)}"]:checked`)).map((cb) => cb.value)
+        );
+        break;
+      case "checkbox":
+        setPath(payload, f.key, document.getElementById(fid(modKey, f.key)).checked);
+        break;
+      case "textarea":
+        setPath(payload, f.key, document.getElementById(fid(modKey, f.key)).value.trim());
+        break;
+      case "statusRows":
+        f.rows.forEach((r) => {
+          const entry = { status: document.getElementById(fid(modKey, `${f.key}.${r.key}.status`)).value };
+          if (r.extra) {
+            const raw = document.getElementById(fid(modKey, `${f.key}.${r.key}.${r.extra.field}`)).value;
+            entry[r.extra.field] = raw === "" ? null : Number(raw);
+          } else if (r.nullField) {
+            entry[r.nullField] = null;
+          }
+          setPath(payload, `${f.key}.${r.key}`, entry);
+        });
+        break;
+    }
+  });
+  return payload;
+}
+
+// Restores raw input fields only — derived fields are recomputed server-side.
+function populateSpecForm(modKey, spec, data) {
+  spec.fields.forEach((f) => {
+    switch (f.type) {
+      case "grid":
+        f.fields.forEach((fld) => {
+          const value = data ? getPath(data, fld.key) : null;
+          document.getElementById(fid(modKey, fld.key)).value = value != null ? value : "";
+        });
+        break;
+      case "select": {
+        const value = data ? getPath(data, f.key) : null;
+        document.getElementById(fid(modKey, f.key)).value = value != null ? String(value) : "";
+        break;
+      }
+      case "radios":
+        if (data) {
+          Object.entries(getPath(data, f.key) || {}).forEach(([q, v]) => {
+            const input = document.querySelector(`input[name="${modKey}-q${q}"][value="${v}"]`);
+            if (input) input.checked = true;
+          });
+        }
+        break;
+      case "checks": {
+        const values = (data && getPath(data, f.key)) || [];
+        document.querySelectorAll(`input[name="${fid(modKey, f.key)}"]`).forEach((cb) => {
+          cb.checked = values.includes(cb.value);
+        });
+        break;
+      }
+      case "checkbox":
+        document.getElementById(fid(modKey, f.key)).checked = !!(data && getPath(data, f.key));
+        break;
+      case "textarea":
+        document.getElementById(fid(modKey, f.key)).value = (data && getPath(data, f.key)) || "";
+        break;
+      case "statusRows":
+        f.rows.forEach((r) => {
+          const entry = data ? getPath(data, `${f.key}.${r.key}`) : null;
+          document.getElementById(fid(modKey, `${f.key}.${r.key}.status`)).value = (entry && entry.status) || "";
+          if (r.extra) {
+            const value = entry && entry[r.extra.field];
+            document.getElementById(fid(modKey, `${f.key}.${r.key}.${r.extra.field}`)).value = value != null ? value : "";
+          }
+        });
+        break;
+    }
+  });
+}
+
+const MODULE_FORMS = {
+  spending: {
+    subtitle: "Where your money goes each month, split into essentials and everything else. Estimates are fine.",
+    fields: [
+      { type: "heading", label: "Monthly Income" },
+      { type: "grid", fields: [{ key: "monthlyIncome", label: "Monthly Take-Home Income ($)" }] },
+      { type: "heading", label: "Essential Expenses", note: "Roughly how much do you spend per month on each?" },
+      { type: "grid", fields: SPENDING_ESSENTIALS.map(([key, label]) => ({ key: `essentials.${key}`, label: `${label} ($)` })) },
+      { type: "heading", label: "Discretionary Spending" },
+      { type: "grid", fields: SPENDING_DISCRETIONARY.map(([key, label]) => ({ key: `discretionary.${key}`, label: `${label} ($)` })) },
+    ],
+  },
+  savings: {
+    subtitle: "How prepared you are for a surprise expense — and the path to your target.",
+    fields: [
+      { type: "heading", label: "Your Numbers" },
+      {
+        type: "grid",
+        fields: [
+          { key: "monthlyExpenses", label: "Monthly Essential Expenses ($)" },
+          { key: "emergencyFund", label: "Emergency Fund Balance ($)" },
+          { key: "monthlySavings", label: "Monthly Amount You Save ($)" },
+        ],
+      },
+      {
+        type: "select",
+        key: "targetMonths",
+        label: "How many months of expenses would you like set aside?",
+        number: true,
+        options: [["3", "3 months"], ["6", "6 months"], ["12", "12 months"]],
+      },
+      {
+        type: "textarea",
+        key: "goalsNotes",
+        label: "Other savings goals (optional)",
+        maxlength: 1000,
+        placeholder: "e.g. House down payment, new car, sabbatical",
+      },
+    ],
+  },
+  debt: {
+    subtitle: "Balances and rates help us prioritize the smartest payoff order. Leave a row blank if it doesn't apply.",
+    fields: [
+      { type: "heading", label: "Your Debts" },
+      {
+        type: "grid",
+        fields: DEBT_TYPES.flatMap(([key, label]) => [
+          { key: `debts.${key}.balance`, label: `${label} — Balance ($)` },
+          { key: `debts.${key}.rate`, label: `${label} — Interest Rate (%)`, max: 100, step: 0.1 },
+        ]),
+      },
+      { type: "heading", label: "Monthly Picture" },
+      {
+        type: "grid",
+        fields: [
+          { key: "monthlyDebtPayments", label: "Total Monthly Debt Payments ($)" },
+          { key: "grossMonthlyIncome", label: "Gross Monthly Income ($)" },
+        ],
+      },
+    ],
+  },
+  riskcapacity: {
+    subtitle: "Capacity is your financial ability to take risk — separate from how risk feels.",
+    fields: [
+      {
+        type: "radios",
+        key: "answers",
+        questions: [
+          {
+            legend: "When will you begin withdrawing meaningful amounts from this portfolio?",
+            options: ["Within 2 years", "2–5 years", "5–10 years", "10–15 years", "15+ years"],
+          },
+          {
+            legend: "How stable is your household income?",
+            options: ["Very unstable", "Somewhat unstable", "Average", "Stable", "Very stable with pension or guaranteed income"],
+          },
+          {
+            legend: "How many months of expenses do you keep in cash reserves?",
+            options: ["Under 1", "1–3", "3–6", "6–12", "12+"],
+          },
+          {
+            legend: "What share of your total net worth does this portfolio represent?",
+            options: ["Over 75%", "50–75%", "25–50%", "10–25%", "Under 10%"],
+          },
+          {
+            legend: "If markets fell sharply, how much flexibility do you have to delay your goals?",
+            options: ["None", "A little", "Some", "Quite a bit", "Complete flexibility"],
+          },
+        ],
+      },
+    ],
+  },
+  behavior: {
+    subtitle: "How you actually respond to markets matters as much as any projection.",
+    fields: [
+      {
+        type: "radios",
+        key: "answers",
+        questions: [
+          {
+            legend: "In a sharp market drop like March 2020, what did you do (or would you do)?",
+            options: ["Sold everything", "Sold some", "Held on", "Held and rebalanced", "Bought more"],
+          },
+          {
+            legend: "What is the largest one-year loss you could tolerate without selling?",
+            options: ["5%", "10%", "20%", "30%", "40% or more"],
+          },
+          {
+            legend: "During volatile markets, how often do you check your portfolio?",
+            options: ["Many times a day", "Daily", "Weekly", "Monthly", "Rarely"],
+          },
+          {
+            legend: "When an investment loses money, you usually...",
+            options: ["Sell quickly", "Worry and watch daily", "Wait it out", "Re-evaluate the thesis calmly", "Buy more if the thesis still holds"],
+          },
+        ],
+      },
+      { type: "textarea", key: "biggestConcern", label: "What worries you most about investing? (optional)", maxlength: 1000 },
+    ],
+  },
+  knowledge: {
+    subtitle: "Your background helps your advisor pitch advice at the right depth.",
+    fields: [
+      {
+        type: "select",
+        key: "yearsInvesting",
+        label: "How long have you been investing?",
+        options: [
+          ["none", "I haven't invested before"],
+          ["under3", "Under 3 years"],
+          ["3to10", "3–10 years"],
+          ["over10", "More than 10 years"],
+        ],
+      },
+      { type: "checks", key: "instruments", label: "Which have you personally invested in?", note: "Select all that apply.", options: INSTRUMENT_OPTIONS },
+      {
+        type: "select",
+        key: "selfRating",
+        label: "How would you rate your investment knowledge?",
+        number: true,
+        options: [
+          ["1", "1 — Just starting"],
+          ["2", "2"],
+          ["3", "3 — Comfortable with the basics"],
+          ["4", "4"],
+          ["5", "5 — Very knowledgeable"],
+        ],
+      },
+      { type: "checkbox", key: "hadAdvisor", label: "I have worked with a financial advisor before" },
+    ],
+  },
+  estatedocs: {
+    subtitle: "Which core estate documents do you have in place today? Estimates on years are fine.",
+    fields: [
+      {
+        type: "statusRows",
+        key: "documents",
+        rows: ESTATE_DOCS.map(([key, label]) => ({
+          key,
+          label,
+          extra: { field: "year", placeholder: "Year updated", min: 1900, max: 2100, step: 1 },
+        })),
+      },
+    ],
+  },
+  beneficiaries: {
+    subtitle: "Beneficiary designations pass outside your will — worth confirming they're current.",
+    fields: [
+      {
+        type: "select",
+        key: "retirementAccounts",
+        label: "Do all your retirement accounts have named beneficiaries?",
+        options: [["all", "All of them"], ["some", "Some of them"], ["none", "None"], ["na", "Not applicable"]],
+      },
+      {
+        type: "select",
+        key: "lifePolicies",
+        label: "Do all your life insurance policies have named beneficiaries?",
+        options: [["all", "All of them"], ["some", "Some of them"], ["none", "None"], ["na", "Not applicable"]],
+      },
+      {
+        type: "select",
+        key: "todBrokerage",
+        label: "Do your taxable brokerage accounts have transfer-on-death designations?",
+        options: [["yes", "Yes"], ["no", "No"], ["na", "Not applicable"]],
+      },
+      {
+        type: "select",
+        key: "lastReviewed",
+        label: "When did you last review your beneficiary designations?",
+        options: [
+          ["within1", "Within the last year"],
+          ["1to3", "1–3 years ago"],
+          ["over3", "More than 3 years ago"],
+          ["never", "Never"],
+        ],
+      },
+      {
+        type: "checks",
+        key: "lifeEvents",
+        label: "Any of these life events since your last review?",
+        note: "Select all that apply.",
+        options: [
+          ["marriage", "Marriage"],
+          ["divorce", "Divorce"],
+          ["birth", "Birth or adoption"],
+          ["death", "Death in the family"],
+          ["move", "Moved states"],
+          ["none", "None of these"],
+        ],
+      },
+    ],
+  },
+  legacy: {
+    subtitle: "Gifting, charitable, and family goals that shape how your estate plan is built.",
+    fields: [
+      {
+        type: "select",
+        key: "charitableIntent",
+        label: "Do you have charitable giving intentions?",
+        options: [
+          ["none", "No charitable plans"],
+          ["annual", "Yes — giving during my lifetime"],
+          ["bequest", "Yes — a gift in my estate"],
+          ["both", "Both lifetime giving and a bequest"],
+          ["unsure", "Not sure yet"],
+        ],
+      },
+      {
+        type: "select",
+        key: "annualGifting",
+        label: "Do you make (or plan to make) regular annual gifts?",
+        options: [["none", "No"], ["family", "Yes — to family"], ["charity", "Yes — to charity"], ["both", "Yes — to family and charity"]],
+      },
+      {
+        type: "checks",
+        key: "specialCircumstances",
+        label: "Do any of these apply to your family?",
+        note: "Select all that apply.",
+        options: [
+          ["minorChildren", "Minor children"],
+          ["specialNeeds", "A family member with special needs"],
+          ["blendedFamily", "A blended family"],
+          ["businessSuccession", "A business that needs a succession plan"],
+          ["none", "None of these"],
+        ],
+      },
+      { type: "textarea", key: "legacyNotes", label: "Anything else about the legacy you'd like to leave? (optional)", maxlength: 2000 },
+    ],
+  },
+  lifeinsurance: {
+    subtitle: "The DIME method — Debts, Income, Mortgage, Education — gives a quick estimate of the coverage your family would need.",
+    fields: [
+      { type: "heading", label: "DIME Inputs" },
+      {
+        type: "grid",
+        fields: [
+          { key: "debts", label: "Non-Mortgage Debts ($)" },
+          { key: "annualIncome", label: "Annual Income to Replace ($)" },
+          { key: "incomeYears", label: "Years of Income to Replace", max: 40 },
+          { key: "mortgageBalance", label: "Mortgage Balance ($)" },
+          { key: "educationCosts", label: "Future Education Costs ($)" },
+          { key: "currentCoverage", label: "Current Life Insurance Coverage ($)" },
+        ],
+      },
+    ],
+  },
+  coverage: {
+    subtitle: "A quick inventory of your insurance lines — amounts are optional but helpful.",
+    fields: [
+      {
+        type: "statusRows",
+        key: "lines",
+        rows: [
+          { key: "termLife", label: "Life Insurance", extra: { field: "amount", placeholder: "Total death benefit ($)" } },
+          { key: "disability", label: "Disability Insurance", extra: { field: "amount", placeholder: "Monthly benefit ($)" } },
+          { key: "umbrella", label: "Umbrella Liability", extra: { field: "amount", placeholder: "Coverage limit ($)" } },
+          { key: "longTermCare", label: "Long-Term Care", extra: { field: "amount", placeholder: "Daily or monthly benefit ($)" } },
+          { key: "homeAuto", label: "Home & Auto", nullField: "amount" },
+        ],
+      },
+    ],
+  },
+  ltc: {
+    subtitle: "About 70% of people over 65 need some form of long-term care — a plan beats a surprise.",
+    fields: [
+      {
+        type: "select",
+        key: "ageBand",
+        label: "Your age",
+        options: [["under40", "Under 40"], ["40to49", "40–49"], ["50to59", "50–59"], ["60plus", "60+"]],
+      },
+      {
+        type: "select",
+        key: "familyHistory",
+        label: "Any family history of needing long-term care?",
+        options: [["yes", "Yes"], ["no", "No"], ["unsure", "Not sure"]],
+      },
+      {
+        type: "select",
+        key: "fundingPlan",
+        label: "How would you fund long-term care if needed?",
+        options: [
+          ["insurance", "Long-term care insurance"],
+          ["selfFund", "Self-fund from savings"],
+          ["hybrid", "A hybrid life / LTC policy"],
+          ["none", "No plan yet"],
+        ],
+      },
+      {
+        type: "select",
+        key: "assetsEarmarked",
+        label: "Have you earmarked specific assets for potential care costs?",
+        options: [["yes", "Yes"], ["no", "No"]],
+      },
+    ],
+  },
+};
+
+function buildModuleSection(mod, spec) {
+  const catTitle = (CATEGORIES.find((c) => c.key === mod.category) || {}).title || "Category";
+  const section = document.createElement("section");
+  section.id = `view-${mod.key}`;
+  section.className = "view hidden module-view";
+  section.innerHTML = `
+    <div class="card">
+      <h1>${escapeHtml(mod.title)}</h1>
+      <p class="subtitle">${escapeHtml(spec.subtitle)}</p>
+      <form id="${mod.key}-form" class="form">
+        ${spec.fields.map((f) => specFieldHtml(mod.key, f)).join("")}
+        <p class="form-error" id="${mod.key}-error"></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-ghost module-back-btn">Back to ${escapeHtml(catTitle)}</button>
+          <button type="submit" class="btn btn-primary">Save Assessment</button>
+        </div>
+      </form>
+    </div>`;
+  document.querySelector("main.container").appendChild(section);
+
+  section.querySelector(".module-back-btn").addEventListener("click", () => showCategory(mod.category));
+
+  section.querySelector(`#${mod.key}-form`).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const radios = spec.fields.find((f) => f.type === "radios");
+    if (radios) {
+      const answered = radios.questions.filter((q, i) =>
+        document.querySelector(`input[name="${mod.key}-q${i + 1}"]:checked`)
+      ).length;
+      if (answered < radios.questions.length) {
+        document.getElementById(`${mod.key}-error`).textContent = `Please answer all ${radios.questions.length} questions.`;
+        return;
+      }
+    }
+    await saveModule(mod.key, readSpecForm(mod.key, spec), `${mod.key}-error`);
+  });
+}
+
+CATEGORY_MODULES.forEach((mod) => {
+  const spec = MODULE_FORMS[mod.key];
+  buildModuleSection(mod, spec);
+  FORM_POPULATORS[mod.key] = (data) => populateSpecForm(mod.key, spec, data);
 });
 
 // ---------- Boot ----------

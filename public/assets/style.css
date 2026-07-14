@@ -252,13 +252,27 @@ h2 {
 }
 
 #view-questionnaire .btn-ghost,
-#view-dashboard .btn-ghost {
+#view-dashboard .btn-ghost,
+#view-category .btn-ghost,
+#view-risk .btn-ghost,
+#view-budget .btn-ghost,
+#view-retirement .btn-ghost,
+#view-networth .btn-ghost,
+#view-compensation .btn-ghost,
+.module-view .btn-ghost {
   color: var(--navy);
   border: 1px solid var(--border);
 }
 
 #view-questionnaire .btn-ghost:hover,
-#view-dashboard .btn-ghost:hover {
+#view-dashboard .btn-ghost:hover,
+#view-category .btn-ghost:hover,
+#view-risk .btn-ghost:hover,
+#view-budget .btn-ghost:hover,
+#view-retirement .btn-ghost:hover,
+#view-networth .btn-ghost:hover,
+#view-compensation .btn-ghost:hover,
+.module-view .btn-ghost:hover {
   background: var(--bg);
 }
 
@@ -341,6 +355,54 @@ h2 {
   align-self: flex-start;
   text-decoration: none;
   display: inline-block;
+}
+
+/* Onboarding category card (two offerings side by side) */
+.onboarding-hub-card {
+  margin-bottom: 24px;
+}
+
+.hub-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.hub-card-title-row h2 {
+  margin: 0;
+}
+
+.hub-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: #e8f4fb;
+  color: var(--sky-dark);
+  white-space: nowrap;
+}
+
+.hub-offering-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 28px;
+  margin-top: 6px;
+}
+
+.hub-offering {
+  display: flex;
+  flex-direction: column;
+}
+
+.hub-offering h3 {
+  font-family: Georgia, serif;
+  color: var(--navy);
+  font-size: 1.15rem;
+  margin: 0 0 8px;
 }
 
 .summary-list {
@@ -891,6 +953,116 @@ h2 {
   margin-top: 8px;
 }
 
+/* Status rows (label + yes/no/unsure select + optional number) in generated forms */
+
+.status-rows {
+  margin-top: 8px;
+}
+
+.status-row {
+  display: grid;
+  grid-template-columns: 1fr 140px 180px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.status-row:last-child {
+  border-bottom: none;
+}
+
+.status-row-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--navy);
+}
+
+.status-row input[type="number"] {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  color: var(--text);
+  background: #fff;
+}
+
+.status-row input[type="number"]:focus {
+  outline: none;
+  border-color: var(--sky);
+  box-shadow: 0 0 0 3px rgba(74, 171, 219, 0.2);
+}
+
+/* Checklist rows in result renderers (admin detail view) */
+
+.check-rows {
+  margin: 14px 0;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.95rem;
+}
+
+.check-row:last-child {
+  border-bottom: none;
+}
+
+.check-marker {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.check-yes {
+  background: #e4f2e7;
+  color: #3d7a4a;
+}
+
+.check-no {
+  background: #fbeae7;
+  color: var(--error);
+}
+
+.check-unsure {
+  background: #eef2f6;
+  color: var(--text-muted);
+}
+
+.check-label {
+  flex: 1;
+  color: var(--text);
+}
+
+.check-detail {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+/* "Topics for your advisor" list in the legacy renderer */
+
+.topic-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.topic-list li {
+  margin: 6px 0;
+  color: var(--text);
+}
+
 .budget-surplus {
   font-weight: 600;
   color: var(--text-muted);
@@ -972,6 +1144,19 @@ h2 {
   .hub-card-btn {
     align-self: stretch;
     text-align: center;
+  }
+  .hub-offering-grid {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  /* Status rows stack: label, then select, then optional amount/year */
+  .status-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .status-row-spacer {
+    display: none;
   }
 
   /* Module cards + action rows */

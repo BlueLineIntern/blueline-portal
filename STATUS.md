@@ -11,9 +11,9 @@ Single Cloudflare Worker serves both the static frontend (`public/`) and the API
 (`worker.js`), same origin — no CORS needed. Data lives in a Cloudflare KV
 namespace called `PORTAL_KV`.
 
-- `public/index.html` / `public/assets/style.css` / `public/assets/script.js` — client-facing login; after login users land on a **home hub** (`view-home`) with two tiles: **"Financial Picture Analysis"** (the five-assessment dashboard, `view-dashboard`, with live x-of-5 progress) and **"New Client Onboarding"** (links to `/onboarding/`). Dashboard has a "← Back to Home" button; module back-buttons return to the dashboard.
-- `public/assets/render.js` — shared chart builders (`donutChart`, `riskGauge`, `projectionChart`, `balanceBars`, `statBar`), module metadata (`MODULES`), and per-module result renderers; loaded by both index.html and admin.html
-- `public/admin.html` — internal staff view, gated by `ADMIN_TOKEN` secret (separate from client logins): summary table of all clients plus a per-client "Details" view that renders the client's full dashboard (same charts/flags the client sees, via render.js)
+- `public/index.html` / `public/assets/style.css` / `public/assets/script.js` — client-facing login; after login users land on a **five-category home hub** (`view-home`): **Onboarding** (badge "For all new clients"; contains the Financial Picture Analysis five-assessment dashboard `view-dashboard` with x-of-5 progress, plus the New Client Onboarding link to `/onboarding/`), **Budgeting & Spending**, **Risk Assessment**, **Estate Planning**, **Insurance Planning**. Each of the four module categories opens a shared `view-category` section (x-of-3 progress, module cards). The 12 new module forms are generated at boot from a declarative `MODULE_FORMS` spec + form engine in script.js (section id `view-<key>`, form `<key>-form`, error `<key>-error`); FPA forms remain static HTML. After save, FPA modules return to the dashboard, category modules to their category view. Clients never see results — completed cards show a thank-you + Review/Edit; results render only in admin.
+- `public/assets/render.js` — shared chart builders (`donutChart`, `riskGauge`, `projectionChart`, `balanceBars`, `statBar`), module metadata (`MODULES` = FPA five, `CATEGORY_MODULES` = 12 new, `CATEGORIES` = 5 categories), and per-module result renderers; loaded by both index.html and admin.html
+- `public/admin.html` — internal staff view, gated by `ADMIN_TOKEN` secret (separate from client logins): a **"Client Submissions" dropdown** (Name — email) that renders the selected client's detail inline — "x of 17 modules completed", a staff Flags block (rollover opportunity, stock concentration, missing 401(k) match, negative cash flow), then all five category sections with rendered module results, and email-matched New Client Onboarding records linking to the onboarding detail view. Polling refresh preserves the selection. Print/Save PDF produces a branded per-client report (one module per page). The "New Client Onboarding Submissions" table (all records incl. anonymous, delete/restore/trash) is unchanged.
 - `worker.js` — register/login/logout, per-module assessment save/load, admin listing
 - `wrangler.toml` — Worker config incl. KV binding and static assets directory
 - `dev-server.ps1` — local mock server (serves `public/` + in-memory API) for frontend
@@ -45,8 +45,30 @@ server-side in `worker.js` (`MODULE_VALIDATORS`).
 
 All charts are dependency-free inline SVG generated in `render.js`.
 
-Admin table shows per-module key stats plus a Flags column (rollover opportunity,
-stock concentration, missing 401(k) match, negative cash flow).
+## Category modules (twelve, added with the five-category hub rework)
+Same storage and API as the FPA five — `responses:<email>` module map, validation
+and derived fields in `worker.js` `MODULE_VALIDATORS`, mirrored in
+`dev-server.ps1` `Build-Module` (rounding uses `[MidpointRounding]::AwayFromZero`
+to match JS `Math.round`). All keys are lowercase a-z (route regex constraint).
+
+- **Budgeting & Spending**: `spending` (essentials vs discretionary; discretionaryPct,
+  leftover, overspending/highDiscretionary flags), `savings` (emergency fund;
+  monthsCovered, targetAmount, shortfall, monthsToTarget, funded), `debt` (4 debt
+  types with balance+rate; totalDebt, weightedAvgRate, dtiPct, highestRateType,
+  highDti ≥36%, highInterest ≥10%)
+- **Risk Assessment**: `riskcapacity` (5 scored Qs, score 5–25 → level; ability vs
+  willingness framing), `behavior` (4 scored Qs, score 4–20 → profile, coachingFlag),
+  `knowledge` (years + instruments + self-rating → knowledgeScore /12 → level)
+- **Estate Planning**: `estatedocs` (5 docs status+year; completenessPct, missing/
+  unsure/stale ≥5yr lists), `beneficiaries` (gapCount, eventsSinceReview,
+  reviewNeeded; divorce callout), `legacy` (charitable/gifting/special
+  circumstances → discussionTopics list)
+- **Insurance Planning**: `lifeinsurance` (DIME: dimeNeed, gap, coveragePct,
+  underinsured), `coverage` (5 lines status+amount; coveredCount, gaps, unsure),
+  `ltc` (readiness Planned/Partially/Not yet, timelyFlag for 50+)
+
+`worker.js` validator dispatch uses an own-property guard (hasOwnProperty) so
+inherited keys like `constructor` 404 instead of bypassing validation.
 
 ## Onboarding proof of concept (`/onboarding/`)
 Standalone 12-step wizard (`public/onboarding/`), sample/test data only, clearly

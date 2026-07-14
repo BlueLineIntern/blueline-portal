@@ -8,16 +8,13 @@
 <link rel="stylesheet" href="assets/style.css" />
 <style>
   .admin-container { max-width: 1500px; }
-  #clients-card, #onboarding-card { overflow-x: auto; }
+  #onboarding-card { overflow-x: auto; }
   .admin-table { width: 100%; min-width: 1200px; border-collapse: collapse; margin-top: 20px; }
   .admin-table th, .admin-table td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
-  .admin-table td.wrap { white-space: normal; max-width: 240px; }
   .admin-table th { color: var(--navy); font-family: Georgia, serif; }
   .admin-empty { color: var(--text-muted); white-space: normal; }
   .token-form { max-width: 400px; margin: 60px auto 0; }
   .cell-missing { color: var(--text-muted); }
-  .cell-flag { color: #c97e2c; font-weight: 700; }
-  .cell-negative { color: var(--error); font-weight: 600; }
   .module-count { font-weight: 700; color: var(--navy); }
   .btn-small { padding: 6px 14px; font-size: 0.85rem; }
   /* style.css's base .btn-ghost is white-on-transparent for the navy topbar;
@@ -29,8 +26,21 @@
   #refresh-status { font-size: 0.8rem; }
   .onb-trash-heading { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 1.05rem; color: var(--text-muted); }
 
-  /* Client detail view */
+  /* Client picker */
+  .client-picker { max-width: 480px; margin-top: 10px; }
+  .client-picker label { margin-top: 0; }
+
+  /* Client detail view — sits inline between the picker and onboarding cards */
   #detail-view, #onb-detail-view { max-width: 900px; margin: 0 auto; }
+  #detail-view { margin-top: 36px; margin-bottom: 48px; }
+  .detail-section { margin-top: 36px; }
+  .detail-section > h2 { margin: 0 0 4px; }
+  .detail-section-desc { color: var(--text-muted); margin: 0 0 16px; }
+  .detail-subsection { font-family: Georgia, serif; color: var(--navy); font-size: 1.05rem; margin: 22px 0 12px; }
+  .detail-flags { background: #fdf3e6; border-left: 3px solid #F2A65A; border-radius: 4px; padding: 12px 16px; margin-bottom: 8px; }
+  .detail-flags h2 { margin: 0 0 6px; font-size: 1rem; color: #7a5220; }
+  .detail-flags ul { margin: 0; padding-left: 20px; color: #7a5220; font-weight: 600; }
+  .onb-link-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: #fff; margin-bottom: 10px; }
   .onb-section { margin-top: 20px; }
   .onb-section h2 { margin: 0 0 10px; font-size: 1.15rem; }
   .onb-section .not-done { color: var(--text-muted); font-style: italic; }
@@ -87,7 +97,8 @@
     .print-header-title p { margin: 2px 0; color: var(--text-muted); font-size: 0.9rem; }
 
     /* One module per printed page: every card starts on a fresh page.
-       The first card shares page 1 with the report header. */
+       Each category heading starts a page and shares it with its first
+       module; the first category shares page 1 with the report header. */
     .module-card {
       box-shadow: none;
       border: none;
@@ -97,10 +108,17 @@
       break-inside: avoid;
       page-break-inside: avoid;
     }
-    #detail-grid .module-card:first-child {
+    .detail-section > h2 {
+      break-before: page;
+      page-break-before: always;
+    }
+    #detail-body .detail-section:first-of-type > h2,
+    .detail-section .module-grid .module-card:first-child {
       break-before: auto;
       page-break-before: auto;
     }
+    .detail-flags, .detail-subsection, .onb-link-row { break-inside: avoid; page-break-inside: avoid; }
+    .onb-link-row .btn { display: none !important; }
     .module-card-header, .chart-donut, .chart-gauge, .chart-projection,
     .chart-balance, .stat-rows, .stat-bar, .result-flag { break-inside: avoid; }
 
@@ -134,25 +152,39 @@
     </div>
 
     <div class="card hidden" id="clients-card">
-      <h1>Financial Picture Analysis Submissions</h1>
-      <table class="admin-table" id="clients-table">
-        <thead>
-          <tr>
-            <th></th>
-            <th>Name</th>
-            <th>Email</th>
-            <th>Progress</th>
-            <th>Risk Profile</th>
-            <th>Cash Flow</th>
-            <th>Retirement</th>
-            <th>Net Worth</th>
-            <th>Compensation</th>
-            <th>Flags</th>
-            <th>Last Updated</th>
-          </tr>
-        </thead>
-        <tbody id="clients-body"></tbody>
-      </table>
+      <h1>Client Submissions</h1>
+      <p class="admin-empty">Choose a client to see which modules they've completed and review their results below.</p>
+      <div class="form client-picker">
+        <label for="client-select">Client</label>
+        <select id="client-select">
+          <option value="">Select a client…</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="hidden" id="detail-view">
+      <div class="print-header">
+        <div class="print-header-title">
+          <h1>Client Financial Report</h1>
+          <p id="print-client-line"></p>
+          <p id="print-date-line"></p>
+          <p>Prepared by BlueLine Advisors — for discussion purposes only.</p>
+        </div>
+        <div class="print-header-logo">
+          <img src="assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" />
+        </div>
+      </div>
+      <div class="detail-header">
+        <div>
+          <h1 id="detail-name"></h1>
+          <p class="detail-client-email" id="detail-email"></p>
+          <p class="detail-client-email" id="detail-progress"></p>
+        </div>
+        <div class="detail-header-actions">
+          <button type="button" class="btn btn-primary" id="detail-print-btn">Print / Save PDF</button>
+        </div>
+      </div>
+      <div id="detail-body"></div>
     </div>
 
     <div class="card hidden" id="onboarding-card">
@@ -226,31 +258,6 @@
       </div>
       <div id="onb-detail-content"></div>
     </div>
-
-    <div class="hidden" id="detail-view">
-      <div class="print-header">
-        <div class="print-header-title">
-          <h1>Financial Onboarding Report</h1>
-          <p id="print-client-line"></p>
-          <p id="print-date-line"></p>
-          <p>Prepared by BlueLine Advisors — for discussion purposes only.</p>
-        </div>
-        <div class="print-header-logo">
-          <img src="assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" />
-        </div>
-      </div>
-      <div class="detail-header">
-        <div>
-          <h1 id="detail-name"></h1>
-          <p class="detail-client-email" id="detail-email"></p>
-        </div>
-        <div class="detail-header-actions">
-          <button type="button" class="btn btn-primary" id="detail-print-btn">Print / Save PDF</button>
-          <button type="button" class="btn btn-secondary" id="detail-back-btn">← Back to All Clients</button>
-        </div>
-      </div>
-      <div class="module-grid" id="detail-grid"></div>
-    </div>
   </main>
 
   <script src="assets/render.js"></script>
@@ -258,20 +265,25 @@
     const tokenForm = document.getElementById('token-form');
     const tokenCard = document.getElementById('token-card');
     const clientsCard = document.getElementById('clients-card');
-    const clientsBody = document.getElementById('clients-body');
+    const clientSelect = document.getElementById('client-select');
     const tokenError = document.getElementById('token-error');
     const detailView = document.getElementById('detail-view');
 
     let allClients = [];
     let allOnboardings = [];
     let adminToken = null;
+    let selectedEmail = '';
     let showDeleted = false;
     let pollTimer = null;
     const POLL_INTERVAL_MS = 20000;
 
-    // Only re-fetches/re-renders while a summary table is on screen — not
-    // while a detail view (client or onboarding) is open, so an in-progress
-    // read isn't yanked out from under the person looking at it.
+    const ALL_MODULE_COUNT = MODULES.length + CATEGORY_MODULES.length;
+    const CATEGORY_MODULE_MAP = Object.fromEntries(CATEGORY_MODULES.map((mod) => [mod.key, mod]));
+
+    // Only re-fetches/re-renders while the picker/table cards are on screen —
+    // not while the onboarding detail is open, so an in-progress read isn't
+    // yanked out from under the person looking at it. The inline client
+    // detail does refresh (renderClientPicker re-renders it in place).
     function tablesAreVisible() {
       return !clientsCard.classList.contains('hidden') || !document.getElementById('onboarding-card').classList.contains('hidden');
     }
@@ -292,7 +304,7 @@
 
         allClients = data.clients;
         allOnboardings = (onbRes.ok && onbData.records) || [];
-        renderClients(allClients);
+        renderClientPicker();
         renderOnboardings(allOnboardings);
         if (showStatus) statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
       } catch (err) {
@@ -325,7 +337,7 @@
         adminToken = token;
         allClients = data.clients;
         allOnboardings = (onbRes.ok && onbData.records) || [];
-        renderClients(allClients);
+        renderClientPicker();
         renderOnboardings(allOnboardings);
         tokenCard.classList.add('hidden');
         clientsCard.classList.remove('hidden');
@@ -342,125 +354,156 @@
       renderOnboardings(allOnboardings);
     });
 
-    function money(n) {
-      const v = Number(n || 0);
-      return (v < 0 ? '-$' : '$') + Math.abs(Math.round(v)).toLocaleString();
-    }
-
     function missing() {
       return '<span class="cell-missing">—</span>';
     }
 
-    function renderClients(clients) {
-      if (!clients.length) {
-        clientsBody.innerHTML = '<tr><td colspan="11" class="admin-empty">No client accounts yet.</td></tr>';
-        return;
+    // Rebuilds the client dropdown from allClients, preserving the current
+    // selection across polling refreshes, then re-renders the detail. Skips
+    // the DOM rebuild when the list is unchanged so a poll tick doesn't close
+    // an open dropdown.
+    let lastPickerHtml = '';
+    function renderClientPicker() {
+      const sorted = allClients
+        .slice()
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+
+      const html =
+        `<option value="">${allClients.length ? 'Select a client…' : 'No client accounts yet'}</option>` +
+        sorted
+          .map((c) => `<option value="${escapeHtml(c.email)}">${escapeHtml(`${c.name} — ${c.email}`)}</option>`)
+          .join('');
+      if (html !== lastPickerHtml) {
+        clientSelect.innerHTML = html;
+        lastPickerHtml = html;
       }
+      clientSelect.disabled = !allClients.length;
 
-      clientsBody.innerHTML = clients
-        .map((c, index) => {
-          const m = c.modules || {};
-          const done = MODULES.filter((mod) => m[mod.key]).length;
-
-          const risk = m.risk
-            ? `${m.risk.score} / 25<br>${escapeHtml(m.risk.category)}`
-            : missing();
-
-          const budget = m.budget
-            ? `Income ${money(m.budget.monthlyIncome)}/mo<br>Savings rate ${m.budget.savingsRate}%` +
-              (m.budget.surplus < 0 ? `<br><span class="cell-negative">Overspending ${money(-m.budget.surplus)}/mo</span>` : '')
-            : missing();
-
-          const retirement = m.retirement
-            ? `Retire at ${m.retirement.targetAge}<br>Projected ${money(m.retirement.projectedBalance)}<br>` +
-              (m.retirement.readinessPct != null ? `${m.retirement.readinessPct}% of target` : '')
-            : missing();
-
-          const networth = m.networth
-            ? `<span class="${m.networth.netWorth < 0 ? 'cell-negative' : ''}">${money(m.networth.netWorth)}</span>` +
-              `<br>A ${money(m.networth.totalAssets)} / L ${money(m.networth.totalLiabilities)}`
-            : missing();
-
-          const comp = m.compensation
-            ? `Total ${money(m.compensation.totalComp)}<br>Equity ${money(m.compensation.annualEquityValue)}/yr`
-            : missing();
-
-          const flags = [];
-          if (m.retirement && m.retirement.oldEmployerPlans !== 'none') flags.push('Rollover opportunity');
-          if (m.compensation && m.compensation.concentrationFlag) flags.push('Stock concentration');
-          if (m.compensation && m.compensation.contributionPct < m.compensation.employerMatchPct) flags.push('Missing 401(k) match');
-          if (m.budget && m.budget.surplus < 0) flags.push('Negative cash flow');
-
-          const updatedAts = MODULES.map((mod) => m[mod.key] && m[mod.key].updatedAt).filter(Boolean);
-          const lastUpdated = updatedAts.length
-            ? new Date(updatedAts.sort().slice(-1)[0]).toLocaleString()
-            : missing();
-
-          return `<tr>
-            <td><button type="button" class="btn btn-secondary btn-small detail-btn" data-index="${index}" ${done ? '' : 'disabled title="No submissions yet"'}>Details</button></td>
-            <td>${escapeHtml(c.name)}</td>
-            <td>${escapeHtml(c.email)}</td>
-            <td><span class="module-count">${done} / ${MODULES.length}</span></td>
-            <td>${risk}</td>
-            <td>${budget}</td>
-            <td>${retirement}</td>
-            <td>${networth}</td>
-            <td>${comp}</td>
-            <td class="wrap">${flags.length ? `<span class="cell-flag">${flags.map(escapeHtml).join('<br>')}</span>` : missing()}</td>
-            <td>${lastUpdated}</td>
-          </tr>`;
-        })
-        .join('');
-
-      clientsBody.querySelectorAll('.detail-btn').forEach((btn) => {
-        btn.addEventListener('click', () => showDetail(Number(btn.dataset.index)));
-      });
+      if (selectedEmail && allClients.some((c) => c.email === selectedEmail)) {
+        clientSelect.value = selectedEmail;
+      } else {
+        selectedEmail = '';
+        clientSelect.value = '';
+      }
+      renderClientDetail();
     }
 
-    // Renders the client's modules exactly as they see them, using the same
-    // renderers as the client dashboard (render.js).
-    function showDetail(index) {
-      const client = allClients[index];
-      if (!client) return;
+    function moduleCardHtml(mod, data, number) {
+      if (!data) {
+        return `
+          <div class="card module-card module-card-empty">
+            <div class="module-card-header">
+              <span class="module-number">${number}</span>
+              <h2>${escapeHtml(mod.title)}</h2>
+              <span class="status-badge status-pending">Not started</span>
+            </div>
+            <p class="detail-empty-module">The client hasn't completed this assessment yet.</p>
+          </div>`;
+      }
+      return `
+        <div class="card module-card">
+          <div class="module-card-header">
+            <span class="module-number done">✓</span>
+            <h2>${escapeHtml(mod.title)}</h2>
+            <span class="status-badge status-done">Completed</span>
+          </div>
+          <div class="module-result">${mod.renderResult(data)}</div>
+          <div class="module-card-footer">
+            <span class="updated-at-inline">Updated ${data.updatedAt ? new Date(data.updatedAt).toLocaleString() : ''}</span>
+          </div>
+        </div>`;
+    }
+
+    // The four staff flags the old summary table surfaced, kept at the top
+    // of the detail so nothing gets buried below 17 module cards.
+    function clientFlagsHtml(m) {
+      const flags = [];
+      if (m.retirement && m.retirement.oldEmployerPlans !== 'none') flags.push('Rollover opportunity');
+      if (m.compensation && m.compensation.concentrationFlag) flags.push('Stock concentration');
+      if (m.compensation && m.compensation.contributionPct < m.compensation.employerMatchPct) flags.push('Missing 401(k) match');
+      if (m.budget && m.budget.surplus < 0) flags.push('Negative cash flow');
+      if (!flags.length) return '';
+      return `<div class="detail-flags"><h2>Flags</h2><ul>${flags
+        .map((f) => `<li>${escapeHtml(f)}</li>`)
+        .join('')}</ul></div>`;
+    }
+
+    // Onboarding-workflow records linked to this client by consent or profile email.
+    function clientOnboardingHtml(client) {
+      const email = String(client.email || '').toLowerCase();
+      const rows = [];
+      allOnboardings.forEach((r, index) => {
+        if (r.deleted) return;
+        const c = (r.data && r.data.consent) || {};
+        const p = (r.data && r.data.profile) || {};
+        const match = [c.email, p.email].some((e) => e && String(e).toLowerCase() === email);
+        if (!match) return;
+        const done = ONB_SECTIONS.filter(([k]) => r.data && r.data[k]).length;
+        rows.push(`<div class="onb-link-row">
+          <span><strong>${escapeHtml(r.onboardingId)}</strong> · ${done} / ${ONB_SECTIONS.length} sections · ${r.completionTime ? 'Completed' : 'In progress'}</span>
+          <button type="button" class="btn btn-secondary btn-small onb-open-btn" data-index="${index}">View Onboarding</button>
+        </div>`);
+      });
+      return rows.length
+        ? rows.join('')
+        : '<p class="admin-empty">No onboarding submission linked to this email yet.</p>';
+    }
+
+    function categorySectionHtml(cat, m, client) {
+      const heading = `<h2>${escapeHtml(cat.title)}</h2><p class="detail-section-desc">${escapeHtml(cat.description)}</p>`;
+      if (cat.type === 'onboarding') {
+        const fpaCards = MODULES.map((mod, i) => moduleCardHtml(mod, m[mod.key], i + 1)).join('');
+        return `<section class="detail-section">
+          ${heading}
+          <h3 class="detail-subsection">Financial Picture Analysis</h3>
+          <div class="module-grid">${fpaCards}</div>
+          <h3 class="detail-subsection">New Client Onboarding</h3>
+          ${clientOnboardingHtml(client)}
+        </section>`;
+      }
+      const cards = cat.moduleKeys
+        .map((key, i) => moduleCardHtml(CATEGORY_MODULE_MAP[key], m[key], i + 1))
+        .join('');
+      return `<section class="detail-section">${heading}<div class="module-grid">${cards}</div></section>`;
+    }
+
+    // Renders the selected client's detail inline below the picker, using the
+    // same renderers as the client dashboard (render.js). Called on selection
+    // change and on every polling refresh — no scroll reset, so a re-render
+    // doesn't yank the page out from under the reader.
+    function renderClientDetail() {
+      const detailBody = document.getElementById('detail-body');
+      const client = allClients.find((c) => c.email === selectedEmail);
+      if (!client) {
+        detailView.classList.add('hidden');
+        detailBody.innerHTML = '';
+        return;
+      }
       const m = client.modules || {};
+      const done =
+        MODULES.filter((mod) => m[mod.key]).length +
+        CATEGORY_MODULES.filter((mod) => m[mod.key]).length;
 
       document.getElementById('detail-name').textContent = client.name;
       document.getElementById('detail-email').textContent = client.email;
+      document.getElementById('detail-progress').textContent = `${done} of ${ALL_MODULE_COUNT} modules completed`;
       document.getElementById('print-client-line').textContent = `Client: ${client.name} (${client.email})`;
       document.getElementById('print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
 
-      document.getElementById('detail-grid').innerHTML = MODULES.map((mod, i) => {
-        const data = m[mod.key];
-        if (!data) {
-          return `
-            <div class="card module-card module-card-empty">
-              <div class="module-card-header">
-                <span class="module-number">${i + 1}</span>
-                <h2>${escapeHtml(mod.title)}</h2>
-                <span class="status-badge status-pending">Not started</span>
-              </div>
-              <p class="detail-empty-module">The client hasn't completed this assessment yet.</p>
-            </div>`;
-        }
-        return `
-          <div class="card module-card">
-            <div class="module-card-header">
-              <span class="module-number done">✓</span>
-              <h2>${escapeHtml(mod.title)}</h2>
-              <span class="status-badge status-done">Completed</span>
-            </div>
-            <div class="module-result">${mod.renderResult(data)}</div>
-            <div class="module-card-footer">
-              <span class="updated-at-inline">Updated ${data.updatedAt ? new Date(data.updatedAt).toLocaleString() : ''}</span>
-            </div>
-          </div>`;
-      }).join('');
+      detailBody.innerHTML =
+        clientFlagsHtml(m) + CATEGORIES.map((cat) => categorySectionHtml(cat, m, client)).join('');
 
-      clientsCard.classList.add('hidden');
-      document.getElementById('onboarding-card').classList.add('hidden');
+      detailBody.querySelectorAll('.onb-open-btn').forEach((btn) => {
+        btn.addEventListener('click', () => showOnbDetail(Number(btn.dataset.index)));
+      });
+
       detailView.classList.remove('hidden');
-      window.scrollTo(0, 0);
     }
+
+    clientSelect.addEventListener('change', () => {
+      selectedEmail = clientSelect.value;
+      renderClientDetail();
+    });
 
     // ---------- Onboarding POC submissions ----------
 
@@ -680,6 +723,7 @@
 
       clientsCard.classList.add('hidden');
       document.getElementById('onboarding-card').classList.add('hidden');
+      detailView.classList.add('hidden');
       document.getElementById('onb-detail-view').classList.remove('hidden');
       window.scrollTo(0, 0);
     }
@@ -689,17 +733,11 @@
       document.getElementById('onb-detail-view').classList.add('hidden');
       clientsCard.classList.remove('hidden');
       document.getElementById('onboarding-card').classList.remove('hidden');
+      if (selectedEmail) detailView.classList.remove('hidden');
       window.scrollTo(0, 0);
     });
 
     document.getElementById('detail-print-btn').addEventListener('click', () => window.print());
-
-    document.getElementById('detail-back-btn').addEventListener('click', () => {
-      detailView.classList.add('hidden');
-      clientsCard.classList.remove('hidden');
-      document.getElementById('onboarding-card').classList.remove('hidden');
-      window.scrollTo(0, 0);
-    });
   </script>
 </body>
 </html>

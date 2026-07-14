@@ -1,6 +1,10 @@
 /**
  * BlueLine Advisors Client Onboarding Portal — Cloudflare Worker API
  *
+ * Assessments cover the five Financial Picture Analysis modules (risk, budget,
+ * retirement, networth, compensation) plus twelve category modules across
+ * budgeting/spending, risk assessment, estate planning, and insurance planning.
+ *
  * Requires a KV namespace binding called PORTAL_KV (see wrangler.toml).
  * KV layout:
  *   user:<email>               -> { name, email, salt, hash, iterations }
@@ -294,6 +298,27 @@ const EQUITY_TYPES = ['rsu', 'options', 'espp', 'partnership', 'none'];
 const OLD_PLAN_OPTIONS = ['none', 'one', 'multiple'];
 const STOCK_CONCENTRATION = ['none', 'under5', '5to15', '15to30', 'over30'];
 
+const SPENDING_ESSENTIALS = ['housing', 'utilities', 'groceries', 'transportation', 'healthcare', 'insurance'];
+const SPENDING_DISCRETIONARY = ['dining', 'entertainment', 'shopping', 'subscriptions', 'travel', 'other'];
+const SAVINGS_TARGET_MONTHS = [3, 6, 12];
+const DEBT_TYPES = ['creditCards', 'autoLoans', 'studentLoans', 'personalLoans'];
+const RISKCAPACITY_QUESTION_COUNT = 5;
+const BEHAVIOR_QUESTION_COUNT = 4;
+const YEARS_INVESTING = ['none', 'under3', '3to10', 'over10'];
+const KNOWLEDGE_INSTRUMENTS = ['stocks', 'bonds', 'mutualFunds', 'etfs', 'options', 'crypto', 'realEstate', 'annuities'];
+const ESTATE_DOCUMENTS = ['will', 'trust', 'financialPoa', 'healthcareDirective', 'hipaaAuthorization'];
+const YES_NO_UNSURE = ['yes', 'no', 'unsure'];
+const BENEFICIARY_COVERAGE = ['all', 'some', 'none', 'na'];
+const TOD_OPTIONS = ['yes', 'no', 'na'];
+const LAST_REVIEWED = ['within1', '1to3', 'over3', 'never'];
+const LIFE_EVENTS = ['marriage', 'divorce', 'birth', 'death', 'move', 'none'];
+const CHARITABLE_INTENT = ['none', 'annual', 'bequest', 'both', 'unsure'];
+const ANNUAL_GIFTING = ['none', 'family', 'charity', 'both'];
+const SPECIAL_CIRCUMSTANCES = ['minorChildren', 'specialNeeds', 'blendedFamily', 'businessSuccession', 'none'];
+const COVERAGE_LINES = ['termLife', 'disability', 'umbrella', 'longTermCare', 'homeAuto'];
+const LTC_AGE_BANDS = ['under40', '40to49', '50to59', '60plus'];
+const LTC_FUNDING_PLANS = ['insurance', 'selfFund', 'hybrid', 'none'];
+
 function riskCategoryForScore(score) {
   if (score <= 9) return 'Conservative';
   if (score <= 14) return 'Moderately Conservative';
@@ -310,6 +335,28 @@ function allocationForCategory(category) {
     'Moderately Aggressive': { stocks: 70, bonds: 25, cash: 5 },
     Aggressive: { stocks: 85, bonds: 12, cash: 3 },
   }[category];
+}
+
+function capacityLevelForScore(score) {
+  if (score <= 9) return 'Low';
+  if (score <= 14) return 'Moderately Low';
+  if (score <= 19) return 'Moderate';
+  if (score <= 24) return 'Moderately High';
+  return 'High';
+}
+
+function behaviorProfileForScore(score) {
+  if (score <= 7) return 'Highly Cautious';
+  if (score <= 11) return 'Cautious';
+  if (score <= 15) return 'Composed';
+  return 'Opportunistic';
+}
+
+function knowledgeLevelForScore(score) {
+  if (score <= 3) return 'Novice';
+  if (score <= 6) return 'Developing';
+  if (score <= 9) return 'Experienced';
+  return 'Sophisticated';
 }
 
 const MODULE_VALIDATORS = {
@@ -478,6 +525,424 @@ const MODULE_VALIDATORS = {
       },
     };
   },
+
+  spending(body) {
+    const monthlyIncome = num(body.monthlyIncome, { max: 10_000_000 });
+    if (monthlyIncome === null) return { error: 'monthlyIncome must be a non-negative number' };
+    if (!body.essentials || typeof body.essentials !== 'object') {
+      return { error: 'essentials is required' };
+    }
+    if (!body.discretionary || typeof body.discretionary !== 'object') {
+      return { error: 'discretionary is required' };
+    }
+    const essentials = {};
+    let totalEssentials = 0;
+    for (const key of SPENDING_ESSENTIALS) {
+      const value = num(body.essentials[key], { max: 10_000_000 });
+      if (value === null) return { error: `essentials.${key} must be a non-negative number` };
+      essentials[key] = value;
+      totalEssentials += value;
+    }
+    const discretionary = {};
+    let totalDiscretionary = 0;
+    for (const key of SPENDING_DISCRETIONARY) {
+      const value = num(body.discretionary[key], { max: 10_000_000 });
+      if (value === null) return { error: `discretionary.${key} must be a non-negative number` };
+      discretionary[key] = value;
+      totalDiscretionary += value;
+    }
+    const totalSpending = totalEssentials + totalDiscretionary;
+    const leftover = monthlyIncome - totalSpending;
+    const discretionaryPct =
+      totalSpending > 0 ? Math.round((totalDiscretionary / totalSpending) * 1000) / 10 : 0;
+    return {
+      data: {
+        monthlyIncome,
+        essentials,
+        discretionary,
+        totalEssentials,
+        totalDiscretionary,
+        totalSpending,
+        leftover,
+        discretionaryPct,
+        overspending: leftover < 0,
+        highDiscretionary: discretionaryPct >= 40,
+      },
+    };
+  },
+
+  savings(body) {
+    const monthlyExpenses = num(body.monthlyExpenses, { max: 10_000_000 });
+    if (monthlyExpenses === null) return { error: 'monthlyExpenses must be a non-negative number' };
+    const emergencyFund = num(body.emergencyFund, { max: 1_000_000_000 });
+    if (emergencyFund === null) return { error: 'emergencyFund must be a non-negative number' };
+    const monthlySavings = num(body.monthlySavings, { max: 10_000_000 });
+    if (monthlySavings === null) return { error: 'monthlySavings must be a non-negative number' };
+    const targetMonths = Number(body.targetMonths);
+    if (!SAVINGS_TARGET_MONTHS.includes(targetMonths)) {
+      return { error: 'targetMonths must be one of: ' + SAVINGS_TARGET_MONTHS.join(', ') };
+    }
+
+    const monthsCovered =
+      monthlyExpenses > 0 ? Math.round((emergencyFund / monthlyExpenses) * 10) / 10 : null;
+    const targetAmount = monthlyExpenses * targetMonths;
+    const shortfall = Math.max(0, targetAmount - emergencyFund);
+    const monthsToTarget =
+      shortfall === 0 ? 0 : monthlySavings > 0 ? Math.ceil(shortfall / monthlySavings) : null;
+    return {
+      data: {
+        monthlyExpenses,
+        emergencyFund,
+        monthlySavings,
+        targetMonths,
+        goalsNotes: String(body.goalsNotes || '').slice(0, 1000),
+        monthsCovered,
+        targetAmount,
+        shortfall,
+        monthsToTarget,
+        funded: shortfall === 0,
+      },
+    };
+  },
+
+  debt(body) {
+    if (!body.debts || typeof body.debts !== 'object') {
+      return { error: 'debts is required' };
+    }
+    const debts = {};
+    let totalDebt = 0;
+    let weightedSum = 0;
+    for (const key of DEBT_TYPES) {
+      const entry = body.debts[key];
+      if (!entry || typeof entry !== 'object') return { error: `debts.${key} is required` };
+      const balance = num(entry.balance, { max: 10_000_000_000 });
+      if (balance === null) return { error: `debts.${key}.balance must be a non-negative number` };
+      const rate = num(entry.rate, { max: 100 });
+      if (rate === null) return { error: `debts.${key}.rate must be between 0 and 100` };
+      debts[key] = { balance, rate };
+      totalDebt += balance;
+      weightedSum += balance * rate;
+    }
+    const monthlyDebtPayments = num(body.monthlyDebtPayments, { max: 10_000_000 });
+    if (monthlyDebtPayments === null) return { error: 'monthlyDebtPayments must be a non-negative number' };
+    const grossMonthlyIncome = num(body.grossMonthlyIncome, { max: 10_000_000 });
+    if (grossMonthlyIncome === null) return { error: 'grossMonthlyIncome must be a non-negative number' };
+
+    const weightedAvgRate = totalDebt > 0 ? Math.round((weightedSum / totalDebt) * 10) / 10 : 0;
+    const dtiPct =
+      grossMonthlyIncome > 0
+        ? Math.round((monthlyDebtPayments / grossMonthlyIncome) * 1000) / 10
+        : null;
+    let highestRateType = null;
+    for (const key of DEBT_TYPES) {
+      if (debts[key].balance > 0 && (highestRateType === null || debts[key].rate > debts[highestRateType].rate)) {
+        highestRateType = key;
+      }
+    }
+    return {
+      data: {
+        debts,
+        monthlyDebtPayments,
+        grossMonthlyIncome,
+        totalDebt,
+        weightedAvgRate,
+        dtiPct,
+        highestRateType,
+        highDti: dtiPct !== null && dtiPct >= 36,
+        highInterest: DEBT_TYPES.some((key) => debts[key].balance > 0 && debts[key].rate >= 10),
+      },
+    };
+  },
+
+  riskcapacity(body) {
+    if (!body.answers || typeof body.answers !== 'object') {
+      return { error: 'answers is required' };
+    }
+    const answers = {};
+    let score = 0;
+    for (let i = 1; i <= RISKCAPACITY_QUESTION_COUNT; i++) {
+      const value = Number(body.answers[i]);
+      if (!Number.isInteger(value) || value < 1 || value > 5) {
+        return { error: `answers.${i} must be an integer 1-5` };
+      }
+      answers[i] = value;
+      score += value;
+    }
+    return { data: { answers, score, level: capacityLevelForScore(score) } };
+  },
+
+  behavior(body) {
+    if (!body.answers || typeof body.answers !== 'object') {
+      return { error: 'answers is required' };
+    }
+    const answers = {};
+    let score = 0;
+    for (let i = 1; i <= BEHAVIOR_QUESTION_COUNT; i++) {
+      const value = Number(body.answers[i]);
+      if (!Number.isInteger(value) || value < 1 || value > 5) {
+        return { error: `answers.${i} must be an integer 1-5` };
+      }
+      answers[i] = value;
+      score += value;
+    }
+    return {
+      data: {
+        answers,
+        score,
+        profile: behaviorProfileForScore(score),
+        coachingFlag: score <= 7,
+        biggestConcern: String(body.biggestConcern || '').slice(0, 1000),
+      },
+    };
+  },
+
+  knowledge(body) {
+    if (!YEARS_INVESTING.includes(body.yearsInvesting)) {
+      return { error: 'yearsInvesting must be one of: ' + YEARS_INVESTING.join(', ') };
+    }
+    if (!Array.isArray(body.instruments) || !body.instruments.every((t) => KNOWLEDGE_INSTRUMENTS.includes(t))) {
+      return { error: 'instruments must be an array of: ' + KNOWLEDGE_INSTRUMENTS.join(', ') };
+    }
+    const selfRating = Number(body.selfRating);
+    if (!Number.isInteger(selfRating) || selfRating < 1 || selfRating > 5) {
+      return { error: 'selfRating must be an integer 1-5' };
+    }
+    const instruments = [...new Set(body.instruments)];
+    const instrumentCount = instruments.length;
+    const yearsPoints = { none: 0, under3: 1, '3to10': 2, over10: 3 }[body.yearsInvesting];
+    const knowledgeScore = yearsPoints + Math.min(4, instrumentCount) + selfRating;
+    return {
+      data: {
+        yearsInvesting: body.yearsInvesting,
+        instruments,
+        selfRating,
+        hadAdvisor: !!body.hadAdvisor,
+        instrumentCount,
+        knowledgeScore,
+        level: knowledgeLevelForScore(knowledgeScore),
+      },
+    };
+  },
+
+  estatedocs(body) {
+    if (!body.documents || typeof body.documents !== 'object') {
+      return { error: 'documents is required' };
+    }
+    const currentYear = new Date().getFullYear();
+    const documents = {};
+    const missing = [];
+    const unsure = [];
+    const stale = [];
+    let haveCount = 0;
+    for (const key of ESTATE_DOCUMENTS) {
+      const doc = body.documents[key];
+      if (!doc || typeof doc !== 'object' || !YES_NO_UNSURE.includes(doc.status)) {
+        return { error: `documents.${key}.status must be one of: ` + YES_NO_UNSURE.join(', ') };
+      }
+      let year = null;
+      if (doc.status === 'yes' && doc.year !== null && doc.year !== undefined) {
+        const value = Number(doc.year);
+        if (!Number.isInteger(value) || value < 1900 || value > 2100) {
+          return { error: `documents.${key}.year must be an integer 1900-2100` };
+        }
+        year = value;
+      }
+      documents[key] = { status: doc.status, year };
+      if (doc.status === 'yes') {
+        haveCount += 1;
+        if (year !== null && year <= currentYear - 5) stale.push(key);
+      } else if (doc.status === 'no') {
+        missing.push(key);
+      } else {
+        unsure.push(key);
+      }
+    }
+    return {
+      data: {
+        documents,
+        haveCount,
+        completenessPct: Math.round((haveCount / 5) * 100),
+        missing,
+        unsure,
+        stale,
+      },
+    };
+  },
+
+  beneficiaries(body) {
+    if (!BENEFICIARY_COVERAGE.includes(body.retirementAccounts)) {
+      return { error: 'retirementAccounts must be one of: ' + BENEFICIARY_COVERAGE.join(', ') };
+    }
+    if (!BENEFICIARY_COVERAGE.includes(body.lifePolicies)) {
+      return { error: 'lifePolicies must be one of: ' + BENEFICIARY_COVERAGE.join(', ') };
+    }
+    if (!TOD_OPTIONS.includes(body.todBrokerage)) {
+      return { error: 'todBrokerage must be one of: ' + TOD_OPTIONS.join(', ') };
+    }
+    if (!LAST_REVIEWED.includes(body.lastReviewed)) {
+      return { error: 'lastReviewed must be one of: ' + LAST_REVIEWED.join(', ') };
+    }
+    if (!Array.isArray(body.lifeEvents) || !body.lifeEvents.every((e) => LIFE_EVENTS.includes(e))) {
+      return { error: 'lifeEvents must be an array of: ' + LIFE_EVENTS.join(', ') };
+    }
+    const lifeEvents = [...new Set(body.lifeEvents)];
+    const gapCount =
+      (['some', 'none'].includes(body.retirementAccounts) ? 1 : 0) +
+      (['some', 'none'].includes(body.lifePolicies) ? 1 : 0) +
+      (body.todBrokerage === 'no' ? 1 : 0);
+    const eventsSinceReview = lifeEvents.filter((e) => e !== 'none');
+    const reviewNeeded =
+      ['over3', 'never'].includes(body.lastReviewed) || eventsSinceReview.length > 0 || gapCount > 0;
+    return {
+      data: {
+        retirementAccounts: body.retirementAccounts,
+        lifePolicies: body.lifePolicies,
+        todBrokerage: body.todBrokerage,
+        lastReviewed: body.lastReviewed,
+        lifeEvents,
+        gapCount,
+        eventsSinceReview,
+        reviewNeeded,
+      },
+    };
+  },
+
+  legacy(body) {
+    if (!CHARITABLE_INTENT.includes(body.charitableIntent)) {
+      return { error: 'charitableIntent must be one of: ' + CHARITABLE_INTENT.join(', ') };
+    }
+    if (!ANNUAL_GIFTING.includes(body.annualGifting)) {
+      return { error: 'annualGifting must be one of: ' + ANNUAL_GIFTING.join(', ') };
+    }
+    if (
+      !Array.isArray(body.specialCircumstances) ||
+      !body.specialCircumstances.every((c) => SPECIAL_CIRCUMSTANCES.includes(c))
+    ) {
+      return { error: 'specialCircumstances must be an array of: ' + SPECIAL_CIRCUMSTANCES.join(', ') };
+    }
+    const specialCircumstances = [...new Set(body.specialCircumstances)];
+    const discussionTopics = [];
+    if (['annual', 'both'].includes(body.charitableIntent)) {
+      discussionTopics.push('Charitable giving strategy (donor-advised fund, QCDs)');
+    }
+    if (['bequest', 'both'].includes(body.charitableIntent)) {
+      discussionTopics.push('Charitable bequest planning');
+    }
+    if (specialCircumstances.includes('minorChildren')) {
+      discussionTopics.push('Guardianship and trust provisions for minor children');
+    }
+    if (specialCircumstances.includes('specialNeeds')) {
+      discussionTopics.push('Special needs trust planning');
+    }
+    if (specialCircumstances.includes('blendedFamily')) {
+      discussionTopics.push('Blended family estate structuring');
+    }
+    if (specialCircumstances.includes('businessSuccession')) {
+      discussionTopics.push('Business succession planning');
+    }
+    if (['family', 'both'].includes(body.annualGifting)) {
+      discussionTopics.push('Annual gift tax exclusion strategy');
+    }
+    return {
+      data: {
+        charitableIntent: body.charitableIntent,
+        annualGifting: body.annualGifting,
+        specialCircumstances,
+        legacyNotes: String(body.legacyNotes || '').slice(0, 2000),
+        discussionTopics,
+        topicCount: discussionTopics.length,
+      },
+    };
+  },
+
+  lifeinsurance(body) {
+    const debts = num(body.debts, { max: 1_000_000_000 });
+    if (debts === null) return { error: 'debts must be a non-negative number' };
+    const annualIncome = num(body.annualIncome, { max: 100_000_000 });
+    if (annualIncome === null) return { error: 'annualIncome must be a non-negative number' };
+    const incomeYears = num(body.incomeYears, { max: 40 });
+    if (incomeYears === null) return { error: 'incomeYears must be between 0 and 40' };
+    const mortgageBalance = num(body.mortgageBalance, { max: 1_000_000_000 });
+    if (mortgageBalance === null) return { error: 'mortgageBalance must be a non-negative number' };
+    const educationCosts = num(body.educationCosts, { max: 1_000_000_000 });
+    if (educationCosts === null) return { error: 'educationCosts must be a non-negative number' };
+    const currentCoverage = num(body.currentCoverage, { max: 1_000_000_000 });
+    if (currentCoverage === null) return { error: 'currentCoverage must be a non-negative number' };
+
+    const dimeNeed = Math.round(debts + annualIncome * incomeYears + mortgageBalance + educationCosts);
+    const gap = Math.round(dimeNeed - currentCoverage);
+    const coveragePct = dimeNeed > 0 ? Math.min(999, Math.round((currentCoverage / dimeNeed) * 100)) : null;
+    return {
+      data: {
+        debts,
+        annualIncome,
+        incomeYears,
+        mortgageBalance,
+        educationCosts,
+        currentCoverage,
+        dimeNeed,
+        gap,
+        coveragePct,
+        underinsured: gap > 0,
+      },
+    };
+  },
+
+  coverage(body) {
+    if (!body.lines || typeof body.lines !== 'object') {
+      return { error: 'lines is required' };
+    }
+    const lines = {};
+    const gaps = [];
+    const unsure = [];
+    let coveredCount = 0;
+    for (const key of COVERAGE_LINES) {
+      const line = body.lines[key];
+      if (!line || typeof line !== 'object' || !YES_NO_UNSURE.includes(line.status)) {
+        return { error: `lines.${key}.status must be one of: ` + YES_NO_UNSURE.join(', ') };
+      }
+      let amount = null;
+      if (line.status === 'yes' && key !== 'homeAuto' && line.amount !== null && line.amount !== undefined) {
+        amount = num(line.amount, { max: 1_000_000_000 });
+        if (amount === null) return { error: `lines.${key}.amount must be a non-negative number` };
+      }
+      lines[key] = { status: line.status, amount };
+      if (line.status === 'yes') coveredCount += 1;
+      else if (line.status === 'no') gaps.push(key);
+      else unsure.push(key);
+    }
+    return { data: { lines, coveredCount, gaps, unsure } };
+  },
+
+  ltc(body) {
+    if (!LTC_AGE_BANDS.includes(body.ageBand)) {
+      return { error: 'ageBand must be one of: ' + LTC_AGE_BANDS.join(', ') };
+    }
+    if (!YES_NO_UNSURE.includes(body.familyHistory)) {
+      return { error: 'familyHistory must be one of: ' + YES_NO_UNSURE.join(', ') };
+    }
+    if (!LTC_FUNDING_PLANS.includes(body.fundingPlan)) {
+      return { error: 'fundingPlan must be one of: ' + LTC_FUNDING_PLANS.join(', ') };
+    }
+    if (!['yes', 'no'].includes(body.assetsEarmarked)) {
+      return { error: 'assetsEarmarked must be yes or no' };
+    }
+    let readiness;
+    if (body.fundingPlan !== 'none' && body.assetsEarmarked === 'yes') readiness = 'Planned';
+    else if (body.fundingPlan !== 'none') readiness = 'Partially planned';
+    else readiness = 'Not yet planned';
+    const timelyFlag = ['50to59', '60plus'].includes(body.ageBand) && readiness === 'Not yet planned';
+    return {
+      data: {
+        ageBand: body.ageBand,
+        familyHistory: body.familyHistory,
+        fundingPlan: body.fundingPlan,
+        assetsEarmarked: body.assetsEarmarked,
+        readiness,
+        timelyFlag,
+      },
+    };
+  },
 };
 
 async function handleGetAssessments(request, env, cors) {
@@ -492,7 +957,12 @@ async function handleSaveAssessment(request, env, cors, moduleName) {
   const email = await getSessionEmail(request, env);
   if (!email) return json({ error: 'Not authenticated' }, 401, cors);
 
-  const validator = MODULE_VALIDATORS[moduleName];
+  // Own-property lookup only: the route regex admits any lowercase word, and a
+  // plain index would resolve inherited keys like 'constructor' into a callable
+  // that bypasses validation entirely.
+  const validator = Object.prototype.hasOwnProperty.call(MODULE_VALIDATORS, moduleName)
+    ? MODULE_VALIDATORS[moduleName]
+    : null;
   if (!validator) return json({ error: 'Unknown assessment module' }, 404, cors);
 
   const body = await request.json().catch(() => null);

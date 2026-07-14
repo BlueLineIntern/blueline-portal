@@ -66,34 +66,59 @@
         <div>
           <h1 id="home-welcome">Welcome</h1>
           <p class="subtitle">Your BlueLine client portal. Choose where you'd like to begin.</p>
+          <p class="form-error" id="home-error"></p>
         </div>
       </div>
 
-      <div class="hub-grid">
-        <div class="card hub-card">
-          <div class="hub-card-icon">
-            <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="8" y="26" width="7" height="14" rx="1.5"/><rect x="20" y="18" width="7" height="22" rx="1.5"/><rect x="32" y="8" width="7" height="32" rx="1.5"/></svg>
-          </div>
-          <h2>Financial Picture Analysis</h2>
-          <p class="hub-card-desc">Five short assessments — risk tolerance, cash flow, retirement readiness,
-          net worth, and compensation — that give your advisor a complete view of where you stand today.</p>
-          <p class="hub-card-status" id="home-fpa-status"></p>
-          <div class="hub-card-progress progress-track"><div class="progress-fill" id="home-fpa-fill"></div></div>
-          <button class="btn btn-primary hub-card-btn" id="home-open-fpa">Open Analysis</button>
+      <div class="card hub-card onboarding-hub-card">
+        <div class="hub-card-title-row">
+          <h2>Onboarding</h2>
+          <span class="hub-badge">For all new clients</span>
         </div>
-
-        <div class="card hub-card">
-          <div class="hub-card-icon">
-            <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 6l14 6v9c0 9.5-6 16.5-14 21C16 37.5 10 30.5 10 21v-9l14-6z" fill="none" stroke-width="3.5"/><path d="M17 23.5l5 5 9-10" fill="none" stroke-width="3.5"/></svg>
+        <p class="hub-card-desc">Start here — the Financial Picture Analysis and the guided New Client Onboarding
+        every new client completes.</p>
+        <div class="hub-offering-grid">
+          <div class="hub-offering">
+            <div class="hub-card-icon">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="8" y="26" width="7" height="14" rx="1.5"/><rect x="20" y="18" width="7" height="22" rx="1.5"/><rect x="32" y="8" width="7" height="32" rx="1.5"/></svg>
+            </div>
+            <h3>Financial Picture Analysis</h3>
+            <p class="hub-card-desc">Five short assessments — risk tolerance, cash flow, retirement readiness,
+            net worth, and compensation — that give your advisor a complete view of where you stand today.</p>
+            <p class="hub-card-status" id="home-fpa-status"></p>
+            <div class="hub-card-progress progress-track"><div class="progress-fill" id="home-fpa-fill"></div></div>
+            <button class="btn btn-primary hub-card-btn" id="home-open-fpa">Open Analysis</button>
           </div>
-          <h2>New Client Onboarding</h2>
-          <p class="hub-card-desc">A guided welcome for new BlueLine clients — consent and disclosures,
-          your household profile, planning priorities, and preparation for your first meeting with your advisor.</p>
-          <p class="hub-card-status hub-card-status-note">Guided workflow · about 15–20 minutes</p>
-          <div class="hub-card-progress"></div>
-          <a class="btn btn-primary hub-card-btn" href="/onboarding/">Begin Onboarding</a>
+
+          <div class="hub-offering">
+            <div class="hub-card-icon">
+              <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 6l14 6v9c0 9.5-6 16.5-14 21C16 37.5 10 30.5 10 21v-9l14-6z" fill="none" stroke-width="3.5"/><path d="M17 23.5l5 5 9-10" fill="none" stroke-width="3.5"/></svg>
+            </div>
+            <h3>New Client Onboarding</h3>
+            <p class="hub-card-desc">A guided welcome for new BlueLine clients — consent and disclosures,
+            your household profile, planning priorities, and preparation for your first meeting with your advisor.</p>
+            <p class="hub-card-status hub-card-status-note">Guided workflow · about 15–20 minutes</p>
+            <div class="hub-card-progress"></div>
+            <a class="btn btn-primary hub-card-btn" href="/onboarding/">Begin Onboarding</a>
+          </div>
         </div>
       </div>
+
+      <div class="hub-grid" id="home-category-grid"></div>
+    </section>
+
+    <!-- CATEGORY VIEW (reusable — header and grid re-rendered per category) -->
+    <section id="view-category" class="view hidden">
+      <div class="dashboard-header">
+        <div>
+          <h1 id="category-title"></h1>
+          <p class="subtitle"><span id="category-desc"></span> <span id="category-progress-note"></span></p>
+        </div>
+        <button type="button" class="btn btn-ghost" id="category-home-btn">← Back to Home</button>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="category-progress-fill"></div></div>
+
+      <div id="category-module-grid" class="module-grid"></div>
     </section>
 
     <!-- FINANCIAL PICTURE ANALYSIS (assessment dashboard) -->
