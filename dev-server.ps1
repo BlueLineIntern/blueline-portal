@@ -10,6 +10,7 @@ $port = 8787
 $users = @{}
 $sessions = @{}
 $responses = @{}
+$assignments = @{}  # email -> array of assigned module keys ($null / absent = all visible)
 $onboardings = @{}
 $onbSecrets = @{}
 $script:onbCounter = 0
@@ -393,6 +394,20 @@ while ($listener.IsListening) {
             $responses[$email][$moduleName] = $module
             Send-Json $ctx 200 @{ module = $module; modules = $responses[$email] }
         }
+        elseif ($path -eq '/api/assignments' -and $method -eq 'GET') {
+            $email = Get-SessionEmail $ctx
+            if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
+            $asg = if ($assignments.ContainsKey($email)) { @($assignments[$email]) } else { $null }
+            Send-Json $ctx 200 @{ assignments = $asg }
+        }
+        elseif ($path -match '^/api/admin/assignments/(.+)$' -and $method -eq 'POST') {
+            $email = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if (-not $users.ContainsKey($email)) { Send-Json $ctx 404 @{ error = 'Unknown client' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body -or $null -eq $body.assignments) { Send-Json $ctx 400 @{ error = 'assignments must be an array of module keys' }; continue }
+            $assignments[$email] = @($body.assignments)
+            Send-Json $ctx 200 @{ assignments = @($assignments[$email]) }
+        }
         elseif ($path -eq '/api/onboarding/start' -and $method -eq 'POST') {
             if (-not (Test-RateLimit 'onboardingStart' (Get-ClientIp $ctx))) { Send-Json $ctx 429 @{ error = 'Too many onboarding sessions started. Please try again later.' }; continue }
             $script:onbCounter++
@@ -447,7 +462,8 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/clients' -and $method -eq 'GET') {
             $clients = @($users.Values | ForEach-Object {
                 $mods = if ($responses.ContainsKey($_.email)) { $responses[$_.email] } else { @{} }
-                @{ name = $_.name; email = $_.email; modules = $mods }
+                $asg = if ($assignments.ContainsKey($_.email)) { @($assignments[$_.email]) } else { $null }
+                @{ name = $_.name; email = $_.email; modules = $mods; assignments = $asg }
             })
             Send-Json $ctx 200 @{ clients = $clients }
         }

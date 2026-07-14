@@ -30,6 +30,19 @@
   .client-picker { max-width: 480px; margin-top: 10px; }
   .client-picker label { margin-top: 0; }
 
+  /* Module assignment editor */
+  #assignment-card { max-width: 900px; margin: 24px auto 0; }
+  .assignment-group { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-top: 14px; }
+  .assignment-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px; }
+  .assignment-group-head strong { color: var(--navy); font-family: Georgia, serif; }
+  .assignment-select-all { font-size: 0.85rem; color: var(--text-muted); display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+  .assignment-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 20px; }
+  .assignment-item { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.92rem; }
+  .assignment-item input, .assignment-select-all input { width: 16px; height: 16px; accent-color: var(--sky); flex-shrink: 0; }
+  .assignment-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
+  #assignment-status { font-size: 0.85rem; }
+  @media (max-width: 640px) { .assignment-items { grid-template-columns: 1fr; } }
+
   /* Client detail view — sits inline between the picker and onboarding cards */
   #detail-view, #onb-detail-view { max-width: 900px; margin: 0 auto; }
   #detail-view { margin-top: 36px; margin-bottom: 48px; }
@@ -73,7 +86,7 @@
   @media print {
     /* Print exactly the detail view as a branded client report */
     body { background: #fff; }
-    .topbar, .footer, #token-card, #clients-card, #onboarding-card, .detail-header-actions { display: none !important; }
+    .topbar, .footer, #token-card, #clients-card, #assignment-card, #onboarding-card, .detail-header-actions { display: none !important; }
     .container { padding: 0; max-width: none; }
 
     .print-header {
@@ -159,6 +172,17 @@
         <select id="client-select">
           <option value="">Select a client…</option>
         </select>
+      </div>
+    </div>
+
+    <div class="card hidden" id="assignment-card">
+      <h2>Assigned Modules</h2>
+      <p class="admin-empty">Uncheck a module to hide it from this client's portal. A client you haven't changed here
+      sees everything by default. Use a category's <em>Select all</em> box to flip a whole group at once.</p>
+      <div id="assignment-groups"></div>
+      <div class="assignment-actions">
+        <button type="button" class="btn btn-primary btn-small" id="assignment-save-btn">Save assignments</button>
+        <span class="admin-empty" id="assignment-status"></span>
       </div>
     </div>
 
@@ -273,12 +297,14 @@
     let allOnboardings = [];
     let adminToken = null;
     let selectedEmail = '';
+    let assignmentEditorEmail = ''; // which client the assignment editor is currently built for
     let showDeleted = false;
     let pollTimer = null;
     const POLL_INTERVAL_MS = 20000;
 
     const ALL_MODULE_COUNT = MODULES.length + CATEGORY_MODULES.length;
     const CATEGORY_MODULE_MAP = Object.fromEntries(CATEGORY_MODULES.map((mod) => [mod.key, mod]));
+    const ONBOARDING_WIZARD_KEY = 'onboardingWizard';
 
     // Only re-fetches/re-renders while the picker/table cards are on screen —
     // not while the onboarding detail is open, so an in-progress read isn't
@@ -473,10 +499,13 @@
     // doesn't yank the page out from under the reader.
     function renderClientDetail() {
       const detailBody = document.getElementById('detail-body');
+      const assignmentCard = document.getElementById('assignment-card');
       const client = allClients.find((c) => c.email === selectedEmail);
       if (!client) {
         detailView.classList.add('hidden');
         detailBody.innerHTML = '';
+        assignmentCard.classList.add('hidden');
+        assignmentEditorEmail = '';
         return;
       }
       const m = client.modules || {};
@@ -497,12 +526,111 @@
         btn.addEventListener('click', () => showOnbDetail(Number(btn.dataset.index)));
       });
 
+      // Build the assignment editor once per selected client so a polling
+      // refresh (which re-renders the results above) can't wipe unsaved
+      // checkbox edits. Rebuild only when the selected client actually changes.
+      assignmentCard.classList.remove('hidden');
+      if (assignmentEditorEmail !== selectedEmail) {
+        renderAssignmentEditor(client);
+        assignmentEditorEmail = selectedEmail;
+      }
+
       detailView.classList.remove('hidden');
     }
 
     clientSelect.addEventListener('change', () => {
       selectedEmail = clientSelect.value;
       renderClientDetail();
+    });
+
+    // ---------- Module assignment editor ----------
+    // Assignable items grouped by category: the five FPA modules plus the
+    // New Client Onboarding wizard under Onboarding, then each category's
+    // three modules. A null assignments record means everything is visible.
+
+    function assignmentGroups() {
+      return CATEGORIES.map((cat) => {
+        if (cat.type === 'onboarding') {
+          return {
+            title: cat.title,
+            items: MODULES.map((m) => ({ key: m.key, title: m.title })).concat([
+              { key: ONBOARDING_WIZARD_KEY, title: 'New Client Onboarding (wizard)' },
+            ]),
+          };
+        }
+        return {
+          title: cat.title,
+          items: cat.moduleKeys.map((k) => ({ key: k, title: CATEGORY_MODULE_MAP[k].title })),
+        };
+      });
+    }
+
+    function renderAssignmentEditor(client) {
+      const wrap = document.getElementById('assignment-groups');
+      const assigned = client.assignments; // array or null (null = all visible)
+      const isOn = (key) => assigned === null || assigned.includes(key);
+
+      wrap.innerHTML = assignmentGroups()
+        .map(
+          (g) => `
+        <div class="assignment-group">
+          <div class="assignment-group-head">
+            <strong>${escapeHtml(g.title)}</strong>
+            <label class="assignment-select-all"><input type="checkbox" class="assignment-group-toggle" /> Select all</label>
+          </div>
+          <div class="assignment-items">
+            ${g.items
+              .map(
+                (it) =>
+                  `<label class="assignment-item"><input type="checkbox" class="assignment-check" value="${escapeHtml(it.key)}" ${isOn(it.key) ? 'checked' : ''} /> ${escapeHtml(it.title)}</label>`
+              )
+              .join('')}
+          </div>
+        </div>`
+        )
+        .join('');
+
+      wrap.querySelectorAll('.assignment-group').forEach((groupEl) => {
+        const toggle = groupEl.querySelector('.assignment-group-toggle');
+        const checks = Array.from(groupEl.querySelectorAll('.assignment-check'));
+        const sync = () => {
+          const on = checks.filter((c) => c.checked).length;
+          toggle.checked = on === checks.length;
+          toggle.indeterminate = on > 0 && on < checks.length;
+        };
+        sync();
+        toggle.addEventListener('change', () => {
+          checks.forEach((c) => (c.checked = toggle.checked));
+        });
+        checks.forEach((c) => c.addEventListener('change', sync));
+      });
+
+      document.getElementById('assignment-status').textContent = '';
+    }
+
+    document.getElementById('assignment-save-btn').addEventListener('click', async () => {
+      if (!selectedEmail || !adminToken) return;
+      const statusEl = document.getElementById('assignment-status');
+      const keys = Array.from(document.querySelectorAll('#assignment-groups .assignment-check:checked')).map(
+        (c) => c.value
+      );
+      statusEl.textContent = 'Saving…';
+      try {
+        const res = await fetch(`/api/admin/assignments/${encodeURIComponent(selectedEmail)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+          body: JSON.stringify({ assignments: keys }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to save');
+        // Reflect the saved set locally so the next poll doesn't rebuild the
+        // editor from stale data.
+        const client = allClients.find((c) => c.email === selectedEmail);
+        if (client) client.assignments = data.assignments;
+        statusEl.textContent = `Saved ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        statusEl.textContent = `Save failed: ${err.message}`;
+      }
     });
 
     // ---------- Onboarding POC submissions ----------
@@ -724,6 +852,7 @@
       clientsCard.classList.add('hidden');
       document.getElementById('onboarding-card').classList.add('hidden');
       detailView.classList.add('hidden');
+      document.getElementById('assignment-card').classList.add('hidden');
       document.getElementById('onb-detail-view').classList.remove('hidden');
       window.scrollTo(0, 0);
     }
@@ -733,7 +862,10 @@
       document.getElementById('onb-detail-view').classList.add('hidden');
       clientsCard.classList.remove('hidden');
       document.getElementById('onboarding-card').classList.remove('hidden');
-      if (selectedEmail) detailView.classList.remove('hidden');
+      if (selectedEmail) {
+        detailView.classList.remove('hidden');
+        document.getElementById('assignment-card').classList.remove('hidden');
+      }
       window.scrollTo(0, 0);
     });
 

@@ -69,6 +69,27 @@ function updateNav() {
   }
 }
 
+// ---------- Module assignments ----------
+// assignedKeys is the list of module keys the admin has made visible to this
+// client, or null when there is no assignment record (= everything visible).
+
+let assignedKeys = null;
+
+function isAssigned(key) {
+  return assignedKeys === null || assignedKeys.includes(key);
+}
+
+// Fetch assessment progress and assignments together. Both require a valid
+// session, so this doubles as the session check on every entry point.
+async function refreshState() {
+  const [assessments, assignments] = await Promise.all([
+    apiRequest("/api/assessments", { auth: true }),
+    apiRequest("/api/assignments", { auth: true }),
+  ]);
+  currentModules = assessments.modules || {};
+  assignedKeys = assignments.assignments;
+}
+
 // ---------- Auth ----------
 
 document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -137,22 +158,35 @@ function renderHome() {
   const session = getSession();
   document.getElementById("home-welcome").textContent = session ? `Welcome, ${session.name}` : "Welcome";
 
-  const completed = MODULES.filter((mod) => currentModules[mod.key]).length;
-  const statusEl = document.getElementById("home-fpa-status");
-  statusEl.textContent =
-    completed === 0
-      ? "Not started"
-      : completed === MODULES.length
-        ? "All assessments complete ✓"
-        : `${completed} of ${MODULES.length} assessments complete`;
-  document.getElementById("home-fpa-fill").style.width = `${(completed / MODULES.length) * 100}%`;
-  document.getElementById("home-open-fpa").textContent = completed === 0 ? "Start Analysis" : "Open Analysis";
+  // Onboarding card — its two offerings (Financial Picture Analysis and the
+  // New Client Onboarding wizard) are each gated by assignment; the whole card
+  // hides only when both are unassigned.
+  const assignedFpa = MODULES.filter((mod) => isAssigned(mod.key));
+  const showFpa = assignedFpa.length > 0;
+  const showWizard = isAssigned("onboardingWizard");
+  document.getElementById("home-fpa-offering").classList.toggle("hidden", !showFpa);
+  document.getElementById("home-wizard-offering").classList.toggle("hidden", !showWizard);
+  document.getElementById("home-onboarding-card").classList.toggle("hidden", !showFpa && !showWizard);
+
+  if (showFpa) {
+    const completed = assignedFpa.filter((mod) => currentModules[mod.key]).length;
+    document.getElementById("home-fpa-status").textContent =
+      completed === 0
+        ? "Not started"
+        : completed === assignedFpa.length
+          ? "All assessments complete ✓"
+          : `${completed} of ${assignedFpa.length} assessments complete`;
+    document.getElementById("home-fpa-fill").style.width = `${(completed / assignedFpa.length) * 100}%`;
+    document.getElementById("home-open-fpa").textContent = completed === 0 ? "Start Analysis" : "Open Analysis";
+  }
 
   const grid = document.getElementById("home-category-grid");
   grid.innerHTML = CATEGORIES.filter((cat) => cat.type === "modules")
     .map((cat) => {
-      const done = cat.moduleKeys.filter((key) => currentModules[key]).length;
-      const total = cat.moduleKeys.length;
+      const assignedMods = cat.moduleKeys.filter((key) => isAssigned(key));
+      if (!assignedMods.length) return ""; // whole category unassigned → hidden
+      const done = assignedMods.filter((key) => currentModules[key]).length;
+      const total = assignedMods.length;
       const status =
         done === 0 ? "Not started" : done === total ? "All assessments complete ✓" : `${done} of ${total} complete`;
       return `
@@ -176,8 +210,7 @@ async function loadHome() {
   const errorEl = document.getElementById("home-error");
   errorEl.textContent = "";
   try {
-    const data = await apiRequest("/api/assessments", { auth: true });
-    currentModules = data.modules || {};
+    await refreshState();
   } catch (err) {
     if (err.message.includes("authenticated")) {
       clearSession();
@@ -232,12 +265,13 @@ function moduleCardHtml(mod, index, data) {
 
 function renderDashboard() {
   const grid = document.getElementById("module-grid");
-  const completed = MODULES.filter((mod) => currentModules[mod.key]).length;
+  const mods = MODULES.filter((mod) => isAssigned(mod.key));
+  const completed = mods.filter((mod) => currentModules[mod.key]).length;
 
-  document.getElementById("progress-note").textContent = `${completed} of ${MODULES.length} complete.`;
-  document.getElementById("progress-fill").style.width = `${(completed / MODULES.length) * 100}%`;
+  document.getElementById("progress-note").textContent = `${completed} of ${mods.length} complete.`;
+  document.getElementById("progress-fill").style.width = `${mods.length ? (completed / mods.length) * 100 : 0}%`;
 
-  grid.innerHTML = MODULES.map((mod, index) => moduleCardHtml(mod, index, currentModules[mod.key])).join("");
+  grid.innerHTML = mods.map((mod, index) => moduleCardHtml(mod, index, currentModules[mod.key])).join("");
 
   grid.querySelectorAll(".module-start-btn").forEach((btn) => {
     btn.addEventListener("click", () => openModuleForm(btn.dataset.module));
@@ -247,8 +281,7 @@ function renderDashboard() {
 async function loadDashboard() {
   showView("dashboard");
   try {
-    const data = await apiRequest("/api/assessments", { auth: true });
-    currentModules = data.modules || {};
+    await refreshState();
     renderDashboard();
   } catch (err) {
     if (err.message.includes("authenticated")) {
@@ -270,13 +303,15 @@ let currentCategoryKey = null;
 function renderCategory() {
   const cat = CATEGORIES.find((c) => c.key === currentCategoryKey);
   if (!cat || cat.type !== "modules") return;
-  const mods = cat.moduleKeys.map((key) => CATEGORY_MODULES.find((mod) => mod.key === key));
+  const mods = cat.moduleKeys
+    .map((key) => CATEGORY_MODULES.find((mod) => mod.key === key))
+    .filter((mod) => isAssigned(mod.key));
   const completed = mods.filter((mod) => currentModules[mod.key]).length;
 
   document.getElementById("category-title").textContent = cat.title;
   document.getElementById("category-desc").textContent = cat.description;
   document.getElementById("category-progress-note").textContent = `${completed} of ${mods.length} complete.`;
-  document.getElementById("category-progress-fill").style.width = `${(completed / mods.length) * 100}%`;
+  document.getElementById("category-progress-fill").style.width = `${mods.length ? (completed / mods.length) * 100 : 0}%`;
 
   const grid = document.getElementById("category-module-grid");
   grid.innerHTML = mods.map((mod, index) => moduleCardHtml(mod, index, currentModules[mod.key])).join("");
@@ -296,8 +331,7 @@ function showCategory(key) {
 async function openCategory(key) {
   showCategory(key);
   try {
-    const data = await apiRequest("/api/assessments", { auth: true });
-    currentModules = data.modules || {};
+    await refreshState();
     renderCategory();
   } catch (err) {
     if (err.message.includes("authenticated")) {
@@ -344,6 +378,7 @@ function fillMoneyGrid(fields, idPrefix, values) {
 // ---------- Module form open/populate ----------
 
 function openModuleForm(key) {
+  if (!isAssigned(key)) return; // not assigned to this client — not reachable via UI
   const data = currentModules[key];
   const populate = FORM_POPULATORS[key];
   document.getElementById(`${key}-form`).reset();

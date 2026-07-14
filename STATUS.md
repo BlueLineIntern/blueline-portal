@@ -70,6 +70,26 @@ to match JS `Math.round`). All keys are lowercase a-z (route regex constraint).
 `worker.js` validator dispatch uses an own-property guard (hasOwnProperty) so
 inherited keys like `constructor` 404 instead of bypassing validation.
 
+## Module assignments (admin-controlled visibility)
+Admins can control which modules each client sees. KV key `assignments:<email>`
+= JSON array of assignable keys; **no record = null = everything visible**
+(so existing clients and new registrations are never locked out). Assignable
+keys = the 17 module keys + `onboardingWizard` (the New Client Onboarding link).
+- Client API: `GET /api/assignments` → `{ assignments: array|null }` (session-auth).
+- Admin API: `POST /api/admin/assignments/:email` `{ assignments: [keys] }`
+  (ADMIN_TOKEN-gated; filters to known keys, stores canonical order). Each client
+  in `GET /api/admin/clients` now also carries its `assignments`.
+- Client filtering (`script.js`): `refreshState()` fetches assessments +
+  assignments together; `isAssigned(key)` gates the home hub (offerings, category
+  cards), the FPA dashboard, category views, and `openModuleForm`. A category with
+  zero assigned modules disappears from the hub; the Onboarding card hides only
+  when both FPA and the wizard are unassigned. Progress denominators use the
+  assigned count.
+- Admin editor (`admin.html`): an "Assigned Modules" card in the client detail,
+  grouped by category with per-category "Select all" (indeterminate when partial).
+  Built once per selected client and NOT re-rendered on the 20s poll, so unsaved
+  checkbox edits survive a refresh. Save POSTs and updates the local copy.
+
 ## Onboarding proof of concept (`/onboarding/`)
 Standalone 12-step wizard (`public/onboarding/`), sample/test data only, clearly
 labeled as a POC. Progress persists in localStorage AND syncs to the server:

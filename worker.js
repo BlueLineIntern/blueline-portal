@@ -979,6 +979,53 @@ async function handleSaveAssessment(request, env, cors, moduleName) {
   return json({ module: modules[moduleName], modules }, 200, cors);
 }
 
+// ---------- Module assignments ----------
+// Admins can restrict which modules a client sees. An assignment record is a
+// JSON array of assignable keys stored under assignments:<email>. No record
+// (null) means "everything is visible" — so existing clients and brand-new
+// registrations are never locked out of an empty portal until an admin
+// deliberately narrows the list. Assignable keys are the 17 assessment modules
+// plus the New Client Onboarding wizard (a link, not a stored module).
+const ONBOARDING_WIZARD_KEY = 'onboardingWizard';
+const ASSIGNABLE_KEYS = [...Object.keys(MODULE_VALIDATORS), ONBOARDING_WIZARD_KEY];
+
+function loadAssignments(raw) {
+  if (!raw) return null; // null = all modules visible (default)
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((k) => ASSIGNABLE_KEYS.includes(k)) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function handleGetAssignments(request, env, cors) {
+  const email = await getSessionEmail(request, env);
+  if (!email) return json({ error: 'Not authenticated' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`assignments:${email}`);
+  return json({ assignments: loadAssignments(raw) }, 200, cors);
+}
+
+async function handleAdminSetAssignments(request, env, cors, rawEmail) {
+  if (!isAdmin(request, env)) return json({ error: 'Not authorized' }, 401, cors);
+
+  const email = String(rawEmail || '').trim().toLowerCase();
+  if (!isValidEmail(email)) return json({ error: 'Invalid client email' }, 400, cors);
+  const exists = await env.PORTAL_KV.get(`user:${email}`);
+  if (!exists) return json({ error: 'Unknown client' }, 404, cors);
+
+  const body = await request.json().catch(() => null);
+  if (!body || !Array.isArray(body.assignments)) {
+    return json({ error: 'assignments must be an array of module keys' }, 400, cors);
+  }
+  // Keep only known keys, de-duplicated and in the canonical order.
+  const set = new Set(body.assignments.filter((k) => ASSIGNABLE_KEYS.includes(k)));
+  const clean = ASSIGNABLE_KEYS.filter((k) => set.has(k));
+
+  await env.PORTAL_KV.put(`assignments:${email}`, JSON.stringify(clean));
+  return json({ assignments: clean }, 200, cors);
+}
+
 // ---------- Onboarding proof of concept ----------
 // Sample/test data only. Each session is issued a per-session write token at
 // /start; every save must present it via the X-Onboarding-Token header. This
@@ -1139,12 +1186,14 @@ async function handleAdminClients(request, env, cors) {
       const email = key.name.slice('user:'.length);
       const userRaw = await env.PORTAL_KV.get(key.name);
       const responsesRaw = await env.PORTAL_KV.get(`responses:${email}`);
+      const assignmentsRaw = await env.PORTAL_KV.get(`assignments:${email}`);
       if (!userRaw) continue;
       const user = JSON.parse(userRaw);
       clients.push({
         name: user.name,
         email: user.email,
         modules: loadModules(responsesRaw),
+        assignments: loadAssignments(assignmentsRaw),
       });
     }
     cursor = page.cursor;
@@ -1176,6 +1225,9 @@ export default {
       if (url.pathname === '/api/assessments' && request.method === 'GET') {
         return await handleGetAssessments(request, env, cors);
       }
+      if (url.pathname === '/api/assignments' && request.method === 'GET') {
+        return await handleGetAssignments(request, env, cors);
+      }
       const saveMatch = url.pathname.match(/^\/api\/assessments\/([a-z]+)$/);
       if (saveMatch && request.method === 'POST') {
         return await handleSaveAssessment(request, env, cors, saveMatch[1]);
@@ -1189,6 +1241,10 @@ export default {
       }
       if (url.pathname === '/api/admin/clients' && request.method === 'GET') {
         return await handleAdminClients(request, env, cors);
+      }
+      const asgMatch = url.pathname.match(/^\/api\/admin\/assignments\/(.+)$/);
+      if (asgMatch && request.method === 'POST') {
+        return await handleAdminSetAssignments(request, env, cors, decodeURIComponent(asgMatch[1]));
       }
       if (url.pathname === '/api/admin/onboarding' && request.method === 'GET') {
         return await handleAdminOnboarding(request, env, cors);
