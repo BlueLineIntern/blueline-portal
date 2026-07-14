@@ -307,9 +307,12 @@ async function handleAdminLogin(request, env, cors) {
 
   const normalizedEmail = String(email).trim().toLowerCase();
   // Check both conditions regardless so the response time doesn't reveal
-  // whether the email alone was valid.
+  // whether the email alone was valid. Trim both sides of the password so a
+  // stray trailing newline in the ADMIN_PASSWORD secret (a very common result
+  // of how secrets get pasted/piped in) doesn't cause a silent length mismatch.
   const emailOk = ADMIN_EMAILS.includes(normalizedEmail);
-  const passOk = !!env.ADMIN_PASSWORD && timingSafeEqual(String(password), env.ADMIN_PASSWORD);
+  const expectedPassword = (env.ADMIN_PASSWORD || '').trim();
+  const passOk = !!expectedPassword && timingSafeEqual(String(password).trim(), expectedPassword);
   if (!emailOk || !passOk) {
     return json({ error: 'Invalid email or password' }, 401, cors);
   }

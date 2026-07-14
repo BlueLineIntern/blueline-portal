@@ -391,7 +391,7 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/login' -and $method -eq 'POST') {
             $body = Read-Body $ctx
             $email = ([string]$body.email).Trim().ToLower()
-            if (($adminEmails -notcontains $email) -or ([string]$body.password -ne $adminDevPassword)) {
+            if (($adminEmails -notcontains $email) -or (([string]$body.password).Trim() -ne $adminDevPassword.Trim())) {
                 Send-Json $ctx 401 @{ error = 'Invalid email or password' }; continue
             }
             $token = New-Token
