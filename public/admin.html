@@ -544,23 +544,26 @@
     });
 
     // ---------- Module assignment editor ----------
-    // Assignable items grouped by category: the five FPA modules plus the
-    // New Client Onboarding wizard under Onboarding, then each category's
-    // three modules. A null assignments record means everything is visible.
+    // Assignable items grouped by category. Under Onboarding there are exactly
+    // two checkboxes: Financial Picture Analysis (the five FPA modules toggled
+    // as one, since the client sees them as a single offering) and New Client
+    // Onboarding (the wizard). The other categories list their three modules.
+    // A null assignments record means everything is visible.
 
     function assignmentGroups() {
       return CATEGORIES.map((cat) => {
         if (cat.type === 'onboarding') {
           return {
             title: cat.title,
-            items: MODULES.map((m) => ({ key: m.key, title: m.title })).concat([
-              { key: ONBOARDING_WIZARD_KEY, title: 'New Client Onboarding (wizard)' },
-            ]),
+            items: [
+              { keys: MODULES.map((m) => m.key), title: 'Financial Picture Analysis' },
+              { keys: [ONBOARDING_WIZARD_KEY], title: 'New Client Onboarding' },
+            ],
           };
         }
         return {
           title: cat.title,
-          items: cat.moduleKeys.map((k) => ({ key: k, title: CATEGORY_MODULE_MAP[k].title })),
+          items: cat.moduleKeys.map((k) => ({ keys: [k], title: CATEGORY_MODULE_MAP[k].title })),
         };
       });
     }
@@ -568,7 +571,9 @@
     function renderAssignmentEditor(client) {
       const wrap = document.getElementById('assignment-groups');
       const assigned = client.assignments; // array or null (null = all visible)
-      const isOn = (key) => assigned === null || assigned.includes(key);
+      // An item is checked when the client can see it: no record (all visible)
+      // or any of the item's underlying keys is assigned.
+      const isChecked = (keys) => assigned === null || keys.some((k) => assigned.includes(k));
 
       wrap.innerHTML = assignmentGroups()
         .map(
@@ -582,7 +587,7 @@
             ${g.items
               .map(
                 (it) =>
-                  `<label class="assignment-item"><input type="checkbox" class="assignment-check" value="${escapeHtml(it.key)}" ${isOn(it.key) ? 'checked' : ''} /> ${escapeHtml(it.title)}</label>`
+                  `<label class="assignment-item"><input type="checkbox" class="assignment-check" data-keys="${escapeHtml(it.keys.join(','))}" ${isChecked(it.keys) ? 'checked' : ''} /> ${escapeHtml(it.title)}</label>`
               )
               .join('')}
           </div>
@@ -611,9 +616,13 @@
     document.getElementById('assignment-save-btn').addEventListener('click', async () => {
       if (!selectedEmail || !adminToken) return;
       const statusEl = document.getElementById('assignment-status');
-      const keys = Array.from(document.querySelectorAll('#assignment-groups .assignment-check:checked')).map(
-        (c) => c.value
-      );
+      const keys = [
+        ...new Set(
+          Array.from(document.querySelectorAll('#assignment-groups .assignment-check:checked')).flatMap((c) =>
+            c.dataset.keys.split(',')
+          )
+        ),
+      ];
       statusEl.textContent = 'Saving…';
       try {
         const res = await fetch(`/api/admin/assignments/${encodeURIComponent(selectedEmail)}`, {

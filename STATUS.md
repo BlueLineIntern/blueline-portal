@@ -87,8 +87,12 @@ keys = the 17 module keys + `onboardingWizard` (the New Client Onboarding link).
   assigned count.
 - Admin editor (`admin.html`): an "Assigned Modules" card in the client detail,
   grouped by category with per-category "Select all" (indeterminate when partial).
-  Built once per selected client and NOT re-rendered on the 20s poll, so unsaved
-  checkbox edits survive a refresh. Save POSTs and updates the local copy.
+  Onboarding shows exactly two checkboxes — **Financial Picture Analysis** (the
+  five FPA keys toggled as one; each checkbox carries its keys in `data-keys`)
+  and **New Client Onboarding** (`onboardingWizard`). A box is checked when any of
+  its keys is assigned; Save flattens/de-dupes all checked `data-keys`. Built once
+  per selected client and NOT re-rendered on the 20s poll, so unsaved checkbox
+  edits survive a refresh. Save POSTs and updates the local copy.
 
 ## Onboarding proof of concept (`/onboarding/`)
 Standalone 12-step wizard (`public/onboarding/`), sample/test data only, clearly
