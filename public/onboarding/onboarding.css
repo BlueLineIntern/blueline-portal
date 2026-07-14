@@ -38,6 +38,20 @@ body {
   gap: 16px;
 }
 .brand-logo { height: 64px; width: auto; margin-left: -20px; }
+.topbar-right { display: flex; align-items: center; gap: 14px; }
+.home-btn {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #fff;
+  text-decoration: none;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 6px;
+  padding: 7px 14px;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+.home-btn:hover { background: rgba(255, 255, 255, 0.24); }
 .poc-badge {
   font-size: 0.75rem;
   letter-spacing: 0.5px;
@@ -159,6 +173,7 @@ input:focus, select:focus, textarea:focus {
   font-family: inherit;
   transition: background 0.15s ease;
 }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .btn-primary { background: var(--sky); color: #fff; }
 .btn-primary:hover { background: var(--sky-dark); }
 .btn-secondary { background: var(--navy); color: #fff; }
@@ -372,6 +387,8 @@ input:focus, select:focus, textarea:focus {
   .topbar-inner { padding: 6px 16px; gap: 10px; }
   .brand-logo { height: 46px; margin-left: -12px; }
   .poc-badge { font-size: 0.62rem; padding: 3px 9px; }
+  .topbar-right { gap: 8px; }
+  .home-btn { font-size: 0.72rem; padding: 5px 10px; }
   .upload-item { flex-direction: column; align-items: flex-start; gap: 6px; }
   h1 { font-size: 1.4rem; }
   .container { padding: 18px 16px 120px; }
