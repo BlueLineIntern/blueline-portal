@@ -46,7 +46,7 @@
 
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const PBKDF2_ITERATIONS = 100000;
-const ONBOARDING_TTL_SECONDS = 60 * 60 * 24 * 30; // secrets + soft-deleted records expire after 30 days
+const ONBOARDING_TTL_SECONDS = 60 * 60 * 24 * 30; // write-secret lifetime (records themselves are kept indefinitely)
 
 // Admin staff each sign in with their own password. The password for each email
 // lives in its own Cloudflare secret (the `secret` field below); set them with:
@@ -1309,9 +1309,10 @@ async function handleOnboardingSave(request, env, cors, onboardingId) {
 }
 
 
-// Soft delete: mark the record and give it (and its write secret) a 30-day TTL
-// so it can be restored within that window, then auto-purges. No hard delete
-// from the admin UI, so a misclick isn't instantly destructive.
+// Soft delete: mark the record as deleted and move it to the trash, but keep it
+// FOREVER (no TTL) — onboarding records hold signed agreements/signatures we must
+// retain, so nothing auto-purges. A record only leaves storage if an admin
+// restores it (back to the active list) or, in future, explicitly hard-deletes.
 async function handleAdminDeleteOnboarding(request, env, cors, onboardingId) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -1322,9 +1323,7 @@ async function handleAdminDeleteOnboarding(request, env, cors, onboardingId) {
   const record = JSON.parse(raw);
   record.deleted = true;
   record.deletedAt = new Date().toISOString();
-  await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record), {
-    expirationTtl: ONBOARDING_TTL_SECONDS,
-  });
+  await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
   await logAudit(env, adminEmail, 'delete-onboarding', { onboardingId });
   return json({ ok: true, deletedAt: record.deletedAt }, 200, cors);
 }

@@ -253,7 +253,7 @@
 
       <div class="hidden" id="onb-trash-wrap">
         <h2 class="onb-trash-heading" id="onb-trash-heading"></h2>
-        <p class="admin-empty">Deleted submissions are recoverable for 30 days, then automatically purged.</p>
+        <p class="admin-empty">Deleted submissions move here and are kept indefinitely — they can be restored at any time and are never auto-purged.</p>
         <table class="admin-table">
           <thead>
             <tr>
@@ -929,7 +929,7 @@
 
     async function deleteOnboarding(onboardingId) {
       if (!adminToken) return;
-      if (!confirm(`Delete onboarding submission ${onboardingId}? It moves to the deleted list and can be restored within 30 days.`)) return;
+      if (!confirm(`Delete onboarding submission ${onboardingId}? It moves to the deleted list and can be restored at any time.`)) return;
       try {
         const res = await fetch(`/api/admin/onboarding/${encodeURIComponent(onboardingId)}`, {
           method: 'DELETE',
