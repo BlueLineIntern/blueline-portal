@@ -33,6 +33,7 @@ function Write-Audit($email, $action, $detail) {
 $adminPasswords = @{
     'fsabin@blueline-advisors.com'  = 'dev-fsabin-pass'
     'jyoung@blueline-advisors.com'  = 'dev-jyoung-pass'
+    'intern@blueline-advisors.com'  = 'dev-intern-pass'
 }
 $adminMfa = @{}      # email -> @{ secret; confirmed; backupCodes=@(@{hash;used}); createdAt }
 $adminPending = @{}  # pending token -> email (short-lived between password and 2nd factor)

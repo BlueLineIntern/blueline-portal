@@ -59,6 +59,7 @@ const ONBOARDING_TTL_SECONDS = 60 * 60 * 24 * 30; // secrets + soft-deleted reco
 const ADMIN_ACCOUNTS = [
   { email: 'fsabin@blueline-advisors.com', secret: 'ADMIN_PASSWORD_FSABIN' },
   { email: 'jyoung@blueline-advisors.com', secret: 'ADMIN_PASSWORD_JYOUNG' },
+  { email: 'intern@blueline-advisors.com', secret: 'ADMIN_PASSWORD_INTERN' },
 ];
 const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 12; // 12 hours
 const AUDIT_TTL_SECONDS = 60 * 60 * 24 * 400; // audit entries retained ~13 months

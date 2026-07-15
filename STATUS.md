@@ -160,13 +160,14 @@ Clients from that era just see an empty dashboard.
 ## Admin authentication (per-email login + sessions + audit log)
 Replaces the single bearer `ADMIN_TOKEN` with a login system:
 - **Accounts** are hardcoded in `worker.js` `ADMIN_ACCOUNTS` (email → secret
-  name): `fsabin@` → `ADMIN_PASSWORD_FSABIN`, `jyoung@` → `ADMIN_PASSWORD_JYOUNG`.
+  name): `fsabin@` → `ADMIN_PASSWORD_FSABIN`, `jyoung@` → `ADMIN_PASSWORD_JYOUNG`,
+  `intern@` → `ADMIN_PASSWORD_INTERN`.
   Each **password is per-person**, living only in its own Cloudflare secret
   (never in source or git). During rollout, login falls back to the legacy shared
   `ADMIN_PASSWORD` when an individual secret isn't set — delete `ADMIN_PASSWORD`
-  in Cloudflare once both individual secrets exist to make passwords truly
+  in Cloudflare once all individual secrets exist to make passwords truly
   per-person. Set them with `wrangler secret put ADMIN_PASSWORD_FSABIN` (and
-  `..._JYOUNG`), or in the Cloudflare dashboard.
+  `..._JYOUNG`, `..._INTERN`), or in the Cloudflare dashboard.
 - `POST /api/admin/login` `{email,password}` → finds the account by email and
   `timingSafeEqual(password, <that account's secret>)` (both trimmed). Password is
   **not sufficient on its own** — it returns `{status:'mfa'|'enroll', pendingToken}`
