@@ -15,11 +15,13 @@ $onboardings = @{}
 $onbSecrets = @{}
 $script:onbCounter = 0
 $adminSessions = @{}  # admin session token -> admin email
-# DEV ONLY credentials. The real worker uses ADMIN_EMAILS + the ADMIN_PASSWORD
-# secret; this throwaway password exists only so the mock can be exercised
-# locally and is intentionally NOT the production password.
-$adminEmails = @('fsabin@blueline-advisors.com', 'jyoung@blueline-advisors.com')
-$adminDevPassword = 'dev-admin-pass'
+# DEV ONLY credentials. The real worker uses ADMIN_ACCOUNTS + a per-email
+# password secret; these throwaway per-person passwords exist only so the mock
+# can be exercised locally and are intentionally NOT the production passwords.
+$adminPasswords = @{
+    'fsabin@blueline-advisors.com'  = 'dev-fsabin-pass'
+    'jyoung@blueline-advisors.com'  = 'dev-jyoung-pass'
+}
 
 # Fixed-window rate limiting, mirroring worker.js. [limit, windowSeconds].
 $rateLimits = @{ login = @(10, 300); register = @(5, 3600); onboardingStart = @(20, 3600) }
@@ -391,7 +393,8 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/login' -and $method -eq 'POST') {
             $body = Read-Body $ctx
             $email = ([string]$body.email).Trim().ToLower()
-            if (($adminEmails -notcontains $email) -or (([string]$body.password).Trim() -ne $adminDevPassword.Trim())) {
+            $expected = $adminPasswords[$email]
+            if ((-not $expected) -or (([string]$body.password).Trim() -ne $expected.Trim())) {
                 Send-Json $ctx 401 @{ error = 'Invalid email or password' }; continue
             }
             $token = New-Token

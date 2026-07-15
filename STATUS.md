@@ -144,13 +144,18 @@ Clients from that era just see an empty dashboard.
 
 ## Admin authentication (per-email login + sessions + audit log)
 Replaces the single bearer `ADMIN_TOKEN` with a login system:
-- **Emails** are hardcoded in `worker.js` `ADMIN_EMAILS`
-  (`fsabin@`/`jyoung@blueline-advisors.com`); the **shared password** lives only
-  in the `ADMIN_PASSWORD` Cloudflare secret (never in source or git).
-- `POST /api/admin/login` `{email,password}` → validates email ∈ ADMIN_EMAILS and
-  `timingSafeEqual(password, ADMIN_PASSWORD)`, mints an `admin_session:<token>`
-  KV entry (12-hour TTL), returns `{token,email}`. Rate-limited (`adminlogin`,
-  10/5min/IP). `POST /api/admin/logout` deletes the session.
+- **Accounts** are hardcoded in `worker.js` `ADMIN_ACCOUNTS` (email → secret
+  name): `fsabin@` → `ADMIN_PASSWORD_FSABIN`, `jyoung@` → `ADMIN_PASSWORD_JYOUNG`.
+  Each **password is per-person**, living only in its own Cloudflare secret
+  (never in source or git). During rollout, login falls back to the legacy shared
+  `ADMIN_PASSWORD` when an individual secret isn't set — delete `ADMIN_PASSWORD`
+  in Cloudflare once both individual secrets exist to make passwords truly
+  per-person. Set them with `wrangler secret put ADMIN_PASSWORD_FSABIN` (and
+  `..._JYOUNG`), or in the Cloudflare dashboard.
+- `POST /api/admin/login` `{email,password}` → finds the account by email and
+  `timingSafeEqual(password, <that account's secret>)` (both trimmed), mints an
+  `admin_session:<token>` KV entry (12-hour TTL), returns `{token,email}`.
+  Rate-limited (`adminlogin`, 10/5min/IP). `POST /api/admin/logout` deletes the session.
 - Every admin endpoint now calls `getAdminEmail(request, env)` (resolves the
   bearer token → session email) instead of comparing a static token; a missing/
   expired session → 401. The admin page (`admin.html`) has an email+password
@@ -160,15 +165,16 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
 - **Audit log**: `logAudit()` writes `audit:<ts>:<rand>` KV entries (~13-month
   TTL) on login, set-assignments, and onboarding delete/restore, each recording
   `{ts,email,action,detail}`. Write-side only so far — no viewer UI yet.
-  (The local `dev-server.ps1` mirrors login/logout/session-gating with a
-  DEV-ONLY password `dev-admin-pass`; it does not implement the audit writes,
-  which have no frontend surface.)
+  (The local `dev-server.ps1` mirrors login/logout/session-gating with DEV-ONLY
+  per-person passwords in `$adminPasswords` (`dev-fsabin-pass`/`dev-jyoung-pass`);
+  it does not implement the audit writes, which have no frontend surface.)
 
 ## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
-- Admin now has per-email login, sessions, and a write-side audit log, but the
-  **password is shared** across both staff emails (no per-person password, no
-  MFA), and there is **no audit-log viewer UI** and no anomaly alerting yet.
-  Revoking one person means rotating the shared `ADMIN_PASSWORD` for both.
+- Admin has per-person login, sessions, and a write-side audit log, but there is
+  still **no MFA**, **no audit-log viewer UI**, and no anomaly alerting yet.
+  Revoking one person now means rotating only that person's secret (e.g.
+  `ADMIN_PASSWORD_JYOUNG`) — as long as the legacy shared `ADMIN_PASSWORD` has
+  been deleted from Cloudflare.
 - **No application-level encryption** of client PII beyond Cloudflare's at-rest
   defaults — a Cloudflare-side compromise or leaked KV read would expose
   plaintext assessment data. This is now the biggest structural gap.

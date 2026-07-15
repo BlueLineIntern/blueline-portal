@@ -30,8 +30,8 @@
  *   DELETE /api/admin/onboarding/:id        (Authorization: Bearer <admin session>) — soft delete
  *   POST   /api/admin/onboarding/:id/restore (Authorization: Bearer <admin session>)
  *
- * Admins sign in with one of ADMIN_EMAILS plus the shared password in the
- * ADMIN_PASSWORD secret; set it with: wrangler secret put ADMIN_PASSWORD
+ * Admins each sign in with their own password (see ADMIN_ACCOUNTS); set them
+ * with: wrangler secret put ADMIN_PASSWORD_FSABIN (and ..._JYOUNG)
  * Optionally restrict browser origins with: wrangler secret put ALLOWED_ORIGIN
  *   (comma-separated list; defaults to the Worker's own origin only)
  *
@@ -45,9 +45,18 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const PBKDF2_ITERATIONS = 100000;
 const ONBOARDING_TTL_SECONDS = 60 * 60 * 24 * 30; // secrets + soft-deleted records expire after 30 days
 
-// Admin staff sign in with one of these emails plus the shared password held in
-// the ADMIN_PASSWORD secret. Sessions are shorter-lived than client sessions.
-const ADMIN_EMAILS = ['fsabin@blueline-advisors.com', 'jyoung@blueline-advisors.com'];
+// Admin staff each sign in with their own password. The password for each email
+// lives in its own Cloudflare secret (the `secret` field below); set them with:
+//   wrangler secret put ADMIN_PASSWORD_FSABIN
+//   wrangler secret put ADMIN_PASSWORD_JYOUNG
+// During the transition from the old shared password, login also accepts the
+// legacy ADMIN_PASSWORD secret if an individual one isn't set — delete
+// ADMIN_PASSWORD in Cloudflare once both individual secrets exist so passwords
+// are truly per-person. Sessions are shorter-lived than client sessions.
+const ADMIN_ACCOUNTS = [
+  { email: 'fsabin@blueline-advisors.com', secret: 'ADMIN_PASSWORD_FSABIN' },
+  { email: 'jyoung@blueline-advisors.com', secret: 'ADMIN_PASSWORD_JYOUNG' },
+];
 const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 12; // 12 hours
 const AUDIT_TTL_SECONDS = 60 * 60 * 24 * 400; // audit entries retained ~13 months
 
@@ -266,9 +275,8 @@ async function handleLogout(request, env, cors) {
 }
 
 // ---------- Admin auth ----------
-// Two hardcoded staff emails (ADMIN_EMAILS) share one password stored in the
-// ADMIN_PASSWORD secret (set with: wrangler secret put ADMIN_PASSWORD). A
-// successful login mints a short-lived admin session token; every admin
+// Two hardcoded staff accounts (ADMIN_ACCOUNTS), each with its own password
+// secret. A successful login mints a short-lived admin session token; every admin
 // endpoint resolves that token back to the staff email via getAdminEmail so
 // actions can be attributed in the audit log.
 
@@ -306,14 +314,16 @@ async function handleAdminLogin(request, env, cors) {
   }
 
   const normalizedEmail = String(email).trim().toLowerCase();
-  // Check both conditions regardless so the response time doesn't reveal
-  // whether the email alone was valid. Trim both sides of the password so a
-  // stray trailing newline in the ADMIN_PASSWORD secret (a very common result
-  // of how secrets get pasted/piped in) doesn't cause a silent length mismatch.
-  const emailOk = ADMIN_EMAILS.includes(normalizedEmail);
-  const expectedPassword = (env.ADMIN_PASSWORD || '').trim();
+  // Each admin has their own password secret; fall back to the legacy shared
+  // ADMIN_PASSWORD while individual secrets are being rolled out. Trim both
+  // sides so a stray trailing newline in a secret (a very common result of how
+  // secrets get pasted/piped in) doesn't cause a silent length mismatch.
+  const account = ADMIN_ACCOUNTS.find((a) => a.email === normalizedEmail);
+  const expectedPassword = account
+    ? ((env[account.secret] || env.ADMIN_PASSWORD) || '').trim()
+    : '';
   const passOk = !!expectedPassword && timingSafeEqual(String(password).trim(), expectedPassword);
-  if (!emailOk || !passOk) {
+  if (!account || !passOk) {
     return json({ error: 'Invalid email or password' }, 401, cors);
   }
 
