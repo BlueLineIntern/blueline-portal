@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
+<title>Contacts — BlueLine Admin</title>
+<link rel="stylesheet" href="/assets/style.css" />
+<link rel="stylesheet" href="/admin/shared.css" />
+<style>
+  /* Client detail (module cards + charts come from style.css/render.js) */
+  .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .detail-header h1 { margin: 0; font-size: 1.3rem; }
+  .detail-header-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .detail-client-email { color: var(--muted); margin: 4px 0 0; }
+  .detail-section { margin-top: 28px; }
+  .detail-section > h2 { margin: 0 0 4px; font-size: 1.1rem; }
+  .detail-section-desc { color: var(--muted); margin: 0 0 16px; }
+  .detail-subsection { color: var(--navy); font-size: 1rem; margin: 22px 0 12px; font-weight: 650; }
+  .detail-flags { background: var(--amber-bg); border-left: 3px solid #F2A65A; border-radius: 4px; padding: 12px 16px; margin-bottom: 8px; }
+  .detail-flags h2 { margin: 0 0 6px; font-size: 0.95rem; color: var(--amber); }
+  .detail-flags ul { margin: 0; padding-left: 20px; color: var(--amber); font-weight: 600; }
+  .detail-empty-module { color: var(--muted); margin: 14px 0 0; }
+  .onb-link-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: #fff; margin-bottom: 10px; }
+
+  /* Assignment editor */
+  .assignment-group { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-top: 14px; }
+  .assignment-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px; }
+  .assignment-group-head strong { color: var(--navy); }
+  .assignment-select-all { font-size: 0.82rem; color: var(--muted); display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+  .assignment-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 20px; }
+  .assignment-item { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem; }
+  .assignment-item input, .assignment-select-all input { width: 16px; height: 16px; accent-color: var(--sky); flex-shrink: 0; }
+  .assignment-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
+  @media (max-width: 640px) { .assignment-items { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar-root"></aside>
+  <main class="content">
+    <div id="list-view">
+      <div class="page-head">
+        <div>
+          <h1>Contacts</h1>
+          <p class="sub">Every client with a portal account. Click a row to open their profile.</p>
+        </div>
+        <div class="page-actions">
+          <input type="search" class="input search-input" id="contact-search" placeholder="Search contacts…" />
+        </div>
+      </div>
+
+      <div class="panel">
+        <p class="panel-status" id="list-status"></p>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Assessments</th>
+                <th>Last Activity</th>
+              </tr>
+            </thead>
+            <tbody id="contacts-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="hidden" id="profile-view">
+      <div class="print-header">
+        <div class="print-header-title">
+          <h1>Client Financial Report</h1>
+          <p id="print-client-line"></p>
+          <p id="print-date-line"></p>
+          <p>Prepared by BlueLine Advisors — for discussion purposes only.</p>
+        </div>
+        <div class="print-header-logo">
+          <img src="/assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" />
+        </div>
+      </div>
+
+      <div class="detail-header">
+        <div>
+          <h1 id="detail-name"></h1>
+          <p class="detail-client-email" id="detail-email"></p>
+          <p class="detail-client-email" id="detail-progress"></p>
+        </div>
+        <div class="detail-header-actions">
+          <button type="button" class="btn btn-primary" id="detail-print-btn">Print / Save PDF</button>
+          <button type="button" class="btn btn-ghost" id="detail-back-btn">← All Contacts</button>
+        </div>
+      </div>
+
+      <div class="panel" id="assignment-card">
+        <div class="panel-head"><h2>Assigned Modules</h2></div>
+        <p class="hint">Uncheck a module to hide it from this client's portal. A client you haven't changed here
+        sees everything by default. Use a category's <em>Select all</em> box to flip a whole group at once.</p>
+        <div id="assignment-groups"></div>
+        <div class="assignment-actions">
+          <button type="button" class="btn btn-primary btn-small" id="assignment-save-btn">Save assignments</button>
+          <span class="panel-status" id="assignment-status"></span>
+        </div>
+      </div>
+
+      <div id="detail-body"></div>
+    </div>
+  </main>
+</div>
+
+<script src="/assets/render.js"></script>
+<script src="/admin/shared.js"></script>
+<script>
+  initShell('contacts');
+
+  let allClients = [];
+  let allOnboardings = [];
+  let selectedEmail = '';
+  let assignmentEditorEmail = '';
+  let searchText = '';
+  const POLL_INTERVAL_MS = 20000;
+
+  const ALL_MODULE_KEYS = [...MODULES.map((mod) => mod.key), ...CATEGORY_MODULES.map((mod) => mod.key)];
+  const CATEGORY_MODULE_MAP = Object.fromEntries(CATEGORY_MODULES.map((mod) => [mod.key, mod]));
+  const ONBOARDING_WIZARD_KEY = 'onboardingWizard';
+
+  // A module/offering is shown in a client's detail when they have no
+  // assignment record (all visible) or it is explicitly assigned.
+  function clientIsAssigned(client, key) {
+    const a = client.assignments;
+    return a == null || a.includes(key);
+  }
+
+  function clientProgress(client) {
+    const m = client.modules || {};
+    const assignedKeys = ALL_MODULE_KEYS.filter((key) => clientIsAssigned(client, key));
+    const done = assignedKeys.filter((key) => m[key]).length;
+    return { done, total: assignedKeys.length };
+  }
+
+  function lastActivity(client) {
+    const m = client.modules || {};
+    let newest = null;
+    Object.values(m).forEach((mod) => {
+      if (mod && mod.updatedAt && (!newest || mod.updatedAt > newest)) newest = mod.updatedAt;
+    });
+    return newest;
+  }
+
+  async function loadData({ showStatus = false } = {}) {
+    const statusEl = document.getElementById('list-status');
+    if (showStatus) statusEl.textContent = 'Refreshing…';
+    try {
+      const [clientsData, onbData] = await Promise.all([
+        api('/api/admin/clients'),
+        api('/api/admin/onboarding').catch(() => ({ records: [] })),
+      ]);
+      allClients = clientsData.clients || [];
+      allOnboardings = onbData.records || [];
+      renderContacts();
+      if (selectedEmail) renderClientDetail(); // refresh open profile in place
+      if (showStatus) statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
+    } catch (err) {
+      if (showStatus) statusEl.textContent = `Refresh failed: ${err.message}`;
+    }
+  }
+
+  function renderContacts() {
+    const body = document.getElementById('contacts-body');
+    const q = searchText.trim().toLowerCase();
+    const rows = allClients
+      .slice()
+      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+      .filter((c) => !q || `${c.name} ${c.email}`.toLowerCase().includes(q))
+      .map((c) => {
+        const p = clientProgress(c);
+        const act = lastActivity(c);
+        return `<tr class="row-click contact-row" data-email="${escapeHtml(c.email)}">
+          <td><strong>${escapeHtml(c.name || '—')}</strong></td>
+          <td>${escapeHtml(c.email)}</td>
+          <td>${p.done} / ${p.total} completed</td>
+          <td>${act ? escapeHtml(relTime(act)) : '<span class="cell-missing">—</span>'}</td>
+        </tr>`;
+      });
+    body.innerHTML = rows.length
+      ? rows.join('')
+      : `<tr><td colspan="4" class="empty">${allClients.length ? 'No contacts match your search.' : 'No client accounts yet.'}</td></tr>`;
+    body.querySelectorAll('.contact-row').forEach((tr) => {
+      tr.addEventListener('click', () => openProfile(tr.dataset.email));
+    });
+  }
+
+  document.getElementById('contact-search').addEventListener('input', (e) => {
+    searchText = e.target.value;
+    renderContacts();
+  });
+
+  function openProfile(email) {
+    selectedEmail = email;
+    history.replaceState(null, '', `?c=${encodeURIComponent(email)}`);
+    renderClientDetail();
+    document.getElementById('list-view').classList.add('hidden');
+    document.getElementById('profile-view').classList.remove('hidden');
+    window.scrollTo(0, 0);
+  }
+
+  function backToList() {
+    selectedEmail = '';
+    assignmentEditorEmail = '';
+    history.replaceState(null, '', location.pathname);
+    document.getElementById('profile-view').classList.add('hidden');
+    document.getElementById('list-view').classList.remove('hidden');
+    window.scrollTo(0, 0);
+  }
+
+  // ---------- Client detail (moved from the old admin.html) ----------
+
+  function moduleCardHtml(mod, data, number) {
+    if (!data) {
+      return `
+        <div class="card module-card module-card-empty">
+          <div class="module-card-header">
+            <span class="module-number">${number}</span>
+            <h2>${escapeHtml(mod.title)}</h2>
+            <span class="status-badge status-pending">Not started</span>
+          </div>
+          <p class="detail-empty-module">The client hasn't completed this assessment yet.</p>
+        </div>`;
+    }
+    return `
+      <div class="card module-card">
+        <div class="module-card-header">
+          <span class="module-number done">✓</span>
+          <h2>${escapeHtml(mod.title)}</h2>
+          <span class="status-badge status-done">Completed</span>
+        </div>
+        <div class="module-result">${mod.renderResult(data)}</div>
+        <div class="module-card-footer">
+          <span class="updated-at-inline">Updated ${data.updatedAt ? new Date(data.updatedAt).toLocaleString() : ''}</span>
+        </div>
+      </div>`;
+  }
+
+  // The staff flags surfaced at the top of the detail so nothing gets buried
+  // below 17 module cards.
+  function clientFlagsHtml(m) {
+    const flags = [];
+    if (m.retirement && m.retirement.oldEmployerPlans !== 'none') flags.push('Rollover opportunity');
+    if (m.compensation && m.compensation.concentrationFlag) flags.push('Stock concentration');
+    if (m.compensation && m.compensation.contributionPct < m.compensation.employerMatchPct) flags.push('Missing 401(k) match');
+    if (m.budget && m.budget.surplus < 0) flags.push('Negative cash flow');
+    if (!flags.length) return '';
+    return `<div class="detail-flags"><h2>Flags</h2><ul>${flags
+      .map((f) => `<li>${escapeHtml(f)}</li>`)
+      .join('')}</ul></div>`;
+  }
+
+  const ONB_SECTIONS_KEYS = ['consent', 'regdocs', 'agreement', 'profile', 'discovery', 'snapshot', 'risk', 'uploads', 'portal', 'meetingprep'];
+
+  // Onboarding-workflow records linked to this client by consent or profile email.
+  function clientOnboardingHtml(client) {
+    const email = String(client.email || '').toLowerCase();
+    const rows = [];
+    allOnboardings.forEach((r) => {
+      if (r.deleted) return;
+      const c = (r.data && r.data.consent) || {};
+      const p = (r.data && r.data.profile) || {};
+      const match = [c.email, p.email].some((e) => e && String(e).toLowerCase() === email);
+      if (!match) return;
+      const done = ONB_SECTIONS_KEYS.filter((k) => r.data && r.data[k]).length;
+      rows.push(`<div class="onb-link-row">
+        <span><strong>${escapeHtml(r.onboardingId)}</strong> · ${done} / ${ONB_SECTIONS_KEYS.length} sections · ${r.completionTime ? 'Completed' : 'In progress'}</span>
+        <a class="btn btn-ghost btn-small" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">View Onboarding</a>
+      </div>`);
+    });
+    return rows.length
+      ? rows.join('')
+      : '<p class="empty">No onboarding submission linked to this email yet.</p>';
+  }
+
+  function categorySectionHtml(cat, m, client) {
+    const isOn = (key) => clientIsAssigned(client, key);
+    const heading = `<h2>${escapeHtml(cat.title)}</h2><p class="detail-section-desc">${escapeHtml(cat.description)}</p>`;
+    if (cat.type === 'onboarding') {
+      const fpaMods = MODULES.filter((mod) => isOn(mod.key));
+      const showWizard = isOn(ONBOARDING_WIZARD_KEY);
+      if (!fpaMods.length && !showWizard) return '';
+      const fpaBlock = fpaMods.length
+        ? `<h3 class="detail-subsection">Financial Picture Analysis</h3>
+           <div class="module-grid">${fpaMods.map((mod, i) => moduleCardHtml(mod, m[mod.key], i + 1)).join('')}</div>`
+        : '';
+      const wizardBlock = showWizard
+        ? `<h3 class="detail-subsection">New Client Onboarding</h3>${clientOnboardingHtml(client)}`
+        : '';
+      return `<section class="detail-section">${heading}${fpaBlock}${wizardBlock}</section>`;
+    }
+    const keys = cat.moduleKeys.filter((key) => isOn(key));
+    if (!keys.length) return '';
+    const cards = keys.map((key, i) => moduleCardHtml(CATEGORY_MODULE_MAP[key], m[key], i + 1)).join('');
+    return `<section class="detail-section">${heading}<div class="module-grid">${cards}</div></section>`;
+  }
+
+  function renderClientDetail() {
+    const detailBody = document.getElementById('detail-body');
+    const client = allClients.find((c) => c.email === selectedEmail);
+    if (!client) {
+      backToList();
+      return;
+    }
+    const m = client.modules || {};
+    const p = clientProgress(client);
+
+    document.getElementById('detail-name').textContent = client.name;
+    document.getElementById('detail-email').textContent = client.email;
+    document.getElementById('detail-progress').textContent = `${p.done} of ${p.total} modules completed`;
+    document.getElementById('print-client-line').textContent = `Client: ${client.name} (${client.email})`;
+    document.getElementById('print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
+
+    detailBody.innerHTML =
+      clientFlagsHtml(m) + CATEGORIES.map((cat) => categorySectionHtml(cat, m, client)).join('');
+
+    // Build the assignment editor once per selected client so a polling
+    // refresh can't wipe unsaved checkbox edits.
+    if (assignmentEditorEmail !== selectedEmail) {
+      renderAssignmentEditor(client);
+      assignmentEditorEmail = selectedEmail;
+    }
+  }
+
+  // ---------- Module assignment editor (moved from the old admin.html) ----------
+
+  function assignmentGroups() {
+    return CATEGORIES.map((cat) => {
+      if (cat.type === 'onboarding') {
+        return {
+          title: cat.title,
+          items: [
+            { keys: MODULES.map((m) => m.key), title: 'Financial Picture Analysis' },
+            { keys: [ONBOARDING_WIZARD_KEY], title: 'New Client Onboarding' },
+          ],
+        };
+      }
+      return {
+        title: cat.title,
+        items: cat.moduleKeys.map((k) => ({ keys: [k], title: CATEGORY_MODULE_MAP[k].title })),
+      };
+    });
+  }
+
+  function renderAssignmentEditor(client) {
+    const wrap = document.getElementById('assignment-groups');
+    const assigned = client.assignments; // array or null (null = all visible)
+    const isChecked = (keys) => assigned === null || keys.some((k) => assigned.includes(k));
+
+    wrap.innerHTML = assignmentGroups()
+      .map(
+        (g) => `
+      <div class="assignment-group">
+        <div class="assignment-group-head">
+          <strong>${escapeHtml(g.title)}</strong>
+          <label class="assignment-select-all"><input type="checkbox" class="assignment-group-toggle" /> Select all</label>
+        </div>
+        <div class="assignment-items">
+          ${g.items
+            .map(
+              (it) =>
+                `<label class="assignment-item"><input type="checkbox" class="assignment-check" data-keys="${escapeHtml(it.keys.join(','))}" ${isChecked(it.keys) ? 'checked' : ''} /> ${escapeHtml(it.title)}</label>`
+            )
+            .join('')}
+        </div>
+      </div>`
+      )
+      .join('');
+
+    wrap.querySelectorAll('.assignment-group').forEach((groupEl) => {
+      const toggle = groupEl.querySelector('.assignment-group-toggle');
+      const checks = Array.from(groupEl.querySelectorAll('.assignment-check'));
+      const sync = () => {
+        const on = checks.filter((c) => c.checked).length;
+        toggle.checked = on === checks.length;
+        toggle.indeterminate = on > 0 && on < checks.length;
+      };
+      sync();
+      toggle.addEventListener('change', () => {
+        checks.forEach((c) => (c.checked = toggle.checked));
+      });
+      checks.forEach((c) => c.addEventListener('change', sync));
+    });
+
+    document.getElementById('assignment-status').textContent = '';
+  }
+
+  document.getElementById('assignment-save-btn').addEventListener('click', async () => {
+    if (!selectedEmail) return;
+    const statusEl = document.getElementById('assignment-status');
+    const keys = [
+      ...new Set(
+        Array.from(document.querySelectorAll('#assignment-groups .assignment-check:checked')).flatMap((c) =>
+          c.dataset.keys.split(',')
+        )
+      ),
+    ];
+    statusEl.textContent = 'Saving…';
+    try {
+      const data = await api(`/api/admin/assignments/${encodeURIComponent(selectedEmail)}`, {
+        method: 'POST',
+        body: JSON.stringify({ assignments: keys }),
+      });
+      const client = allClients.find((c) => c.email === selectedEmail);
+      if (client) client.assignments = data.assignments;
+      statusEl.textContent = `Saved ${new Date().toLocaleTimeString()}`;
+    } catch (err) {
+      statusEl.textContent = `Save failed: ${err.message}`;
+    }
+  });
+
+  document.getElementById('detail-print-btn').addEventListener('click', () => window.print());
+  document.getElementById('detail-back-btn').addEventListener('click', backToList);
+
+  // Poll to keep list + open profile fresh (assignment editor is rebuilt only
+  // when the selected client changes, so edits survive the refresh).
+  setInterval(() => loadData(), POLL_INTERVAL_MS);
+
+  // Deep link: /admin/contacts.html?c=email opens that profile directly.
+  (async function init() {
+    await loadData();
+    const want = new URLSearchParams(location.search).get('c');
+    if (want && allClients.some((c) => c.email === want)) openProfile(want);
+  })();
+</script>
+</body>
+</html>

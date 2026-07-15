@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
+<title>Settings — BlueLine Admin</title>
+<link rel="stylesheet" href="/admin/shared.css" />
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar-root"></aside>
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <h1>Settings</h1>
+        <p class="sub">Admin accounts, security, and the audit trail.</p>
+      </div>
+    </div>
+
+    <div class="panel" id="admins-card">
+      <div class="panel-head"><h2>Admin Accounts</h2></div>
+      <p class="hint">Two-factor status for each admin. If someone loses their authenticator and all backup
+      codes, reset their MFA here — they'll set up a new authenticator the next time they sign in.</p>
+      <p class="panel-status" id="admins-status"></p>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr><th>Admin</th><th>Two-factor</th><th></th></tr>
+          </thead>
+          <tbody id="admins-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel" id="audit-card">
+      <div class="panel-head">
+        <h2>Audit Log</h2>
+        <button type="button" class="btn btn-ghost btn-small" id="audit-refresh-btn">↻ Refresh</button>
+      </div>
+      <p class="hint">Record of admin actions — sign-ins, module-assignment changes, onboarding
+      delete/restore, and MFA resets. Newest first. Retained ~13 months.</p>
+      <p class="panel-status" id="audit-status"></p>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr><th>When</th><th>Admin</th><th>Action</th><th>Detail</th></tr>
+          </thead>
+          <tbody id="audit-body"></tbody>
+        </table>
+      </div>
+      <div style="margin-top: 14px; text-align: center;">
+        <button type="button" class="btn btn-ghost btn-small hidden" id="audit-more-btn">Load older</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/admin/shared.js"></script>
+<script>
+  initShell('settings');
+
+  let allAudit = [];
+  let auditCursor = null;
+
+  // ---------- Admin accounts / MFA ----------
+  function renderAdmins(admins, you) {
+    const body = document.getElementById('admins-body');
+    body.innerHTML = (admins || [])
+      .map((a) => {
+        const isYou = a.email === you;
+        const status = a.mfaEnabled
+          ? '<span class="badge badge-green">Enabled</span>'
+          : '<span class="badge badge-amber">Not set up</span>';
+        const action = a.mfaEnabled
+          ? `<button type="button" class="btn btn-ghost btn-small reset-mfa-btn" data-email="${escapeHtml(a.email)}">Reset MFA</button>`
+          : '<span class="cell-missing">—</span>';
+        return `<tr><td>${escapeHtml(a.email)}${isYou ? ' <span class="cell-missing">(you)</span>' : ''}</td><td>${status}</td><td>${action}</td></tr>`;
+      })
+      .join('');
+  }
+
+  async function loadAdmins() {
+    try {
+      const data = await api('/api/admin/admins');
+      renderAdmins(data.admins || [], data.you);
+    } catch (err) {
+      document.getElementById('admins-status').textContent = `Failed to load: ${err.message}`;
+    }
+  }
+
+  document.getElementById('admins-body').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.reset-mfa-btn');
+    if (!btn) return;
+    const email = btn.dataset.email;
+    if (!confirm(`Reset two-factor authentication for ${email}? They'll set up a new authenticator app the next time they sign in.`)) return;
+    const statusEl = document.getElementById('admins-status');
+    statusEl.textContent = 'Resetting…';
+    try {
+      await api(`/api/admin/mfa/reset/${encodeURIComponent(email)}`, { method: 'POST' });
+      statusEl.textContent = `Reset MFA for ${email} at ${new Date().toLocaleTimeString()}.`;
+      loadAdmins();
+    } catch (err) {
+      statusEl.textContent = `Reset failed: ${err.message}`;
+    }
+  });
+
+  // ---------- Audit log ----------
+  // Loaded once + manual refresh only (not polled) — see STATUS.md.
+  function auditDetail(entry) {
+    const d = entry.detail;
+    if (d == null) return '—';
+    if (entry.action === 'set-assignments') {
+      const list = Array.isArray(d.assignments) ? d.assignments : [];
+      return `${d.client || '?'} — ${list.length} module${list.length === 1 ? '' : 's'} assigned`;
+    }
+    if (entry.action === 'delete-onboarding' || entry.action === 'restore-onboarding') {
+      return d.onboardingId || '—';
+    }
+    if (entry.action === 'login') {
+      return d.mfa === 'backup-code' ? 'via backup code' : d.mfa === 'totp' ? 'via authenticator app' : '—';
+    }
+    if (entry.action === 'reset-mfa') {
+      return d.target ? `reset ${d.target}` : '—';
+    }
+    if (typeof d === 'string') return d;
+    try { return JSON.stringify(d); } catch { return '—'; }
+  }
+
+  const AUDIT_ACTION_LABELS = {
+    'login': 'Signed in',
+    'set-assignments': 'Changed module assignments',
+    'delete-onboarding': 'Deleted onboarding record',
+    'restore-onboarding': 'Restored onboarding record',
+    'reset-mfa': "Reset an admin's MFA",
+  };
+
+  function renderAudit(entries) {
+    const body = document.getElementById('audit-body');
+    if (!entries.length) {
+      body.innerHTML = '<tr><td colspan="4" class="empty">No admin activity recorded yet.</td></tr>';
+      return;
+    }
+    body.innerHTML = entries
+      .map((e) => `<tr>
+        <td>${escapeHtml(e.ts ? new Date(e.ts).toLocaleString() : '—')}</td>
+        <td>${escapeHtml(e.email || 'unknown')}</td>
+        <td>${escapeHtml(AUDIT_ACTION_LABELS[e.action] || e.action || '—')}</td>
+        <td>${escapeHtml(auditDetail(e))}</td>
+      </tr>`)
+      .join('');
+  }
+
+  function updateAuditMoreButton() {
+    const btn = document.getElementById('audit-more-btn');
+    btn.disabled = false;
+    btn.textContent = 'Load older';
+    btn.classList.toggle('hidden', !auditCursor);
+  }
+
+  async function loadAudit({ showStatus = false } = {}) {
+    const statusEl = document.getElementById('audit-status');
+    if (showStatus) statusEl.textContent = 'Refreshing…';
+    try {
+      const data = await api('/api/admin/audit');
+      allAudit = data.entries || [];
+      auditCursor = data.hasMore ? data.cursor : null;
+      renderAudit(allAudit);
+      updateAuditMoreButton();
+      statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
+    } catch (err) {
+      statusEl.textContent = `Refresh failed: ${err.message}`;
+    }
+  }
+
+  async function loadOlderAudit() {
+    if (!auditCursor) return;
+    const btn = document.getElementById('audit-more-btn');
+    btn.disabled = true;
+    btn.textContent = 'Loading…';
+    try {
+      const data = await api(`/api/admin/audit?cursor=${encodeURIComponent(auditCursor)}`);
+      allAudit = allAudit.concat(data.entries || []);
+      auditCursor = data.hasMore ? data.cursor : null;
+      renderAudit(allAudit);
+    } catch (err) {
+      document.getElementById('audit-status').textContent = `Load failed: ${err.message}`;
+    } finally {
+      updateAuditMoreButton();
+    }
+  }
+
+  document.getElementById('audit-refresh-btn').addEventListener('click', () => loadAudit({ showStatus: true }));
+  document.getElementById('audit-more-btn').addEventListener('click', () => loadOlderAudit());
+
+  loadAdmins();
+  loadAudit();
+</script>
+</body>
+</html>

@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
+<title>Onboarding — BlueLine Admin</title>
+<link rel="stylesheet" href="/assets/style.css" />
+<link rel="stylesheet" href="/admin/shared.css" />
+<style>
+  .onb-section { margin-top: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; padding: 16px 18px; }
+  .onb-section h2 { margin: 0 0 10px; font-size: 1rem; font-family: var(--font); }
+  .onb-section .not-done { color: var(--muted); font-style: italic; }
+  .onb-signature { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px; max-width: 400px; margin-top: 12px; }
+  .onb-signature img { display: block; width: 100%; height: auto; }
+  .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .detail-header h1 { margin: 0; font-size: 1.3rem; }
+  .detail-header-actions { display: flex; gap: 10px; }
+  .detail-client-email { color: var(--muted); margin: 4px 0 0; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar-root"></aside>
+  <main class="content">
+    <div id="list-view">
+      <div class="page-head">
+        <div>
+          <h1>Onboarding</h1>
+          <p class="sub">Submissions from the /onboarding/ workflow. New steps are saved to the server
+          as the client moves through — this table auto-refreshes every 20 seconds.</p>
+        </div>
+        <div class="page-actions">
+          <button type="button" class="btn btn-ghost btn-small hidden" id="toggle-deleted-btn"></button>
+          <button type="button" class="btn btn-ghost btn-small" id="refresh-btn">↻ Refresh</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <p class="panel-status" id="refresh-status"></p>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Onboarding ID</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Progress</th>
+                <th>Risk</th>
+                <th>Started</th>
+                <th>Completed</th>
+                <th>Last Updated</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="onboarding-body"></tbody>
+          </table>
+        </div>
+
+        <div class="hidden" id="onb-trash-wrap">
+          <div class="panel-head" style="margin-top: 24px;"><h2 id="onb-trash-heading"></h2></div>
+          <p class="hint">Deleted submissions are recoverable for 30 days, then automatically purged.</p>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr><th>Onboarding ID</th><th>Name</th><th>Deleted</th><th></th></tr>
+              </thead>
+              <tbody id="onb-trash-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hidden" id="onb-detail-view">
+      <div class="print-header">
+        <div class="print-header-title">
+          <h1>Onboarding Summary</h1>
+          <p id="onb-print-client-line"></p>
+          <p id="onb-print-date-line"></p>
+          <p>Prepared by BlueLine Advisors — proof of concept, sample data only.</p>
+        </div>
+        <div class="print-header-logo">
+          <img src="/assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" />
+        </div>
+      </div>
+      <div class="detail-header">
+        <div>
+          <h1 id="onb-detail-name"></h1>
+          <p class="detail-client-email" id="onb-detail-meta"></p>
+        </div>
+        <div class="detail-header-actions">
+          <button type="button" class="btn btn-primary" id="onb-print-btn">Print / Save PDF</button>
+          <button type="button" class="btn btn-ghost" id="onb-back-btn">← Back to Submissions</button>
+        </div>
+      </div>
+      <div id="onb-detail-content"></div>
+    </div>
+  </main>
+</div>
+
+<script src="/admin/shared.js"></script>
+<script>
+  initShell('onboarding');
+
+  let allOnboardings = [];
+  let showDeleted = false;
+  let pollTimer = null;
+  const POLL_INTERVAL_MS = 20000;
+
+  const ONB_SECTIONS = [
+    ['consent', 'Electronic Consent'], ['regdocs', 'Regulatory Documents'],
+    ['agreement', 'Advisory Agreement Placeholder'], ['profile', 'Client Profile'],
+    ['discovery', 'Planning Discovery'], ['snapshot', 'Financial Snapshot'],
+    ['risk', 'Risk Assessment'], ['uploads', 'Document Upload Placeholder'],
+    ['portal', 'Portal Setup'], ['meetingprep', 'First Meeting Prep'],
+  ];
+
+  function missing() { return '<span class="cell-missing">—</span>'; }
+
+  function onbClientName(r) {
+    const p = (r.data && r.data.profile) || {};
+    const c = (r.data && r.data.consent) || {};
+    return [p.firstName, p.lastName].filter(Boolean).join(' ') || c.name || '—';
+  }
+
+  function onbClientEmail(r) {
+    const p = (r.data && r.data.profile) || {};
+    const c = (r.data && r.data.consent) || {};
+    return p.email || c.email || '—';
+  }
+
+  async function loadData({ showStatus = false } = {}) {
+    const statusEl = document.getElementById('refresh-status');
+    if (showStatus) statusEl.textContent = 'Refreshing…';
+    try {
+      const data = await api('/api/admin/onboarding');
+      allOnboardings = data.records || [];
+      renderOnboardings(allOnboardings);
+      if (showStatus) statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
+    } catch (err) {
+      if (showStatus) statusEl.textContent = `Refresh failed: ${err.message}`;
+    }
+  }
+
+  function renderOnboardings(records) {
+    const body = document.getElementById('onboarding-body');
+    const trashWrap = document.getElementById('onb-trash-wrap');
+    const trashBody = document.getElementById('onb-trash-body');
+
+    const activeRows = [];
+    const deletedRows = [];
+    records.forEach((r, index) => {
+      if (r.deleted) {
+        deletedRows.push(`<tr>
+          <td>${escapeHtml(r.onboardingId)}</td>
+          <td>${escapeHtml(onbClientName(r))}</td>
+          <td>${r.deletedAt ? new Date(r.deletedAt).toLocaleString() : missing()}</td>
+          <td><button type="button" class="btn btn-ghost btn-small onb-restore-btn" data-id="${escapeHtml(r.onboardingId)}">Restore</button></td>
+        </tr>`);
+        return;
+      }
+      const done = ONB_SECTIONS.filter(([k]) => r.data && r.data[k]).length;
+      const risk = r.data && r.data.risk
+        ? `${r.data.risk.score} / 100<br><span class="cell-sub">${escapeHtml(r.data.risk.profile)}</span>`
+        : missing();
+      activeRows.push(`<tr>
+        <td><button type="button" class="btn btn-ghost btn-small onb-detail-btn" data-index="${index}" ${done ? '' : 'disabled title="No data yet"'}>Details</button></td>
+        <td>${escapeHtml(r.onboardingId)}</td>
+        <td>${escapeHtml(onbClientName(r))}</td>
+        <td>${escapeHtml(onbClientEmail(r))}</td>
+        <td><strong>${done} / ${ONB_SECTIONS.length}</strong></td>
+        <td>${risk}</td>
+        <td>${r.startTime ? new Date(r.startTime).toLocaleString() : missing()}</td>
+        <td>${r.completionTime ? new Date(r.completionTime).toLocaleString() : '<span class="badge badge-sky">In progress</span>'}</td>
+        <td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : missing()}</td>
+        <td><button type="button" class="btn btn-danger btn-small onb-delete-btn" data-id="${escapeHtml(r.onboardingId)}" title="Delete this submission">Delete</button></td>
+      </tr>`);
+    });
+
+    body.innerHTML = activeRows.length
+      ? activeRows.join('')
+      : '<tr><td colspan="10" class="empty">No onboarding submissions yet.</td></tr>';
+    body.querySelectorAll('.onb-detail-btn').forEach((btn) => {
+      btn.addEventListener('click', () => showOnbDetail(Number(btn.dataset.index)));
+    });
+    body.querySelectorAll('.onb-delete-btn').forEach((btn) => {
+      btn.addEventListener('click', () => deleteOnboarding(btn.dataset.id));
+    });
+
+    const toggleBtn = document.getElementById('toggle-deleted-btn');
+    if (deletedRows.length) {
+      toggleBtn.classList.remove('hidden');
+      toggleBtn.textContent = `${showDeleted ? 'Hide' : 'Show'} deleted (${deletedRows.length})`;
+      document.getElementById('onb-trash-heading').textContent = `Deleted (${deletedRows.length})`;
+      trashBody.innerHTML = deletedRows.join('');
+      trashBody.querySelectorAll('.onb-restore-btn').forEach((btn) => {
+        btn.addEventListener('click', () => restoreOnboarding(btn.dataset.id));
+      });
+      trashWrap.classList.toggle('hidden', !showDeleted);
+    } else {
+      toggleBtn.classList.add('hidden');
+      trashWrap.classList.add('hidden');
+      showDeleted = false;
+    }
+  }
+
+  async function deleteOnboarding(onboardingId) {
+    if (!confirm(`Delete onboarding submission ${onboardingId}? It moves to the deleted list and can be restored within 30 days.`)) return;
+    try {
+      await api(`/api/admin/onboarding/${encodeURIComponent(onboardingId)}`, { method: 'DELETE' });
+      await loadData({ showStatus: true });
+    } catch (err) {
+      document.getElementById('refresh-status').textContent = `Delete failed: ${err.message}`;
+    }
+  }
+
+  async function restoreOnboarding(onboardingId) {
+    try {
+      await api(`/api/admin/onboarding/${encodeURIComponent(onboardingId)}/restore`, { method: 'POST' });
+      await loadData({ showStatus: true });
+    } catch (err) {
+      document.getElementById('refresh-status').textContent = `Restore failed: ${err.message}`;
+    }
+  }
+
+  function onbRows(pairs) {
+    const rows = pairs
+      .filter(([, v]) => v != null && v !== '')
+      .map(([label, v]) => `<div class="stat-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(v)}</strong></div>`)
+      .join('');
+    return rows ? `<div class="stat-rows">${rows}</div>` : '<p class="not-done">No details recorded.</p>';
+  }
+
+  function onbSection(title, data, buildRows) {
+    const inner = data ? buildRows(data) : '<p class="not-done">Not completed.</p>';
+    return `<div class="onb-section"><h2>${escapeHtml(title)}</h2>${inner}</div>`;
+  }
+
+  function showOnbDetail(index) {
+    const r = allOnboardings[index];
+    if (!r) return;
+    const d = r.data || {};
+
+    document.getElementById('onb-detail-name').textContent = onbClientName(r);
+    document.getElementById('onb-detail-meta').textContent =
+      `${r.onboardingId} · ${onbClientEmail(r)} · ${r.completionTime ? 'Completed' : 'In progress'}`;
+    document.getElementById('onb-print-client-line').textContent =
+      `Client: ${onbClientName(r)} (${onbClientEmail(r)}) — ${r.onboardingId}`;
+    document.getElementById('onb-print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
+
+    const detail = (answer, extra) => [answer, extra].filter(Boolean).join(' — ');
+
+    document.getElementById('onb-detail-content').innerHTML = [
+      onbSection('Electronic Consent', d.consent, (c) => onbRows([
+        ['Name', c.name], ['Email', c.email],
+        ['Consented', c.consented ? 'Yes' : 'No'],
+        ['Timestamp', c.timestamp && new Date(c.timestamp).toLocaleString()],
+      ])),
+      onbSection('Regulatory Documents', d.regdocs, (g) => onbRows(
+        Object.values(g.documents || {}).map((doc) =>
+          [`${doc.name} (${doc.version})`, doc.acknowledgedAt ? `Acknowledged ${new Date(doc.acknowledgedAt).toLocaleString()}` : '—'])
+      )),
+      onbSection('Advisory Agreement', d.agreement, (a) => {
+        const rows = onbRows([
+          ['Acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No'],
+          ['Typed name', a.typedName],
+          ['Signed at', a.signedAt && new Date(a.signedAt).toLocaleString()],
+        ]);
+        const sig = a.signatureDataUrl
+          ? `<div class="onb-signature"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Client signature" /></div>
+             <p class="not-done">Sample signature — proof of concept, not legally binding.</p>`
+          : '<p class="not-done">No signature captured.</p>';
+        return rows + sig;
+      }),
+      onbSection('Client Profile', d.profile, (p) => onbRows([
+        ['Name', [p.firstName, p.lastName].filter(Boolean).join(' ')],
+        ['Preferred name', p.preferredName], ['Email', p.email], ['Phone', p.phone],
+        ['Address', [p.street, p.city, p.state, p.zip].filter(Boolean).join(', ')],
+        ['Date of birth (test data)', p.dob], ['Marital status', p.maritalStatus],
+        ['Spouse / partner', p.spouseName],
+        ['Employer / occupation', [p.employer, p.occupation].filter(Boolean).join(' — ')],
+        ['Trusted contact', [p.trustedContactName, p.trustedContactPhone].filter(Boolean).join(' — ')],
+        ['CPA', p.cpaName], ['Attorney', p.attorneyName],
+        ['Preferred communication', p.preferredCommunication],
+      ])),
+      onbSection('Planning Discovery', d.discovery, (v) => onbRows([
+        ['What prompted contact', v.prompt], ['Top three priorities', v.priorities],
+        ['Keeps them awake', v.worries], ['One-year success definition', v.success],
+        ['Major life events', detail(v.lifeEvents, v.lifeEventsDetail)],
+        ['Tax issues', detail(v.tax, v.taxDetail)],
+        ['Estate issues', detail(v.estate, v.estateDetail)],
+        ['Business issues', detail(v.business, v.businessDetail)],
+      ])),
+      onbSection('Financial Snapshot (ranges)', d.snapshot, (s) => onbRows([
+        ['Cash', s.cashRange], ['Investment accounts', s.investmentRange],
+        ['Retirement accounts', s.retirementRange], ['Real estate', s.realEstateRange],
+        ['Business value', s.businessRange], ['Mortgage', s.mortgageRange],
+        ['Other debt', s.otherDebtRange], ['Annual income', s.incomeRange],
+        ['Annual spending', s.spendingRange],
+      ])),
+      onbSection('Risk Assessment', d.risk, (k) => onbRows([
+        ['Score', k.score != null ? `${k.score} / 100` : null],
+        ['Profile', k.profile],
+        ['Completed', k.timestamp && new Date(k.timestamp).toLocaleString()],
+      ])),
+      onbSection('Documents (upload placeholder)', d.uploads, (u) => onbRows(
+        Object.values(u).map((item) => [item.label, item.willProvideLater ? 'Will provide later' : 'Not confirmed'])
+      )),
+      onbSection('Portal Setup', d.portal, (po) => onbRows([
+        ['Meeting format', po.meetingFormat], ['Meeting time', po.meetingTime],
+        ['Best phone', po.bestPhone], ['Best email', po.bestEmail],
+      ])),
+      onbSection('First Meeting Prep', d.meetingprep, (m) => onbRows([
+        ['Wants to accomplish', m.accomplish], ['Questions to answer first', m.questions],
+        ['Review before meeting', m.review], ['Additional attendees', m.attendees],
+      ])),
+    ].join('');
+
+    document.getElementById('list-view').classList.add('hidden');
+    document.getElementById('onb-detail-view').classList.remove('hidden');
+    window.scrollTo(0, 0);
+  }
+
+  function backToList() {
+    document.getElementById('onb-detail-view').classList.add('hidden');
+    document.getElementById('list-view').classList.remove('hidden');
+    window.scrollTo(0, 0);
+  }
+
+  document.getElementById('onb-print-btn').addEventListener('click', () => window.print());
+  document.getElementById('onb-back-btn').addEventListener('click', backToList);
+  document.getElementById('refresh-btn').addEventListener('click', () => loadData({ showStatus: true }));
+  document.getElementById('toggle-deleted-btn').addEventListener('click', () => {
+    showDeleted = !showDeleted;
+    renderOnboardings(allOnboardings);
+  });
+
+  // Poll only while the list is visible — an open detail read shouldn't be
+  // yanked out from under the reader.
+  pollTimer = setInterval(() => {
+    if (!document.getElementById('list-view').classList.contains('hidden')) loadData();
+  }, POLL_INTERVAL_MS);
+
+  // Deep link: /admin/onboarding.html?id=BLA-ONB-2026-0001 opens that record.
+  (async function init() {
+    await loadData();
+    const wantId = new URLSearchParams(location.search).get('id');
+    if (wantId) {
+      const idx = allOnboardings.findIndex((r) => r.onboardingId === wantId);
+      if (idx >= 0) showOnbDetail(idx);
+    }
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
+<title>Dashboard — BlueLine Admin</title>
+<link rel="stylesheet" href="/admin/shared.css" />
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar-root"></aside>
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <h1 id="dash-greeting">Dashboard</h1>
+        <p class="sub" id="dash-date"></p>
+      </div>
+    </div>
+
+    <div class="stat-tiles" id="stat-tiles"></div>
+
+    <div class="widget-grid">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Recent Client Activity</h2>
+          <a class="panel-link" href="/admin/contacts.html">All contacts →</a>
+        </div>
+        <div class="row-list" id="recent-activity"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Onboarding In Progress</h2>
+          <a class="panel-link" href="/admin/onboarding.html">All onboarding →</a>
+        </div>
+        <div class="row-list" id="onb-progress"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/admin/shared.js"></script>
+<script>
+  initShell('dashboard');
+
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const who = (SESSION.email || '').split('@')[0];
+  document.getElementById('dash-greeting').textContent = `${greeting}${who ? ', ' + who : ''}`;
+  document.getElementById('dash-date').textContent = new Date().toLocaleDateString(undefined, {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+
+  function tile(num, label, href) {
+    const inner = `<div class="num">${num}</div><div class="lbl">${escapeHtml(label)}</div>`;
+    return href ? `<a class="stat-tile" href="${href}">${inner}</a>` : `<div class="stat-tile">${inner}</div>`;
+  }
+
+  function rowItem(title, sub, side, href) {
+    const main = `<div class="row-main"><div class="row-title">${title}</div><div class="row-sub">${sub}</div></div>`;
+    const right = side ? `<div class="row-side">${side}</div>` : '';
+    return href
+      ? `<a class="row-item" style="text-decoration:none;color:inherit" href="${href}">${main}${right}</a>`
+      : `<div class="row-item">${main}${right}</div>`;
+  }
+
+  async function load() {
+    try {
+      const [clientsData, onbData] = await Promise.all([
+        api('/api/admin/clients'),
+        api('/api/admin/onboarding').catch(() => ({ records: [] })),
+      ]);
+      const clients = clientsData.clients || [];
+      const onbs = (onbData.records || []).filter((r) => !r.deleted);
+      const inProgress = onbs.filter((r) => !r.completionTime);
+      const completed = onbs.filter((r) => r.completionTime);
+
+      // Newest module completion per client → recent activity feed.
+      const activity = [];
+      clients.forEach((c) => {
+        Object.entries(c.modules || {}).forEach(([key, mod]) => {
+          if (mod && mod.updatedAt) activity.push({ client: c, key, at: mod.updatedAt });
+        });
+      });
+      activity.sort((a, b) => (a.at < b.at ? 1 : -1));
+
+      document.getElementById('stat-tiles').innerHTML = [
+        tile(clients.length, 'Clients', '/admin/contacts.html'),
+        tile(inProgress.length, 'Onboarding in progress', '/admin/onboarding.html'),
+        tile(completed.length, 'Onboarding completed', '/admin/onboarding.html'),
+        tile(activity.filter((a) => Date.now() - new Date(a.at) < 7 * 86400e3).length, 'Assessments this week'),
+      ].join('');
+
+      document.getElementById('recent-activity').innerHTML = activity.length
+        ? activity.slice(0, 8).map((a) => rowItem(
+            escapeHtml(a.client.name || a.client.email),
+            `Completed the <strong>${escapeHtml(a.key)}</strong> assessment`,
+            `<span class="cell-missing">${escapeHtml(relTime(a.at))}</span>`,
+            `/admin/contacts.html?c=${encodeURIComponent(a.client.email)}`
+          )).join('')
+        : '<p class="empty">No client activity yet.</p>';
+
+      function onbName(r) {
+        const p = (r.data && r.data.profile) || {};
+        const c = (r.data && r.data.consent) || {};
+        return [p.firstName, p.lastName].filter(Boolean).join(' ') || c.name || r.onboardingId;
+      }
+      document.getElementById('onb-progress').innerHTML = inProgress.length
+        ? inProgress.slice(0, 8).map((r) => rowItem(
+            escapeHtml(onbName(r)),
+            escapeHtml(r.onboardingId),
+            `<span class="badge badge-sky">In progress</span> <span class="cell-missing">${escapeHtml(relTime(r.updatedAt))}</span>`,
+            `/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}`
+          )).join('')
+        : '<p class="empty">Nothing in progress right now.</p>';
+    } catch (err) {
+      document.getElementById('recent-activity').innerHTML = `<p class="empty">Failed to load: ${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  load();
+</script>
+</body>
+</html>
