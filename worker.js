@@ -283,11 +283,21 @@ async function handleLogout(request, env, cors) {
 // endpoint resolves that token back to the staff email via getAdminEmail so
 // actions can be attributed in the audit log.
 
+// Keys are audit:<invTs>:<rand> where invTs = (AUDIT_TS_CEILING - now) zero-padded
+// to 14 digits. Inverting the timestamp makes the NEWEST entry sort first
+// lexicographically, so the viewer can fetch the most recent N with a single
+// bounded KV list — no full-namespace scan as the log grows. The ceiling keeps
+// the value 14 digits (starting with '0') until ~year 2286, so these also sort
+// ahead of any legacy audit:<ISO-timestamp> keys from before this change.
+const AUDIT_TS_CEILING = 10_000_000_000_000;
+
 async function logAudit(env, email, action, detail) {
   try {
-    const ts = new Date().toISOString();
+    const now = Date.now();
+    const ts = new Date(now).toISOString();
+    const invTs = String(AUDIT_TS_CEILING - now).padStart(14, '0');
     await env.PORTAL_KV.put(
-      `audit:${ts}:${randomHex(4)}`,
+      `audit:${invTs}:${randomHex(4)}`,
       JSON.stringify({ ts, email: email || 'unknown', action, detail: detail == null ? null : detail }),
       { expirationTtl: AUDIT_TTL_SECONDS }
     );
@@ -1358,37 +1368,30 @@ async function handleAdminOnboarding(request, env, cors) {
   return json({ records }, 200, cors);
 }
 
-// Returns the most recent audit entries (who did what, when). Keys are
-// audit:<ISO ts>:<rand>, which sort chronologically, so we collect key names
-// cheaply, take the newest MAX_AUDIT_ENTRIES, and only fetch those values.
+// Returns the most recent audit entries (who did what, when). Because keys use
+// an inverted timestamp (see logAudit), the newest entries sort first, so a
+// single bounded KV list returns them directly — the cost of this endpoint is
+// flat regardless of how large the log grows. `hasMore` signals there are older
+// entries beyond this page (for a future "load older" control).
 async function handleAdminAudit(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
 
-  const MAX_AUDIT_ENTRIES = 500;
-  const keyNames = [];
-  let cursor;
-  do {
-    const page = await env.PORTAL_KV.list({ prefix: 'audit:', cursor });
-    for (const key of page.keys) keyNames.push(key.name);
-    cursor = page.cursor;
-    if (page.list_complete) break;
-  } while (cursor);
-
-  keyNames.sort(); // chronological (ISO timestamp prefix)
-  const truncated = keyNames.length > MAX_AUDIT_ENTRIES;
-  const recent = keyNames.slice(-MAX_AUDIT_ENTRIES).reverse(); // newest first
+  const AUDIT_PAGE_SIZE = 50;
+  const page = await env.PORTAL_KV.list({ prefix: 'audit:', limit: AUDIT_PAGE_SIZE });
 
   const entries = [];
-  for (const name of recent) {
-    const raw = await env.PORTAL_KV.get(name);
+  for (const key of page.keys) {
+    const raw = await env.PORTAL_KV.get(key.name);
     if (!raw) continue;
     try {
       entries.push(JSON.parse(raw));
     } catch {}
   }
 
-  return json({ entries, total: keyNames.length, truncated }, 200, cors);
+  // Guarantee display order even if legacy (non-inverted) keys are mixed in.
+  entries.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+  return json({ entries, limit: AUDIT_PAGE_SIZE, hasMore: !page.list_complete }, 200, cors);
 }
 
 async function handleAdminClients(request, env, cors) {

@@ -358,8 +358,7 @@
     // detail does refresh (renderClientPicker re-renders it in place).
     function tablesAreVisible() {
       return !clientsCard.classList.contains('hidden')
-        || !document.getElementById('onboarding-card').classList.contains('hidden')
-        || !document.getElementById('audit-card').classList.contains('hidden');
+        || !document.getElementById('onboarding-card').classList.contains('hidden');
     }
 
     async function loadAdminData({ showStatus = false } = {}) {
@@ -368,26 +367,42 @@
       if (showStatus) statusEl.textContent = 'Refreshing…';
       try {
         const headers = { Authorization: `Bearer ${adminToken}` };
-        const [clientsRes, onbRes, auditRes] = await Promise.all([
+        const [clientsRes, onbRes] = await Promise.all([
           fetch('/api/admin/clients', { headers }),
           fetch('/api/admin/onboarding', { headers }),
-          fetch('/api/admin/audit', { headers }),
         ]);
         if (clientsRes.status === 401) { showLogin(); return; }
         const data = await clientsRes.json();
         if (!clientsRes.ok) throw new Error(data.error || 'Failed to load clients');
         const onbData = await onbRes.json().catch(() => ({ records: [] }));
-        const auditData = await auditRes.json().catch(() => ({ entries: [] }));
 
         allClients = data.clients;
         allOnboardings = (onbRes.ok && onbData.records) || [];
-        allAudit = (auditRes.ok && auditData.entries) || [];
         renderClientPicker();
         renderOnboardings(allOnboardings);
-        renderAudit(allAudit);
         if (showStatus) statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
       } catch (err) {
         if (showStatus) statusEl.textContent = `Refresh failed: ${err.message}`;
+      }
+    }
+
+    // The audit log is loaded once on entry and on manual Refresh only — NOT on
+    // the 20s poll. It doesn't change second-to-second, and polling it would scan
+    // + fetch the log repeatedly for every open tab (needless Cloudflare reads).
+    async function loadAudit({ showStatus = false } = {}) {
+      if (!adminToken) return;
+      const statusEl = document.getElementById('audit-status');
+      if (showStatus) statusEl.textContent = 'Refreshing…';
+      try {
+        const res = await fetch('/api/admin/audit', { headers: { Authorization: `Bearer ${adminToken}` } });
+        if (res.status === 401) { showLogin(); return; }
+        const data = await res.json().catch(() => ({ entries: [] }));
+        if (!res.ok) throw new Error(data.error || 'Failed to load audit log');
+        allAudit = data.entries || [];
+        renderAudit(allAudit);
+        statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}${data.hasMore ? ' · showing newest ' + (data.limit || allAudit.length) : ''}`;
+      } catch (err) {
+        statusEl.textContent = `Refresh failed: ${err.message}`;
       }
     }
 
@@ -408,6 +423,7 @@
       document.getElementById('audit-card').classList.remove('hidden');
       startPolling();
       loadAdminData();
+      loadAudit();
     }
 
     // Return to the login card and forget the session (client-side).
@@ -471,7 +487,7 @@
     });
 
     document.getElementById('refresh-btn').addEventListener('click', () => loadAdminData({ showStatus: true }));
-    document.getElementById('audit-refresh-btn').addEventListener('click', () => loadAdminData({ showStatus: true }));
+    document.getElementById('audit-refresh-btn').addEventListener('click', () => loadAudit({ showStatus: true }));
     document.getElementById('toggle-deleted-btn').addEventListener('click', () => {
       showDeleted = !showDeleted;
       renderOnboardings(allOnboardings);

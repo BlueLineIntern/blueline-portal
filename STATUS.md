@@ -179,11 +179,17 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   (clearing the server session so the old token is rejected).
 - **Audit log**: `logAudit()` writes `audit:<ts>:<rand>` KV entries (~13-month
   TTL) on login, set-assignments, and onboarding delete/restore, each recording
-  `{ts,email,action,detail}`. **Viewer**: `GET /api/admin/audit` (admin-gated)
-  collects all `audit:` key names, sorts by the ISO-timestamp prefix, returns the
-  newest 500 (`{entries, total, truncated}`) so only those values are fetched.
-  The admin page has an "Audit Log" card (When / Admin / Action / Detail, newest
-  first) that loads alongside clients/onboarding on the same 20s poll.
+  `{ts,email,action,detail}`. Keys use an **inverted timestamp**
+  (`audit:<14-digit (AUDIT_TS_CEILING - now)>:<rand>`) so the newest entry sorts
+  first and the viewer reads with a single bounded `list({limit:50})` — cost is
+  flat as the log grows, no full-namespace scan. (Legacy `audit:<ISO>` keys from
+  before this change sort after the inverted ones and are re-sorted by `ts` in the
+  response; they expire on their own.) **Viewer**: `GET /api/admin/audit`
+  (admin-gated) → `{entries, limit, hasMore}`. The admin page has an "Audit Log"
+  card (When / Admin / Action / Detail, newest first) loaded **once on entry and
+  on manual Refresh only — deliberately NOT on the 20s poll**, since the log
+  doesn't change live and polling it would burn Cloudflare reads per open tab.
+  `hasMore` is surfaced for a future "load older" control (not built yet).
   (The local `dev-server.ps1` mirrors login/logout/session-gating with DEV-ONLY
   per-person passwords in `$adminPasswords` (`dev-fsabin-pass`/`dev-jyoung-pass`)
   and now also mirrors the audit writes + `/api/admin/audit` in memory so the

@@ -494,9 +494,11 @@ while ($listener.IsListening) {
         }
         elseif ($path -eq '/api/admin/audit' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $entries = @($auditLog.ToArray())
-            [array]::Reverse($entries)  # newest first, mirroring the worker
-            Send-Json $ctx 200 @{ entries = $entries; total = $entries.Count; truncated = $false }
+            $all = @($auditLog.ToArray())
+            [array]::Reverse($all)  # newest first, mirroring the worker
+            $limit = 50
+            $entries = @($all | Select-Object -First $limit)
+            Send-Json $ctx 200 @{ entries = $entries; limit = $limit; hasMore = ($all.Count -gt $limit) }
         }
         elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})/restore$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
