@@ -114,11 +114,17 @@
       <div class="tabs" id="profile-tabs">
         <button type="button" class="tab active" data-tab="overview">Overview</button>
         <button type="button" class="tab" data-tab="assessments">Assessments</button>
+        <button type="button" class="tab" data-tab="tasks">Tasks</button>
+        <button type="button" class="tab" data-tab="notes">Notes</button>
+        <button type="button" class="tab" data-tab="timeline">Timeline</button>
         <button type="button" class="tab" data-tab="documents">Documents</button>
         <button type="button" class="tab" data-tab="activity">Activity Log</button>
       </div>
 
       <div id="tab-overview"></div>
+      <div class="hidden" id="tab-tasks"></div>
+      <div class="hidden" id="tab-notes"></div>
+      <div class="hidden" id="tab-timeline"></div>
 
       <div class="hidden" id="tab-assessments">
         <div class="panel" id="assignment-card">
@@ -398,6 +404,7 @@
   function openProfile(email) {
     selectedEmail = email;
     activeTab = 'overview';
+    editingNoteId = null;
     history.replaceState(null, '', `?c=${encodeURIComponent(email)}`);
     renderProfile();
     document.getElementById('list-view').classList.add('hidden');
@@ -423,10 +430,14 @@
     document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
       b.classList.toggle('active', b.dataset.tab === tab)
     );
-    ['overview', 'assessments', 'documents', 'activity'].forEach((t) =>
+    ['overview', 'assessments', 'tasks', 'notes', 'timeline', 'documents', 'activity'].forEach((t) =>
       document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab)
     );
-    if (tab === 'activity') renderActivityTab(); // fetches on demand
+    // These fetch on demand so opening a profile stays cheap.
+    if (tab === 'activity') renderActivityTab();
+    if (tab === 'tasks') renderTasksTab();
+    if (tab === 'notes') renderNotesTab();
+    if (tab === 'timeline') renderTimelineTab();
   }
 
   document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
@@ -621,6 +632,240 @@
     document.getElementById('tab-documents').innerHTML =
       (agreements.length ? agreements.join('') : '<div class="panel"><p class="empty">No signed agreements on file for this contact.</p></div>') +
       '<p class="hint">Client file uploads (tax returns, statements) are a planned feature — signed onboarding agreements are shown here today.</p>';
+  }
+
+  // ---------- Tasks tab ----------
+
+  const PRIORITY_BADGE = { high: 'badge-red', medium: 'badge-amber', low: 'badge-gray' };
+
+  async function renderTasksTab() {
+    const wrap = document.getElementById('tab-tasks');
+    const email = selectedEmail;
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const data = await api('/api/admin/tasks');
+      if (selectedEmail !== email) return; // profile changed while loading
+      const mine = (data.tasks || []).filter((t) => t.client === email);
+      const open = mine.filter((t) => t.status === 'open');
+      const done = mine.filter((t) => t.status === 'done');
+      const row = (t) => `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
+        <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
+        <div class="row-main">
+          <div class="row-title" ${t.status === 'done' ? 'style="text-decoration:line-through;color:var(--muted)"' : ''}>${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
+          <div class="row-sub">${t.due ? escapeHtml(new Date(t.due).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : 'no due date'} · ${t.assignee ? escapeHtml(t.assignee.split('@')[0]) : 'unassigned'}</div>
+        </div>
+        <div class="row-side"><span class="badge ${PRIORITY_BADGE[t.priority] || 'badge-gray'}">${escapeHtml(t.priority)}</span></div>
+      </div>`;
+      wrap.innerHTML = `
+        <div class="panel">
+          <div class="panel-head"><h2>Open Tasks (${open.length})</h2>
+            <a class="panel-link" href="/admin/tasks.html">Full task manager →</a></div>
+          <div class="row-list">${open.length ? open.map(row).join('') : '<p class="empty">No open tasks for this contact.</p>'}</div>
+          <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+            <input type="text" class="input" id="quick-task-title" placeholder="Quick task for this contact…" style="flex:1; min-width:220px;" />
+            <input type="date" class="input" id="quick-task-due" />
+            <button type="button" class="btn btn-primary btn-small" id="quick-task-add">Add Task</button>
+          </div>
+          <p class="form-error" id="quick-task-error"></p>
+        </div>
+        ${done.length ? `<div class="panel"><div class="panel-head"><h2>Completed (${done.length})</h2></div>
+          <div class="row-list">${done.map(row).join('')}</div></div>` : ''}`;
+      wrap.querySelectorAll('.task-check').forEach((cb) =>
+        cb.addEventListener('change', async () => {
+          try {
+            await api(`/api/admin/tasks/${encodeURIComponent(cb.dataset.id)}`, {
+              method: 'POST', body: JSON.stringify({ status: cb.checked ? 'done' : 'open' }),
+            });
+            renderTasksTab();
+          } catch (err) {
+            document.getElementById('quick-task-error').textContent = err.message;
+          }
+        })
+      );
+      document.getElementById('quick-task-add').addEventListener('click', async () => {
+        const title = document.getElementById('quick-task-title').value.trim();
+        const errEl = document.getElementById('quick-task-error');
+        errEl.textContent = '';
+        if (!title) { errEl.textContent = 'Enter a task title.'; return; }
+        try {
+          await api('/api/admin/tasks', {
+            method: 'POST',
+            body: JSON.stringify({
+              title,
+              client: email,
+              assignee: SESSION.email,
+              due: document.getElementById('quick-task-due').value,
+              category: 'follow-up',
+              priority: 'medium',
+            }),
+          });
+          renderTasksTab();
+        } catch (err) {
+          errEl.textContent = err.message;
+        }
+      });
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Notes tab ----------
+
+  let editingNoteId = null;
+
+  async function renderNotesTab() {
+    const wrap = document.getElementById('tab-notes');
+    const email = selectedEmail;
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const data = await api(`/api/admin/notes?client=${encodeURIComponent(email)}`);
+      if (selectedEmail !== email) return;
+      const notes = (data.notes || []).slice().sort((a, b) => {
+        if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1; // pinned first
+        return String(b.createdAt).localeCompare(String(a.createdAt)); // then newest
+      });
+      wrap.innerHTML = `
+        <div class="panel">
+          <div class="panel-head"><h2 id="note-composer-title">${editingNoteId ? 'Edit Note' : 'Add a Note'}</h2></div>
+          <div class="field"><textarea id="note-body" rows="4" placeholder="Meeting notes, reminders, context…"></textarea></div>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+            <input type="text" class="input" id="note-tags" placeholder="Tags (comma-separated)" style="flex:1; min-width:180px;" />
+            <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:var(--muted);">
+              <input type="checkbox" id="note-pinned" style="width:16px;height:16px;accent-color:var(--sky);" /> Pin</label>
+            <button type="button" class="btn btn-primary btn-small" id="note-save-btn">${editingNoteId ? 'Update Note' : 'Save Note'}</button>
+            ${editingNoteId ? '<button type="button" class="btn btn-ghost btn-small" id="note-cancel-edit">Cancel</button>' : ''}
+          </div>
+          <p class="form-error" id="note-error"></p>
+        </div>
+        <div id="notes-list">
+          ${notes.length ? notes.map((n) => `
+            <div class="note-card ${n.pinned ? 'pinned' : ''}">
+              <div class="note-head">
+                <span class="note-meta">${n.pinned ? '📌 ' : ''}${escapeHtml(n.author.split('@')[0])} · ${escapeHtml(fmtDateTime(n.createdAt))}${n.updatedAt ? ' (edited)' : ''}
+                  ${(n.tags || []).map((t) => ` <span class="chip">${escapeHtml(t)}</span>`).join('')}</span>
+                <span style="display:flex;gap:6px;">
+                  <button type="button" class="btn btn-ghost btn-small note-pin-btn" data-id="${escapeHtml(n.id)}" data-pinned="${n.pinned ? '1' : ''}">${n.pinned ? 'Unpin' : 'Pin'}</button>
+                  <button type="button" class="btn btn-ghost btn-small note-edit-btn" data-id="${escapeHtml(n.id)}">Edit</button>
+                  <button type="button" class="btn btn-danger btn-small note-del-btn" data-id="${escapeHtml(n.id)}">Delete</button>
+                </span>
+              </div>
+              <div class="note-body">${escapeHtml(n.body)}</div>
+            </div>`).join('') : '<div class="panel"><p class="empty">No notes yet — the first one is the hardest.</p></div>'}
+        </div>`;
+
+      if (editingNoteId) {
+        const n = notes.find((x) => x.id === editingNoteId);
+        if (n) {
+          document.getElementById('note-body').value = n.body;
+          document.getElementById('note-tags').value = (n.tags || []).join(', ');
+          document.getElementById('note-pinned').checked = !!n.pinned;
+        } else {
+          editingNoteId = null;
+        }
+        const cancelBtn = document.getElementById('note-cancel-edit');
+        if (cancelBtn) cancelBtn.addEventListener('click', () => { editingNoteId = null; renderNotesTab(); });
+      }
+
+      document.getElementById('note-save-btn').addEventListener('click', async () => {
+        const errEl = document.getElementById('note-error');
+        errEl.textContent = '';
+        const payload = {
+          body: document.getElementById('note-body').value,
+          tags: document.getElementById('note-tags').value.split(',').map((t) => t.trim()).filter(Boolean),
+          pinned: document.getElementById('note-pinned').checked,
+        };
+        if (!payload.body.trim()) { errEl.textContent = 'Write something first.'; return; }
+        try {
+          if (editingNoteId) {
+            await api(`/api/admin/notes/${encodeURIComponent(editingNoteId)}`, { method: 'POST', body: JSON.stringify(payload) });
+            editingNoteId = null;
+          } else {
+            await api('/api/admin/notes', { method: 'POST', body: JSON.stringify({ ...payload, client: email }) });
+          }
+          renderNotesTab();
+        } catch (err) {
+          errEl.textContent = err.message;
+        }
+      });
+      wrap.querySelectorAll('.note-pin-btn').forEach((b) =>
+        b.addEventListener('click', async () => {
+          await api(`/api/admin/notes/${encodeURIComponent(b.dataset.id)}`, {
+            method: 'POST', body: JSON.stringify({ pinned: !b.dataset.pinned }),
+          }).catch(() => {});
+          renderNotesTab();
+        })
+      );
+      wrap.querySelectorAll('.note-edit-btn').forEach((b) =>
+        b.addEventListener('click', () => { editingNoteId = b.dataset.id; renderNotesTab(); })
+      );
+      wrap.querySelectorAll('.note-del-btn').forEach((b) =>
+        b.addEventListener('click', async () => {
+          if (!confirm('Delete this note? This cannot be undone.')) return;
+          await api(`/api/admin/notes/${encodeURIComponent(b.dataset.id)}`, { method: 'DELETE' }).catch(() => {});
+          renderNotesTab();
+        })
+      );
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Timeline tab ----------
+
+  const TIMELINE_LABELS = {
+    'account-created': 'Created their portal account',
+    'login': 'Signed in to the portal',
+    'assessment-completed': 'Completed an assessment',
+    'assessment-updated': 'Updated an assessment',
+    'onboarding-completed': 'Completed the onboarding workflow',
+    'agreement-signed': 'Signed the advisory agreement',
+    'assignments-changed': 'Module assignments changed',
+    'task-completed': 'Task completed',
+    'meeting-held': 'Meeting held',
+    'note-added': 'Note added',
+  };
+
+  function timelineLine(e) {
+    const label = TIMELINE_LABELS[e.type] || e.type;
+    const bits = [];
+    if (e.detail && e.detail.module) bits.push(e.detail.module);
+    if (e.detail && e.detail.onboardingId) bits.push(e.detail.onboardingId);
+    if (e.detail && e.detail.title) bits.push(e.detail.title);
+    const by = e.actor && e.actor !== 'client' && e.actor !== 'system' ? ` · by ${e.actor.split('@')[0]}` : '';
+    return `<div class="tl-item">
+      <div class="tl-rail"><div class="tl-dot"></div><div class="tl-line"></div></div>
+      <div class="tl-body">
+        <div class="tl-what">${escapeHtml(label)}${bits.length ? ` <span class="cell-missing">(${escapeHtml(bits.join(', '))})</span>` : ''}</div>
+        <div class="tl-when">${escapeHtml(fmtDateTime(e.ts))}${escapeHtml(by)}</div>
+      </div>
+    </div>`;
+  }
+
+  async function renderTimelineTab() {
+    const wrap = document.getElementById('tab-timeline');
+    const email = selectedEmail;
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const data = await api(`/api/admin/timeline/${encodeURIComponent(email)}`);
+      if (selectedEmail !== email) return;
+      const entries = data.entries || [];
+      wrap.innerHTML = `<div class="panel">
+        <div class="panel-head"><h2>Client Timeline</h2></div>
+        <p class="hint">Every recorded touchpoint: logins, assessments, onboarding milestones, notes, tasks, and meetings. Newest first.</p>
+        ${entries.length ? entries.map(timelineLine).join('') : '<p class="empty">Nothing recorded yet. Events appear here as the client uses the portal and you work with them.</p>'}
+        ${data.hasMore ? `<div style="text-align:center;margin-top:10px;"><button type="button" class="btn btn-ghost btn-small" id="tl-more" data-cursor="${escapeHtml(data.cursor)}">Load older</button></div>` : ''}
+      </div>`;
+      const more = document.getElementById('tl-more');
+      if (more) {
+        more.addEventListener('click', async () => {
+          const next = await api(`/api/admin/timeline/${encodeURIComponent(email)}?cursor=${encodeURIComponent(more.dataset.cursor)}`);
+          more.closest('.panel').insertAdjacentHTML('beforeend', (next.entries || []).map(timelineLine).join(''));
+          if (next.hasMore) more.dataset.cursor = next.cursor; else more.remove();
+        });
+      }
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
   }
 
   // ---------- Activity tab (admin audit entries touching this contact) ----------

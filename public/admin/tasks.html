@@ -6,6 +6,14 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Tasks — BlueLine Admin</title>
 <link rel="stylesheet" href="/admin/shared.css" />
+<style>
+  .task-check { width: 18px; height: 18px; accent-color: var(--sky); cursor: pointer; margin-top: 2px; flex-shrink: 0; }
+  .task-done .row-title { text-decoration: line-through; color: var(--muted); }
+  .due-overdue { color: var(--red); font-weight: 650; }
+  .due-today { color: var(--amber); font-weight: 650; }
+  .task-filters-secondary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .task-filters-secondary select, .task-filters-secondary input { min-width: 150px; }
+</style>
 </head>
 <body>
 <div class="shell">
@@ -14,16 +22,367 @@
     <div class="page-head">
       <div>
         <h1>Tasks</h1>
-        <p class="sub">Track follow-ups, reviews, and meetings across every client.</p>
+        <p class="sub">Follow-ups, reviews, and meetings across every client. Tasks are also created
+        automatically when clients complete onboarding steps or assessments.</p>
+      </div>
+      <div class="page-actions">
+        <button type="button" class="btn btn-primary" id="new-task-btn">+ New Task</button>
       </div>
     </div>
+
+    <div class="filter-row" id="task-filters"></div>
+    <div class="task-filters-secondary">
+      <input type="search" class="input" id="task-search" placeholder="Search tasks…" />
+      <select class="input" id="filter-client"><option value="">All clients</option></select>
+      <select class="input" id="filter-assignee"><option value="">All assignees</option></select>
+      <select class="input" id="filter-priority">
+        <option value="">Any priority</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+      <select class="input" id="filter-category">
+        <option value="">Any category</option>
+        <option value="follow-up">Follow-up</option>
+        <option value="review">Review</option>
+        <option value="meeting">Meeting</option>
+        <option value="onboarding">Onboarding</option>
+        <option value="compliance">Compliance</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+
     <div class="panel">
-      <p class="empty">Task management is coming in the next update — follow-ups, due dates,
-      priorities, and automatic tasks when clients complete onboarding or assessments.</p>
+      <p class="panel-status" id="task-status"></p>
+      <div class="row-list" id="task-list"></div>
     </div>
   </main>
 </div>
+
+<!-- Create/edit task modal -->
+<div class="modal-backdrop hidden" id="task-modal-backdrop">
+  <div class="modal">
+    <h2 id="task-modal-title">New Task</h2>
+    <div class="field">
+      <label for="tm-title">Title</label>
+      <input type="text" id="tm-title" required />
+    </div>
+    <div class="field">
+      <label for="tm-description">Description</label>
+      <textarea id="tm-description" rows="3"></textarea>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="tm-client">Client</label>
+        <select id="tm-client"><option value="">— none —</option></select>
+      </div>
+      <div class="field">
+        <label for="tm-assignee">Assigned to</label>
+        <select id="tm-assignee"><option value="">— unassigned —</option></select>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="tm-due">Due</label>
+        <input type="datetime-local" id="tm-due" />
+      </div>
+      <div class="field">
+        <label for="tm-priority">Priority</label>
+        <select id="tm-priority">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label for="tm-category">Category</label>
+      <select id="tm-category">
+        <option value="follow-up">Follow-up</option>
+        <option value="review">Review</option>
+        <option value="meeting">Meeting</option>
+        <option value="onboarding">Onboarding</option>
+        <option value="compliance">Compliance</option>
+        <option value="other" selected>Other</option>
+      </select>
+    </div>
+    <p class="form-error" id="tm-error"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="tm-cancel-btn">Cancel</button>
+      <button type="button" class="btn btn-primary" id="tm-save-btn">Save Task</button>
+    </div>
+  </div>
+</div>
+
 <script src="/admin/shared.js"></script>
-<script>initShell('tasks');</script>
+<script>
+  initShell('tasks');
+
+  let allTasks = [];
+  let allContacts = [];
+  let adminList = [];
+  let quickFilter = 'my-open';
+  let searchText = '';
+  let editingTaskId = null;
+  const POLL_INTERVAL_MS = 30000;
+
+  const PRIORITY_BADGE = { high: 'badge-red', medium: 'badge-amber', low: 'badge-gray' };
+  const CATEGORY_BADGE = {
+    'follow-up': 'badge-sky', review: 'badge-navy', meeting: 'badge-green',
+    onboarding: 'badge-sky', compliance: 'badge-red', other: 'badge-gray',
+  };
+
+  function contactName(email) {
+    const c = allContacts.find((x) => x.email === email);
+    return (c && c.name) || email;
+  }
+
+  function isSameLocalDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+
+  function dueInfo(task) {
+    if (!task.due) return { html: '<span class="cell-missing">no due date</span>', overdue: false, today: false, thisWeek: false };
+    const d = new Date(task.due);
+    if (isNaN(d)) return { html: '<span class="cell-missing">no due date</span>', overdue: false, today: false, thisWeek: false };
+    const now = new Date();
+    const overdue = d < now && task.status === 'open' && !isSameLocalDay(d, now);
+    const today = isSameLocalDay(d, now);
+    const thisWeek = d >= now && d - now < 7 * 86400e3;
+    const cls = overdue ? 'due-overdue' : today ? 'due-today' : '';
+    const label = today ? `Today ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return { html: `<span class="${cls}">${overdue ? 'Overdue · ' : ''}${escapeHtml(label)}</span>`, overdue, today, thisWeek };
+  }
+
+  const QUICK_FILTERS = [
+    { id: 'my-open', label: 'My Tasks' },
+    { id: 'open', label: 'All Open' },
+    { id: 'today', label: 'Due Today' },
+    { id: 'week', label: 'This Week' },
+    { id: 'overdue', label: 'Overdue' },
+    { id: 'done', label: 'Completed' },
+  ];
+
+  function taskPassesQuickFilter(t) {
+    const d = dueInfo(t);
+    switch (quickFilter) {
+      case 'my-open': return t.status === 'open' && (t.assignee === SESSION.email || !t.assignee);
+      case 'open': return t.status === 'open';
+      case 'today': return t.status === 'open' && d.today;
+      case 'week': return t.status === 'open' && (d.today || d.thisWeek);
+      case 'overdue': return t.status === 'open' && d.overdue;
+      case 'done': return t.status === 'done';
+      default: return true;
+    }
+  }
+
+  function renderQuickFilters() {
+    const counts = {};
+    QUICK_FILTERS.forEach((f) => {
+      const saved = quickFilter;
+      quickFilter = f.id;
+      counts[f.id] = allTasks.filter(taskPassesQuickFilter).length;
+      quickFilter = saved;
+    });
+    const wrap = document.getElementById('task-filters');
+    wrap.innerHTML = QUICK_FILTERS
+      .map((f) => `<button type="button" class="filter-pill ${quickFilter === f.id ? 'active' : ''}" data-f="${f.id}">${f.label} (${counts[f.id]})</button>`)
+      .join('');
+    wrap.querySelectorAll('.filter-pill').forEach((b) =>
+      b.addEventListener('click', () => { quickFilter = b.dataset.f; renderQuickFilters(); renderTasks(); })
+    );
+  }
+
+  function renderTasks() {
+    const list = document.getElementById('task-list');
+    const q = searchText.trim().toLowerCase();
+    const fClient = document.getElementById('filter-client').value;
+    const fAssignee = document.getElementById('filter-assignee').value;
+    const fPriority = document.getElementById('filter-priority').value;
+    const fCategory = document.getElementById('filter-category').value;
+
+    let items = allTasks.filter(taskPassesQuickFilter)
+      .filter((t) => !fClient || t.client === fClient)
+      .filter((t) => !fAssignee || t.assignee === fAssignee)
+      .filter((t) => !fPriority || t.priority === fPriority)
+      .filter((t) => !fCategory || t.category === fCategory)
+      .filter((t) => !q || `${t.title} ${t.description} ${t.client}`.toLowerCase().includes(q));
+
+    if (quickFilter === 'done') {
+      items.sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
+    } else {
+      // Open tasks: dated ones first (soonest due first), undated last, then priority.
+      const pRank = { high: 0, medium: 1, low: 2 };
+      items.sort((a, b) => {
+        const ad = a.due ? new Date(a.due).getTime() : Infinity;
+        const bd = b.due ? new Date(b.due).getTime() : Infinity;
+        if (ad !== bd) return ad - bd;
+        return (pRank[a.priority] ?? 1) - (pRank[b.priority] ?? 1);
+      });
+    }
+
+    list.innerHTML = items.length
+      ? items.map((t) => {
+          const d = dueInfo(t);
+          const clientBit = t.client
+            ? ` · <a href="/admin/contacts.html?c=${encodeURIComponent(t.client)}">${escapeHtml(contactName(t.client))}</a>`
+            : '';
+          const assigneeBit = t.assignee ? escapeHtml(t.assignee.split('@')[0]) : 'unassigned';
+          const autoBit = t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : '';
+          return `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
+            <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark complete'}" />
+            <div class="row-main">
+              <div class="row-title">${escapeHtml(t.title)}${autoBit}</div>
+              <div class="row-sub">${d.html}${clientBit} · ${assigneeBit}${t.description ? `<br>${escapeHtml(t.description)}` : ''}</div>
+            </div>
+            <div class="row-side">
+              <span class="badge ${CATEGORY_BADGE[t.category] || 'badge-gray'}">${escapeHtml(t.category)}</span>
+              <span class="badge ${PRIORITY_BADGE[t.priority] || 'badge-gray'}">${escapeHtml(t.priority)}</span>
+              <button type="button" class="btn btn-ghost btn-small task-edit-btn" data-id="${escapeHtml(t.id)}">Edit</button>
+              <button type="button" class="btn btn-danger btn-small task-del-btn" data-id="${escapeHtml(t.id)}">Delete</button>
+            </div>
+          </div>`;
+        }).join('')
+      : '<p class="empty">Nothing here. Enjoy the quiet, or create a task.</p>';
+
+    list.querySelectorAll('.task-check').forEach((cb) =>
+      cb.addEventListener('change', () => toggleTask(cb.dataset.id, cb.checked))
+    );
+    list.querySelectorAll('.task-edit-btn').forEach((b) =>
+      b.addEventListener('click', () => openTaskModal(allTasks.find((t) => t.id === b.dataset.id)))
+    );
+    list.querySelectorAll('.task-del-btn').forEach((b) =>
+      b.addEventListener('click', () => deleteTask(b.dataset.id))
+    );
+  }
+
+  async function toggleTask(id, done) {
+    try {
+      const data = await api(`/api/admin/tasks/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        body: JSON.stringify({ status: done ? 'done' : 'open' }),
+      });
+      const i = allTasks.findIndex((t) => t.id === id);
+      if (i >= 0) allTasks[i] = data.task;
+      renderQuickFilters();
+      renderTasks();
+    } catch (err) {
+      document.getElementById('task-status').textContent = `Update failed: ${err.message}`;
+    }
+  }
+
+  async function deleteTask(id) {
+    const t = allTasks.find((x) => x.id === id);
+    if (!confirm(`Delete task "${t ? t.title : id}"? This cannot be undone.`)) return;
+    try {
+      await api(`/api/admin/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      allTasks = allTasks.filter((x) => x.id !== id);
+      renderQuickFilters();
+      renderTasks();
+    } catch (err) {
+      document.getElementById('task-status').textContent = `Delete failed: ${err.message}`;
+    }
+  }
+
+  // ---------- Modal ----------
+
+  function fillSelect(id, options, current) {
+    const sel = document.getElementById(id);
+    const first = sel.querySelector('option').outerHTML;
+    sel.innerHTML = first + options.map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`).join('');
+    sel.value = current || '';
+  }
+
+  function openTaskModal(task) {
+    editingTaskId = task ? task.id : null;
+    document.getElementById('task-modal-title').textContent = task ? 'Edit Task' : 'New Task';
+    document.getElementById('tm-title').value = task ? task.title : '';
+    document.getElementById('tm-description').value = task ? task.description || '' : '';
+    fillSelect('tm-client', allContacts.map((c) => ({ value: c.email, label: `${c.name || c.email}` })), task && task.client);
+    fillSelect('tm-assignee', adminList.map((a) => ({ value: a, label: a })), task && task.assignee);
+    document.getElementById('tm-due').value = task && task.due ? task.due.slice(0, 16) : '';
+    document.getElementById('tm-priority').value = task ? task.priority : 'medium';
+    document.getElementById('tm-category').value = task ? task.category : 'other';
+    document.getElementById('tm-error').textContent = '';
+    document.getElementById('task-modal-backdrop').classList.remove('hidden');
+    document.getElementById('tm-title').focus();
+  }
+
+  function closeTaskModal() {
+    document.getElementById('task-modal-backdrop').classList.add('hidden');
+  }
+
+  document.getElementById('new-task-btn').addEventListener('click', () => openTaskModal(null));
+  document.getElementById('tm-cancel-btn').addEventListener('click', closeTaskModal);
+  document.getElementById('task-modal-backdrop').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeTaskModal();
+  });
+
+  document.getElementById('tm-save-btn').addEventListener('click', async () => {
+    const errEl = document.getElementById('tm-error');
+    errEl.textContent = '';
+    const payload = {
+      title: document.getElementById('tm-title').value,
+      description: document.getElementById('tm-description').value,
+      client: document.getElementById('tm-client').value,
+      assignee: document.getElementById('tm-assignee').value,
+      due: document.getElementById('tm-due').value,
+      priority: document.getElementById('tm-priority').value,
+      category: document.getElementById('tm-category').value,
+    };
+    if (!payload.title.trim()) { errEl.textContent = 'Title is required.'; return; }
+    try {
+      if (editingTaskId) {
+        const data = await api(`/api/admin/tasks/${encodeURIComponent(editingTaskId)}`, {
+          method: 'POST', body: JSON.stringify(payload),
+        });
+        const i = allTasks.findIndex((t) => t.id === editingTaskId);
+        if (i >= 0) allTasks[i] = data.task;
+      } else {
+        const data = await api('/api/admin/tasks', { method: 'POST', body: JSON.stringify(payload) });
+        allTasks.unshift(data.task);
+      }
+      closeTaskModal();
+      renderQuickFilters();
+      renderTasks();
+    } catch (err) {
+      errEl.textContent = err.message;
+    }
+  });
+
+  // ---------- Boot ----------
+
+  ['filter-client', 'filter-assignee', 'filter-priority', 'filter-category'].forEach((id) =>
+    document.getElementById(id).addEventListener('change', renderTasks)
+  );
+  document.getElementById('task-search').addEventListener('input', (e) => {
+    searchText = e.target.value;
+    renderTasks();
+  });
+
+  async function loadData() {
+    try {
+      const [taskData, contactData] = await Promise.all([
+        api('/api/admin/tasks'),
+        api('/api/admin/contacts'),
+      ]);
+      allTasks = taskData.tasks || [];
+      allContacts = (contactData.contacts || []).sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
+      adminList = contactData.admins || [];
+      fillSelect('filter-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), document.getElementById('filter-client').value);
+      fillSelect('filter-assignee', adminList.map((a) => ({ value: a, label: a.split('@')[0] })), document.getElementById('filter-assignee').value);
+      if (taskData.decryptErrors) {
+        document.getElementById('task-status').textContent = `Warning: ${taskData.decryptErrors} task(s) could not be decrypted.`;
+      }
+      renderQuickFilters();
+      renderTasks();
+    } catch (err) {
+      document.getElementById('task-status').textContent = `Failed to load: ${err.message}`;
+    }
+  }
+
+  setInterval(loadData, POLL_INTERVAL_MS);
+  loadData();
+</script>
 </body>
 </html>

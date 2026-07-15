@@ -235,6 +235,7 @@ async function handleRegister(request, env, cors) {
   const token = randomHex(32);
   await env.PORTAL_KV.put(`session:${token}`, normalizedEmail, { expirationTtl: SESSION_TTL_SECONDS });
 
+  await logTimeline(env, normalizedEmail, 'account-created', 'client', null);
   return json({ token, name, email: normalizedEmail }, 201, cors);
 }
 
@@ -266,6 +267,7 @@ async function handleLogin(request, env, cors) {
   const token = randomHex(32);
   await env.PORTAL_KV.put(`session:${token}`, normalizedEmail, { expirationTtl: SESSION_TTL_SECONDS });
 
+  await logTimeline(env, normalizedEmail, 'login', 'client', null);
   return json({ token, name: user.name, email: normalizedEmail }, 200, cors);
 }
 
@@ -1406,9 +1408,24 @@ async function handleSaveAssessment(request, env, cors, moduleName) {
 
   const raw = await env.PORTAL_KV.get(`responses:${email}`);
   const modules = await loadModules(env, raw);
+  const firstCompletion = !modules[moduleName];
   modules[moduleName] = { ...result.data, updatedAt: new Date().toISOString() };
 
   await env.PORTAL_KV.put(`responses:${email}`, await encryptJSON(env, { modules }));
+
+  // CRM history + automation: record the event, and the FIRST completion of a
+  // module opens a review task for the advisor (deduped by marker, so
+  // re-saves/edits never pile up duplicates).
+  await logTimeline(env, email, firstCompletion ? 'assessment-completed' : 'assessment-updated', 'client', {
+    module: moduleName,
+  });
+  if (firstCompletion) {
+    await maybeAutoTask(env, `review-assessment-${moduleName}`, email, {
+      title: `Review ${moduleName} assessment - ${email}`,
+      description: `The client completed the ${moduleName} assessment. Review their responses.`,
+      category: 'review',
+    });
+  }
   return json({ module: modules[moduleName], modules }, 200, cors);
 }
 
@@ -1458,6 +1475,7 @@ async function handleAdminSetAssignments(request, env, cors, rawEmail) {
 
   await env.PORTAL_KV.put(`assignments:${email}`, JSON.stringify(clean));
   await logAudit(env, adminEmail, 'set-assignments', { client: email, assignments: clean });
+  await logTimeline(env, email, 'assignments-changed', adminEmail, { count: clean.length });
   return json({ assignments: clean }, 200, cors);
 }
 
@@ -1546,6 +1564,33 @@ async function handleOnboardingSave(request, env, cors, onboardingId) {
     updatedAt: new Date().toISOString(),
   };
   await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
+
+  // CRM history + automation on state transitions (not on every save). The
+  // client identity comes from the wizard's own profile/consent emails; when
+  // neither is present yet there is nobody to attach history to, so skip.
+  const d = record.data || {};
+  const clientEmail = String(((d.profile && d.profile.email) || (d.consent && d.consent.email) || '')).trim().toLowerCase();
+  if (isValidEmail(clientEmail)) {
+    const justCompleted = record.completionTime && !existing.completionTime;
+    const prevSigned = !!(existing.data && existing.data.agreement && existing.data.agreement.signatureDataUrl);
+    const nowSigned = !!(d.agreement && d.agreement.signatureDataUrl);
+    if (justCompleted) {
+      await logTimeline(env, clientEmail, 'onboarding-completed', 'client', { onboardingId });
+      await maybeAutoTask(env, `review-onboarding-${onboardingId}`, clientEmail, {
+        title: `Review completed onboarding ${onboardingId}`,
+        description: `${clientEmail} finished the onboarding workflow. Review the submission.`,
+        category: 'onboarding',
+      });
+    }
+    if (nowSigned && !prevSigned) {
+      await logTimeline(env, clientEmail, 'agreement-signed', 'client', { onboardingId });
+      await maybeAutoTask(env, `open-account-${onboardingId}`, clientEmail, {
+        title: `Open account - agreement signed (${onboardingId})`,
+        description: `${clientEmail} signed the advisory agreement. Begin account opening.`,
+        category: 'onboarding',
+      });
+    }
+  }
   return json({ ok: true, updatedAt: record.updatedAt }, 200, cors);
 }
 
@@ -1788,6 +1833,285 @@ async function handleAdminUpsertContact(request, env, cors, targetEmail) {
   return json({ contact: record }, 200, cors);
 }
 
+// ---------- Advisor CRM: timeline, tasks, notes ----------
+// Timeline entries are the client relationship history (kept forever, keyed
+// per client); each write is mirrored to a global activity: feed (13-month TTL
+// like audit) that powers the dashboard and notifications. Tasks and notes are
+// first-class records. All payloads are encrypted at rest like assessment data.
+
+const TASK_PRIORITIES = ['low', 'medium', 'high'];
+const TASK_CATEGORIES = ['follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other'];
+
+function invTs(now = Date.now()) {
+  return String(AUDIT_TS_CEILING - now).padStart(14, '0');
+}
+
+// Record a client-history event. Dual-write: per-client timeline (permanent)
+// + global activity feed (expiring). Best-effort like logAudit — a telemetry
+// failure must never break the request that triggered it.
+async function logTimeline(env, client, type, actor, detail) {
+  try {
+    const email = String(client || '').trim().toLowerCase();
+    if (!isValidEmail(email)) return;
+    const entry = {
+      ts: new Date().toISOString(),
+      client: email,
+      type,
+      actor: actor || 'system',
+      detail: detail == null ? null : detail,
+    };
+    const suffix = `${invTs()}-${randomHex(4)}`;
+    const encrypted = await encryptJSON(env, entry);
+    await env.PORTAL_KV.put(`timeline:${email}:${suffix}`, encrypted);
+    await env.PORTAL_KV.put(`activity:${suffix}`, encrypted, { expirationTtl: AUDIT_TTL_SECONDS });
+  } catch {
+    // swallow — history is best-effort
+  }
+}
+
+async function createTask(env, fields) {
+  const id = `${invTs()}-${randomHex(4)}`;
+  const task = {
+    id,
+    title: String(fields.title || '').trim().slice(0, 200),
+    description: String(fields.description || '').trim().slice(0, 2000),
+    client: fields.client || '',
+    assignee: fields.assignee || '',
+    due: fields.due || '',
+    priority: TASK_PRIORITIES.includes(fields.priority) ? fields.priority : 'medium',
+    category: TASK_CATEGORIES.includes(fields.category) ? fields.category : 'other',
+    status: 'open',
+    createdBy: fields.createdBy || 'system',
+    createdAt: new Date().toISOString(),
+    completedAt: null,
+  };
+  await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
+  return task;
+}
+
+// Fire an automatic task exactly once per rule occurrence: a plain marker key
+// records that the rule already ran, so replays (re-saves, retries) don't pile
+// up duplicate tasks. Assignee defaults to the contact's primary advisor.
+async function maybeAutoTask(env, rule, client, fields) {
+  try {
+    const marker = `autotask:${rule}:${client}`;
+    if (await env.PORTAL_KV.get(marker)) return;
+    await env.PORTAL_KV.put(marker, '1');
+    let assignee = '';
+    try {
+      const contact = await decryptToObject(env, await env.PORTAL_KV.get(`contact:${client}`));
+      if (contact && contact.advisor) assignee = contact.advisor;
+    } catch {}
+    await createTask(env, { ...fields, client, assignee, createdBy: 'auto' });
+  } catch {
+    // swallow — automation is best-effort
+  }
+}
+
+// Decrypt every record under a prefix, skipping (but counting) broken entries
+// so one corrupt record can't blank a whole listing.
+async function readAllEncrypted(env, prefix) {
+  const items = [];
+  let errors = 0;
+  for (const keyName of await listKeys(env, prefix)) {
+    try {
+      const rec = await decryptToObject(env, await env.PORTAL_KV.get(keyName));
+      if (rec) items.push(rec);
+    } catch {
+      errors++;
+    }
+  }
+  return { items, errors };
+}
+
+async function handleAdminListTasks(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const { items, errors } = await readAllEncrypted(env, 'task:');
+  return json({ tasks: items, decryptErrors: errors }, 200, cors);
+}
+
+function sanitizeTaskFields(body) {
+  const out = {};
+  if (body.title !== undefined) {
+    const t = String(body.title || '').trim();
+    if (!t) return { error: 'Title is required' };
+    out.title = t.slice(0, 200);
+  }
+  if (body.description !== undefined) out.description = String(body.description || '').trim().slice(0, 2000);
+  if (body.client !== undefined) {
+    const c = String(body.client || '').trim().toLowerCase();
+    if (c && !isValidEmail(c)) return { error: 'Client must be an email address' };
+    out.client = c;
+  }
+  if (body.assignee !== undefined) {
+    const a = String(body.assignee || '').trim().toLowerCase();
+    if (a && !ADMIN_ACCOUNTS.some((acc) => acc.email === a)) return { error: 'Assignee must be an admin account' };
+    out.assignee = a;
+  }
+  if (body.due !== undefined) out.due = String(body.due || '').trim().slice(0, 40);
+  if (body.priority !== undefined) {
+    if (!TASK_PRIORITIES.includes(body.priority)) return { error: 'Invalid priority' };
+    out.priority = body.priority;
+  }
+  if (body.category !== undefined) {
+    if (!TASK_CATEGORIES.includes(body.category)) return { error: 'Invalid category' };
+    out.category = body.category;
+  }
+  if (body.status !== undefined) {
+    if (!['open', 'done'].includes(body.status)) return { error: 'Invalid status' };
+    out.status = body.status;
+  }
+  return { fields: out };
+}
+
+async function handleAdminCreateTask(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  if (!body.title || !String(body.title).trim()) return json({ error: 'Title is required' }, 400, cors);
+  const { fields, error } = sanitizeTaskFields(body);
+  if (error) return json({ error }, 400, cors);
+  const task = await createTask(env, { ...fields, createdBy: adminEmail });
+  return json({ task }, 200, cors);
+}
+
+async function handleAdminUpdateTask(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`task:${id}`);
+  if (!raw) return json({ error: 'Task not found' }, 404, cors);
+  const task = await decryptToObject(env, raw);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const { fields, error } = sanitizeTaskFields(body);
+  if (error) return json({ error }, 400, cors);
+
+  const wasOpen = task.status === 'open';
+  Object.assign(task, fields);
+  if (wasOpen && task.status === 'done') {
+    task.completedAt = new Date().toISOString();
+    if (task.client) {
+      await logTimeline(env, task.client, task.category === 'meeting' ? 'meeting-held' : 'task-completed',
+        adminEmail, { title: task.title });
+    }
+  }
+  if (!wasOpen && task.status === 'open') task.completedAt = null; // reopened
+  await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
+  return json({ task }, 200, cors);
+}
+
+async function handleAdminDeleteTask(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  await env.PORTAL_KV.delete(`task:${id}`);
+  return json({ ok: true }, 200, cors);
+}
+
+// ---------- Notes ----------
+
+async function handleAdminListNotes(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const client = new URL(request.url).searchParams.get('client');
+  const prefix = client ? `note:${String(client).trim().toLowerCase()}:` : 'note:';
+  const { items, errors } = await readAllEncrypted(env, prefix);
+  return json({ notes: items, decryptErrors: errors }, 200, cors);
+}
+
+async function handleAdminCreateNote(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const client = String(body.client || '').trim().toLowerCase();
+  if (!isValidEmail(client)) return json({ error: 'A valid client email is required' }, 400, cors);
+  const text = String(body.body || '').trim();
+  if (!text) return json({ error: 'Note text is required' }, 400, cors);
+
+  const id = `${client}:${invTs()}-${randomHex(4)}`;
+  const note = {
+    id,
+    client,
+    author: adminEmail,
+    body: text.slice(0, 10000),
+    tags: Array.isArray(body.tags)
+      ? body.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim().slice(0, 40)).slice(0, 20)
+      : [],
+    pinned: !!body.pinned,
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+  };
+  await env.PORTAL_KV.put(`note:${id}`, await encryptJSON(env, note));
+  await logTimeline(env, client, 'note-added', adminEmail, null);
+  return json({ note }, 200, cors);
+}
+
+async function handleAdminUpdateNote(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`note:${id}`);
+  if (!raw) return json({ error: 'Note not found' }, 404, cors);
+  const note = await decryptToObject(env, raw);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  if (body.body !== undefined) {
+    const text = String(body.body || '').trim();
+    if (!text) return json({ error: 'Note text is required' }, 400, cors);
+    note.body = text.slice(0, 10000);
+  }
+  if (body.tags !== undefined && Array.isArray(body.tags)) {
+    note.tags = body.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim().slice(0, 40)).slice(0, 20);
+  }
+  if (body.pinned !== undefined) note.pinned = !!body.pinned;
+  note.updatedAt = new Date().toISOString();
+  await env.PORTAL_KV.put(`note:${id}`, await encryptJSON(env, note));
+  return json({ note }, 200, cors);
+}
+
+async function handleAdminDeleteNote(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  await env.PORTAL_KV.delete(`note:${id}`);
+  return json({ ok: true }, 200, cors);
+}
+
+// ---------- Timeline / activity reads ----------
+
+// Bounded newest-first page over an inverted-timestamp prefix (audit-log style).
+async function pagedEncryptedList(env, prefix, cursorParam, pageSize) {
+  const listOpts = { prefix, limit: pageSize };
+  if (cursorParam) listOpts.cursor = cursorParam;
+  const page = await env.PORTAL_KV.list(listOpts);
+  const entries = [];
+  for (const key of page.keys) {
+    try {
+      const rec = await decryptToObject(env, await env.PORTAL_KV.get(key.name));
+      if (rec) entries.push(rec);
+    } catch {}
+  }
+  return { entries, hasMore: !page.list_complete, cursor: page.list_complete ? null : page.cursor };
+}
+
+async function handleAdminTimeline(request, env, cors, rawEmail) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const email = String(rawEmail || '').trim().toLowerCase();
+  if (!isValidEmail(email)) return json({ error: 'Invalid client email' }, 400, cors);
+  const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
+  const result = await pagedEncryptedList(env, `timeline:${email}:`, cursor, 50);
+  return json(result, 200, cors);
+}
+
+async function handleAdminActivity(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
+  const result = await pagedEncryptedList(env, 'activity:', cursor, 30);
+  return json(result, 200, cors);
+}
+
 async function handleAdminClients(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -1881,6 +2205,39 @@ export default {
       const contactMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)$/);
       if (contactMatch && request.method === 'POST') {
         return await handleAdminUpsertContact(request, env, cors, decodeURIComponent(contactMatch[1]));
+      }
+      if (url.pathname === '/api/admin/tasks' && request.method === 'GET') {
+        return await handleAdminListTasks(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/tasks' && request.method === 'POST') {
+        return await handleAdminCreateTask(request, env, cors);
+      }
+      const taskMatch = url.pathname.match(/^\/api\/admin\/tasks\/(.+)$/);
+      if (taskMatch && request.method === 'POST') {
+        return await handleAdminUpdateTask(request, env, cors, decodeURIComponent(taskMatch[1]));
+      }
+      if (taskMatch && request.method === 'DELETE') {
+        return await handleAdminDeleteTask(request, env, cors, decodeURIComponent(taskMatch[1]));
+      }
+      if (url.pathname === '/api/admin/notes' && request.method === 'GET') {
+        return await handleAdminListNotes(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/notes' && request.method === 'POST') {
+        return await handleAdminCreateNote(request, env, cors);
+      }
+      const noteMatch = url.pathname.match(/^\/api\/admin\/notes\/(.+)$/);
+      if (noteMatch && request.method === 'POST') {
+        return await handleAdminUpdateNote(request, env, cors, decodeURIComponent(noteMatch[1]));
+      }
+      if (noteMatch && request.method === 'DELETE') {
+        return await handleAdminDeleteNote(request, env, cors, decodeURIComponent(noteMatch[1]));
+      }
+      const timelineMatch = url.pathname.match(/^\/api\/admin\/timeline\/(.+)$/);
+      if (timelineMatch && request.method === 'GET') {
+        return await handleAdminTimeline(request, env, cors, decodeURIComponent(timelineMatch[1]));
+      }
+      if (url.pathname === '/api/admin/activity' && request.method === 'GET') {
+        return await handleAdminActivity(request, env, cors);
       }
       const resetMfaMatch = url.pathname.match(/^\/api\/admin\/mfa\/reset\/(.+)$/);
       if (resetMfaMatch && request.method === 'POST') {

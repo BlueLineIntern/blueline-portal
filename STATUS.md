@@ -222,6 +222,62 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   and now also mirrors the audit writes + `/api/admin/audit` in memory so the
   viewer is exercisable locally.)
 
+## Advisor CRM (multi-page admin app under /admin/)
+The admin side is now a Wealthbox-inspired CRM. `admin.html` = login + MFA only
+(redirects into `/admin/` on success); pages share `admin/shared.css` (modern
+sans-serif design tokens, sidebar shell) + `admin/shared.js` (session guard,
+authenticated `api()` wrapper, shell injection). Pages: Dashboard, Contacts,
+Tasks, Onboarding, Settings (audit log + admin accounts). Client portal is
+untouched and keeps its own look.
+
+- **Contacts** (`contact:<email>` KV, **encrypted**): status
+  (prospect/onboarding/active/inactive), household label, primary advisor (must
+  be an admin), phone, tags, important dates. Contacts exist independently of
+  portal accounts (prospects). `GET /api/admin/contacts` = one merged boot
+  payload (contact records + `user:` accounts with modules/assignments;
+  account-only entries default to `active`); `POST /api/admin/contacts/:email`
+  upserts (partial), audit-logged as `update-contact`. UI: filter pills with
+  counts, search, New/Edit Contact modal, tabbed profile (Overview, Assessments
+  incl. assignment editor, Tasks, Notes, Timeline, Documents = signed
+  agreements from linked onboardings, Activity Log = audit entries for this
+  contact).
+- **Tasks** (`task:<invTs>-<rand>` KV, **encrypted**): title, description,
+  client, assignee (admin), due, priority (low/medium/high), category
+  (follow-up/review/meeting/onboarding/compliance/other), status (open/done),
+  createdBy, completedAt. CRUD under `/api/admin/tasks[/:id]`. Completing a
+  task writes a `task-completed` (or `meeting-held` when category=meeting)
+  timeline event. **Meetings are tasks** with category `meeting` — no calendar
+  integration yet. Tasks page: quick filters (My/All Open/Due Today/This
+  Week/Overdue/Completed) + client/assignee/priority/category filters + search
+  + create/edit modal; contact profile has a Tasks tab with quick-add.
+- **Notes** (`note:<client>:<invTs>-<rand>` KV, **encrypted**): body (plain
+  text), tags, pinned, author. CRUD under `/api/admin/notes[/:id]`
+  (`?client=` filter). Creating one writes a `note-added` timeline event.
+  Notes tab on the profile: composer + pinned-first list with pin/edit/delete.
+- **Timeline / activity** (`logTimeline()`): dual-write — per-client
+  `timeline:<email>:<invTs>-<rand>` (kept forever, the relationship record) +
+  global `activity:<invTs>-<rand>` mirror (~13-month TTL) for the dashboard.
+  Both **encrypted**; writes are best-effort (never break the triggering
+  request). Events: account-created, login, assessment-completed/updated,
+  onboarding-completed, agreement-signed, assignments-changed, task-completed,
+  meeting-held, note-added. Reads: `GET /api/admin/timeline/:email` and
+  `GET /api/admin/activity` (bounded newest-first pages + cursor, audit-style
+  inverted-timestamp keys).
+- **Auto-tasks** (`maybeAutoTask()`, dedupe marker `autotask:<rule>:<client>`):
+  first completion of an assessment → "Review <module> assessment"; onboarding
+  completion → "Review completed onboarding <id>"; agreement signature →
+  "Open account - agreement signed (<id>)". Assignee defaults to the contact's
+  primary advisor. Markers make replays (re-saves/retries) a no-op — verified.
+- The dev mock mirrors all endpoints + hooks in memory (`$contacts`, `$tasks`,
+  `$notes`, `$timelineLog`, `$autoTaskMarkers`). Two PS 5.1 gotchas encoded
+  there: `[ordered]@{}` has `.Contains()` not `.ContainsKey()`, and em-dashes
+  inside double-quoted .ps1 strings get mangled into string-terminating smart
+  quotes when the file lacks a BOM — use plain hyphens.
+- Real-worker verification: `worker.js` is exercised in a browser harness
+  (module import + in-memory KV; harness files are gitignored) — CRM records
+  confirmed encrypted at rest, auto-task dedupe confirmed, timeline dual-write
+  confirmed.
+
 ## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
 - Admin has per-person login, sessions, mandatory TOTP MFA (with admin-resets-
   admin recovery), and an audit log with a viewer, but there is no anomaly

@@ -39,6 +39,61 @@ $adminMfa = @{}      # email -> @{ secret; confirmed; backupCodes=@(@{hash;used}
 $adminPending = @{}  # pending token -> email (short-lived between password and 2nd factor)
 $contacts = @{}      # email -> CRM contact record (worker stores these encrypted in KV)
 $contactStatuses = @('prospect', 'onboarding', 'active', 'inactive')
+$tasks = @{}   # id -> task record (listings sort by createdAt, so plain hashtable is fine)
+$notes = @{}   # id -> note record
+$timelineLog = [System.Collections.ArrayList]::new()  # client history entries (also the activity feed)
+$autoTaskMarkers = @{}  # rule:client -> fired
+$script:crmCounter = 0
+$taskPriorities = @('low', 'medium', 'high')
+$taskCategories = @('follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other')
+
+# Mirror worker.js logTimeline: one entry serves both the per-client timeline
+# and the global activity feed in the mock.
+function Write-Timeline($client, $type, $actor, $detail) {
+    if (-not $client) { return }
+    $null = $timelineLog.Add([ordered]@{
+        ts     = (Get-Date).ToString('o')
+        client = ([string]$client).ToLower()
+        type   = $type
+        actor  = if ($actor) { $actor } else { 'system' }
+        detail = $detail
+    })
+}
+
+function New-MockTask($fields) {
+    $script:crmCounter++
+    $id = 'task-{0:d6}' -f $script:crmCounter
+    $task = [ordered]@{
+        id = $id
+        title = [string]$fields.title
+        description = [string]$fields.description
+        client = [string]$fields.client
+        assignee = [string]$fields.assignee
+        due = [string]$fields.due
+        priority = if ($taskPriorities -contains $fields.priority) { $fields.priority } else { 'medium' }
+        category = if ($taskCategories -contains $fields.category) { $fields.category } else { 'other' }
+        status = 'open'
+        createdBy = if ($fields.createdBy) { $fields.createdBy } else { 'system' }
+        createdAt = (Get-Date).ToString('o')
+        completedAt = $null
+    }
+    $tasks[$id] = $task
+    return $task
+}
+
+# Mirror worker.js maybeAutoTask: fire each rule once per client.
+function Invoke-AutoTask($rule, $client, $fields) {
+    $marker = "${rule}:${client}"
+    if ($autoTaskMarkers.ContainsKey($marker)) { return }
+    $autoTaskMarkers[$marker] = $true
+    $assignee = ''
+    if ($contacts.ContainsKey($client) -and $contacts[$client].advisor) { $assignee = $contacts[$client].advisor }
+    $f = @{} + $fields
+    $f.client = $client
+    $f.assignee = $assignee
+    $f.createdBy = 'auto'
+    $null = New-MockTask $f
+}
 
 # ---- Admin MFA (TOTP) mirror of worker.js. In-memory; no encryption (the real
 # worker encrypts the secret at rest). Algorithm validated vs RFC 6238 vectors. ----
@@ -462,6 +517,7 @@ while ($listener.IsListening) {
             $users[$body.email] = @{ name = $body.name; email = $body.email; password = $body.password }
             $token = New-Token
             $sessions[$token] = $body.email
+            Write-Timeline $body.email 'account-created' 'client' $null
             Send-Json $ctx 201 @{ token = $token; name = $body.name; email = $body.email }
         }
         elseif ($path -eq '/api/login' -and $method -eq 'POST') {
@@ -471,6 +527,7 @@ while ($listener.IsListening) {
             if (-not $u -or $u.password -ne $body.password) { Send-Json $ctx 401 @{ error = 'Invalid email or password' }; continue }
             $token = New-Token
             $sessions[$token] = $body.email
+            Write-Timeline $body.email 'login' 'client' $null
             Send-Json $ctx 200 @{ token = $token; name = $u.name; email = $u.email }
         }
         elseif ($path -eq '/api/logout' -and $method -eq 'POST') {
@@ -528,6 +585,116 @@ while ($listener.IsListening) {
             $mfaMethod = if ($usedBackup) { 'backup-code' } else { 'totp' }
             Write-Audit $email 'login' @{ mfa = $mfaMethod }
             Send-Json $ctx 200 @{ token = $token; email = $email; usedBackup = $usedBackup }
+        }
+        elseif ($path -eq '/api/admin/tasks' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $sorted = @($tasks.Values | Sort-Object -Property createdAt -Descending)
+            Send-Json $ctx 200 @{ tasks = $sorted; decryptErrors = 0 }
+        }
+        elseif ($path -eq '/api/admin/tasks' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body -or -not [string]$body.title) { Send-Json $ctx 400 @{ error = 'Title is required' }; continue }
+            if ($body.PSObject.Properties['priority'] -and $taskPriorities -notcontains [string]$body.priority) { Send-Json $ctx 400 @{ error = 'Invalid priority' }; continue }
+            if ($body.PSObject.Properties['category'] -and $taskCategories -notcontains [string]$body.category) { Send-Json $ctx 400 @{ error = 'Invalid category' }; continue }
+            if ($body.PSObject.Properties['assignee'] -and [string]$body.assignee -and -not $adminPasswords.ContainsKey(([string]$body.assignee).Trim().ToLower())) {
+                Send-Json $ctx 400 @{ error = 'Assignee must be an admin account' }; continue
+            }
+            $task = New-MockTask @{
+                title = [string]$body.title; description = [string]$body.description
+                client = ([string]$body.client).Trim().ToLower(); assignee = ([string]$body.assignee).Trim().ToLower()
+                due = [string]$body.due; priority = [string]$body.priority; category = [string]$body.category
+                createdBy = $adminEmail
+            }
+            Send-Json $ctx 200 @{ task = $task }
+        }
+        elseif ($path -match '^/api/admin/tasks/(.+)$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $id = [Uri]::UnescapeDataString($Matches[1])
+            if (-not $tasks.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Task not found' }; continue }
+            $task = $tasks[$id]
+            $body = Read-Body $ctx
+            if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
+            $wasOpen = $task.status -eq 'open'
+            foreach ($f in @('title', 'description', 'client', 'assignee', 'due', 'priority', 'category', 'status')) {
+                if ($body.PSObject.Properties[$f]) { $task[$f] = [string]$body.$f }
+            }
+            if ($wasOpen -and $task.status -eq 'done') {
+                $task.completedAt = (Get-Date).ToString('o')
+                if ($task.client) {
+                    $evt = if ($task.category -eq 'meeting') { 'meeting-held' } else { 'task-completed' }
+                    Write-Timeline $task.client $evt $adminEmail @{ title = $task.title }
+                }
+            }
+            if ((-not $wasOpen) -and $task.status -eq 'open') { $task.completedAt = $null }
+            Send-Json $ctx 200 @{ task = $task }
+        }
+        elseif ($path -match '^/api/admin/tasks/(.+)$' -and $method -eq 'DELETE') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $tasks.Remove([Uri]::UnescapeDataString($Matches[1]))
+            Send-Json $ctx 200 @{ ok = $true }
+        }
+        elseif ($path -eq '/api/admin/notes' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $clientFilter = $ctx.Request.QueryString['client']
+            $list = @($notes.Values | Where-Object { -not $clientFilter -or $_.client -eq $clientFilter.ToLower() } | Sort-Object -Property createdAt -Descending)
+            Send-Json $ctx 200 @{ notes = $list; decryptErrors = 0 }
+        }
+        elseif ($path -eq '/api/admin/notes' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $body = Read-Body $ctx
+            $client = ([string]$body.client).Trim().ToLower()
+            if ($client -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$') { Send-Json $ctx 400 @{ error = 'A valid client email is required' }; continue }
+            if (-not ([string]$body.body).Trim()) { Send-Json $ctx 400 @{ error = 'Note text is required' }; continue }
+            $script:crmCounter++
+            $id = 'note-{0:d6}' -f $script:crmCounter
+            $note = [ordered]@{
+                id = $id; client = $client; author = $adminEmail
+                body = ([string]$body.body).Trim()
+                tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() })
+                pinned = [bool]$body.pinned
+                createdAt = (Get-Date).ToString('o'); updatedAt = $null
+            }
+            $notes[$id] = $note
+            Write-Timeline $client 'note-added' $adminEmail $null
+            Send-Json $ctx 200 @{ note = $note }
+        }
+        elseif ($path -match '^/api/admin/notes/(.+)$' -and $method -eq 'POST') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $id = [Uri]::UnescapeDataString($Matches[1])
+            if (-not $notes.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Note not found' }; continue }
+            $note = $notes[$id]
+            $body = Read-Body $ctx
+            if ($body.PSObject.Properties['body']) {
+                if (-not ([string]$body.body).Trim()) { Send-Json $ctx 400 @{ error = 'Note text is required' }; continue }
+                $note.body = ([string]$body.body).Trim()
+            }
+            if ($body.PSObject.Properties['tags']) { $note.tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() }) }
+            if ($body.PSObject.Properties['pinned']) { $note.pinned = [bool]$body.pinned }
+            $note.updatedAt = (Get-Date).ToString('o')
+            Send-Json $ctx 200 @{ note = $note }
+        }
+        elseif ($path -match '^/api/admin/notes/(.+)$' -and $method -eq 'DELETE') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $notes.Remove([Uri]::UnescapeDataString($Matches[1]))
+            Send-Json $ctx 200 @{ ok = $true }
+        }
+        elseif ($path -match '^/api/admin/timeline/(.+)$' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $client = [Uri]::UnescapeDataString($Matches[1]).ToLower()
+            $entries = @($timelineLog.ToArray() | Where-Object { $_.client -eq $client })
+            [array]::Reverse($entries)
+            Send-Json $ctx 200 @{ entries = $entries; hasMore = $false; cursor = $null }
+        }
+        elseif ($path -eq '/api/admin/activity' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $entries = @($timelineLog.ToArray())
+            [array]::Reverse($entries)
+            $entries = @($entries | Select-Object -First 30)
+            Send-Json $ctx 200 @{ entries = $entries; hasMore = $false; cursor = $null }
         }
         elseif ($path -eq '/api/admin/contacts' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
@@ -628,7 +795,17 @@ while ($listener.IsListening) {
             if (-not $module) { Send-Json $ctx 404 @{ error = 'Unknown assessment module' }; continue }
             $module['updatedAt'] = (Get-Date).ToString('o')
             if (-not $responses.ContainsKey($email)) { $responses[$email] = @{} }
+            $firstCompletion = -not $responses[$email].ContainsKey($moduleName)
             $responses[$email][$moduleName] = $module
+            $evt = if ($firstCompletion) { 'assessment-completed' } else { 'assessment-updated' }
+            Write-Timeline $email $evt 'client' @{ module = $moduleName }
+            if ($firstCompletion) {
+                Invoke-AutoTask "review-assessment-$moduleName" $email @{
+                    title = "Review $moduleName assessment - $email"
+                    description = "The client completed the $moduleName assessment. Review their responses."
+                    category = 'review'
+                }
+            }
             Send-Json $ctx 200 @{ module = $module; modules = $responses[$email] }
         }
         elseif ($path -eq '/api/assignments' -and $method -eq 'GET') {
@@ -646,6 +823,7 @@ while ($listener.IsListening) {
             if (-not $body -or $null -eq $body.assignments) { Send-Json $ctx 400 @{ error = 'assignments must be an array of module keys' }; continue }
             $assignments[$email] = @($body.assignments)
             Write-Audit $adminEmail 'set-assignments' @{ client = $email; assignments = @($assignments[$email]) }
+            Write-Timeline $email 'assignments-changed' $adminEmail @{ count = @($assignments[$email]).Count }
             Send-Json $ctx 200 @{ assignments = @($assignments[$email]) }
         }
         elseif ($path -eq '/api/onboarding/start' -and $method -eq 'POST') {
@@ -676,10 +854,35 @@ while ($listener.IsListening) {
             if ($rec.deleted) { Send-Json $ctx 410 @{ error = 'This onboarding record has been removed' }; continue }
             $body = Read-Body $ctx
             if (-not $body -or $body.onboardingId -ne $id) { Send-Json $ctx 400 @{ error = 'Body must include a matching onboardingId' }; continue }
+            $prevCompletion = $rec.completionTime
+            $prevSigned = [bool]($rec.data -and $rec.data.agreement -and $rec.data.agreement.signatureDataUrl)
             $rec.completionTime = $body.completionTime
             $rec.currentStep = [int]$body.currentStep
             $rec.data = $body.data
             $rec.updatedAt = (Get-Date).ToString('o')
+            # CRM history + automation on transitions, mirroring worker.js.
+            $clientEmail = ''
+            if ($body.data.profile -and $body.data.profile.email) { $clientEmail = ([string]$body.data.profile.email).Trim().ToLower() }
+            elseif ($body.data.consent -and $body.data.consent.email) { $clientEmail = ([string]$body.data.consent.email).Trim().ToLower() }
+            if ($clientEmail -match '^[^\s@]+@[^\s@]+\.[^\s@]+$') {
+                if ($rec.completionTime -and -not $prevCompletion) {
+                    Write-Timeline $clientEmail 'onboarding-completed' 'client' @{ onboardingId = $id }
+                    Invoke-AutoTask "review-onboarding-$id" $clientEmail @{
+                        title = "Review completed onboarding $id"
+                        description = "$clientEmail finished the onboarding workflow. Review the submission."
+                        category = 'onboarding'
+                    }
+                }
+                $nowSigned = [bool]($body.data.agreement -and $body.data.agreement.signatureDataUrl)
+                if ($nowSigned -and -not $prevSigned) {
+                    Write-Timeline $clientEmail 'agreement-signed' 'client' @{ onboardingId = $id }
+                    Invoke-AutoTask "open-account-$id" $clientEmail @{
+                        title = "Open account - agreement signed ($id)"
+                        description = "$clientEmail signed the advisory agreement. Begin account opening."
+                        category = 'onboarding'
+                    }
+                }
+            }
             Send-Json $ctx 200 @{ ok = $true; updatedAt = $rec.updatedAt }
         }
         elseif ($path -eq '/api/admin/onboarding' -and $method -eq 'GET') {
