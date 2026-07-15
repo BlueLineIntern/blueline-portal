@@ -136,6 +136,21 @@ Clients from that era just see an empty dashboard.
   Closes the "anyone can POST to a guessed sequential id" hole. Frontend stores
   the token in localStorage; local-only fallback (id prefix `L`) still applies if
   `/start` fails (e.g. rate-limited).
+- **Encryption at rest (client responses)**: `responses:<email>` records are
+  encrypted with AES-256-GCM before being written to KV (`encryptJSON` /
+  `decryptToObject` / `getDataKey` in `worker.js`). The key is derived (SHA-256)
+  from the `DATA_ENCRYPTION_KEY` secret; stored envelope is
+  `{v,enc:'aesgcm',iv,ct}` with a fresh random 12-byte IV per record. Reads
+  transparently pass through legacy plaintext records, and a decrypt failure
+  throws (→ 500) rather than returning `{}`, so a bad key never causes a save to
+  silently overwrite good data. If `DATA_ENCRYPTION_KEY` is unset, records are
+  written as plaintext (rollout state) — **set it before real client data**.
+  Validated by a browser round-trip harness (Web Crypto matches the Workers
+  runtime): round-trip, unicode, legacy passthrough, wrong-key/tamper both throw,
+  unique IVs. **Not runnable via `dev-server.ps1`** (mock keeps data in-memory
+  plaintext; encryption is worker-only and the API/frontend contract is
+  unchanged). LIMITATION: key and data share one Cloudflare account, so this
+  defeats a leaked KV export, NOT a Cloudflare-account compromise — MFA covers that.
 - **Soft delete + restore**: admin Delete marks `deleted:true` with a 30-day TTL
   instead of destroying the record; a "Deleted (N)" trash table offers Restore
   (`POST /api/admin/onboarding/:id/restore`). Records auto-purge after the window.
@@ -175,9 +190,12 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   Revoking one person now means rotating only that person's secret (e.g.
   `ADMIN_PASSWORD_JYOUNG`) — as long as the legacy shared `ADMIN_PASSWORD` has
   been deleted from Cloudflare.
-- **No application-level encryption** of client PII beyond Cloudflare's at-rest
-  defaults — a Cloudflare-side compromise or leaked KV read would expose
-  plaintext assessment data. This is now the biggest structural gap.
+- **Encryption scope is partial**: client assessment responses are now
+  AES-256-GCM encrypted at rest (see Security hardening), but `user:` records,
+  `onboarding:` POC records, and the audit log are still plaintext, and the key
+  lives in the same Cloudflare account as the data (so an account compromise
+  still exposes everything). Broadening scope + key isolation is the next lift;
+  the DIY crypto must be blessed by the professional security review.
 - No data retention policy for client-portal PII. (Onboarding POC records now do
   auto-expire when soft-deleted, but active records never age out.)
 - Not code: as an RIA handling client PII, a written information security program

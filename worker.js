@@ -9,7 +9,8 @@
  * KV layout:
  *   user:<email>               -> { name, email, salt, hash, iterations }
  *   session:<token>            -> email                    (TTL'd)
- *   responses:<email>          -> { modules: {...} }
+ *   responses:<email>          -> AES-256-GCM envelope of { modules: {...} }
+ *                                 (see DATA_ENCRYPTION_KEY; legacy plaintext still read)
  *   onboarding:<id>            -> onboarding POC record (sample/test data only)
  *   onboarding_secret:<id>     -> per-session write token  (TTL'd, never returned)
  *   onboarding_counter         -> sequence number for onboarding ids
@@ -32,6 +33,8 @@
  *
  * Admins each sign in with their own password (see ADMIN_ACCOUNTS); set them
  * with: wrangler secret put ADMIN_PASSWORD_FSABIN (and ..._JYOUNG)
+ * Encrypt client responses at rest with: wrangler secret put DATA_ENCRYPTION_KEY
+ *   (a long random string; if lost/changed, encrypted data is unrecoverable)
  * Optionally restrict browser origins with: wrangler secret put ALLOWED_ORIGIN
  *   (comma-separated list; defaults to the Worker's own origin only)
  *
@@ -345,18 +348,107 @@ async function handleAdminLogout(request, env, cors) {
   return json({ ok: true }, 200, cors);
 }
 
+// ---------- Data-at-rest encryption (AES-256-GCM) ----------
+// Sensitive client records (assessment responses) are encrypted before being
+// written to KV, so a leaked KV export is useless without the DATA_ENCRYPTION_KEY
+// secret (set with: wrangler secret put DATA_ENCRYPTION_KEY — use a long random
+// string, e.g. `openssl rand -base64 48`). Stored envelope is self-describing:
+//   { v: 1, enc: 'aesgcm', iv: <base64>, ct: <base64> }
+// so records written before this feature (plain { modules }) still read back.
+//
+// LIMITATION (be honest about it): the key lives in the same Cloudflare account
+// as the data, so this protects against a leaked KV export / stolen read token,
+// NOT against a compromise of the Cloudflare account itself. MFA on the account
+// is the control for that.
+//
+// KEY HANDLING IS CRITICAL: if DATA_ENCRYPTION_KEY is lost or changed after real
+// data is encrypted, that data becomes permanently unreadable. Never rotate it
+// without a re-encryption migration.
+
+// The imported AES key is cached across requests within a warm isolate. Keyed on
+// the secret string so a rotated secret is re-imported rather than reused.
+let cachedDataKey = null;
+let cachedDataKeySource = null;
+
+async function getDataKey(env) {
+  const secret = env.DATA_ENCRYPTION_KEY;
+  if (!secret) return null;
+  if (cachedDataKey && cachedDataKeySource === secret) return cachedDataKey;
+  // Normalize any-length secret to a 256-bit key via SHA-256. The secret is
+  // expected to be high-entropy random material, not a human password.
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
+  const key = await crypto.subtle.importKey('raw', digest, { name: 'AES-GCM' }, false, [
+    'encrypt',
+    'decrypt',
+  ]);
+  cachedDataKey = key;
+  cachedDataKeySource = secret;
+  return key;
+}
+
+function bytesToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+// Serialize an object for storage, encrypting when a key is configured. When no
+// key is set (pre-rollout), stores plaintext so saves don't break — set
+// DATA_ENCRYPTION_KEY before any real client data is entered.
+async function encryptJSON(env, obj) {
+  const plaintext = JSON.stringify(obj);
+  const key = await getDataKey(env);
+  if (!key) return plaintext;
+  const iv = crypto.getRandomValues(new Uint8Array(12)); // fresh IV per record
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    new TextEncoder().encode(plaintext)
+  );
+  return JSON.stringify({ v: 1, enc: 'aesgcm', iv: bytesToBase64(iv), ct: bytesToBase64(ct) });
+}
+
+// Parse a stored string back into an object, transparently decrypting the
+// encrypted envelope and passing legacy plaintext through unchanged. Throws if a
+// record is encrypted but cannot be decrypted (missing/wrong key, tampering) so
+// callers never silently treat undecryptable data as empty and overwrite it.
+async function decryptToObject(env, raw) {
+  if (!raw) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null; // corrupt/legacy junk — matches prior lenient behavior
+  }
+  if (!parsed || parsed.enc !== 'aesgcm') return parsed; // legacy plaintext record
+  const key = await getDataKey(env);
+  if (!key) throw new Error('Encrypted record found but DATA_ENCRYPTION_KEY is not set');
+  const ptBuf = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToBytes(parsed.iv) },
+    key,
+    base64ToBytes(parsed.ct)
+  );
+  return JSON.parse(new TextDecoder().decode(ptBuf));
+}
+
 // ---------- Assessment modules ----------
 
-function loadModules(raw) {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    // Records from the pre-module schema have budget/riskAnswers at the top
-    // level; they were test data and are intentionally not migrated.
-    return parsed && typeof parsed.modules === 'object' ? parsed.modules : {};
-  } catch {
-    return {};
-  }
+// Read the modules map out of a stored responses:<email> string, decrypting as
+// needed. Async because decryption is; throws on decrypt failure (see
+// decryptToObject) rather than returning {} which would risk data loss on save.
+async function loadModules(env, raw) {
+  const rec = await decryptToObject(env, raw);
+  // Records from the pre-module schema have budget/riskAnswers at the top level;
+  // they were test data and are intentionally not migrated.
+  return rec && typeof rec.modules === 'object' ? rec.modules : {};
 }
 
 function num(value, { min = 0, max = Infinity } = {}) {
@@ -1040,7 +1132,7 @@ async function handleGetAssessments(request, env, cors) {
   if (!email) return json({ error: 'Not authenticated' }, 401, cors);
 
   const raw = await env.PORTAL_KV.get(`responses:${email}`);
-  return json({ modules: loadModules(raw) }, 200, cors);
+  return json({ modules: await loadModules(env, raw) }, 200, cors);
 }
 
 async function handleSaveAssessment(request, env, cors, moduleName) {
@@ -1062,10 +1154,10 @@ async function handleSaveAssessment(request, env, cors, moduleName) {
   if (result.error) return json({ error: result.error }, 400, cors);
 
   const raw = await env.PORTAL_KV.get(`responses:${email}`);
-  const modules = loadModules(raw);
+  const modules = await loadModules(env, raw);
   modules[moduleName] = { ...result.data, updatedAt: new Date().toISOString() };
 
-  await env.PORTAL_KV.put(`responses:${email}`, JSON.stringify({ modules }));
+  await env.PORTAL_KV.put(`responses:${email}`, await encryptJSON(env, { modules }));
   return json({ module: modules[moduleName], modules }, 200, cors);
 }
 
@@ -1281,10 +1373,20 @@ async function handleAdminClients(request, env, cors) {
       const assignmentsRaw = await env.PORTAL_KV.get(`assignments:${email}`);
       if (!userRaw) continue;
       const user = JSON.parse(userRaw);
+      // Decrypt per client; a single undecryptable record surfaces as an error
+      // flag on that client rather than failing the whole listing.
+      let modules = {};
+      let modulesError = false;
+      try {
+        modules = await loadModules(env, responsesRaw);
+      } catch {
+        modulesError = true;
+      }
       clients.push({
         name: user.name,
         email: user.email,
-        modules: loadModules(responsesRaw),
+        modules,
+        modulesError,
         assignments: loadAssignments(assignmentsRaw),
       });
     }
