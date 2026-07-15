@@ -1767,6 +1767,12 @@ export default {
       }
       return env.ASSETS.fetch(request);
     } catch (err) {
+      // Log the real error server-side so 500s are diagnosable via Cloudflare
+      // live logs (`wrangler tail` / dashboard → Logs), without leaking stack
+      // detail to the client. The most common cause here is an encrypted record
+      // (e.g. admin_mfa:<email>) that the current DATA_ENCRYPTION_KEY can't
+      // decrypt — login fails closed by design; fix the key or clear the record.
+      console.error('Unhandled error', url.pathname, request.method, (err && err.stack) || err);
       return json({ error: 'Internal server error' }, 500, cors);
     }
   },
