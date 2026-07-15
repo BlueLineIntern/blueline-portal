@@ -151,12 +151,9 @@ Clients from that era just see an empty dashboard.
   plaintext; encryption is worker-only and the API/frontend contract is
   unchanged). LIMITATION: key and data share one Cloudflare account, so this
   defeats a leaked KV export, NOT a Cloudflare-account compromise — MFA covers that.
-- **Soft delete + restore**: admin Delete marks `deleted:true` (no TTL) instead of
-  destroying the record; a "Deleted (N)" trash table offers Restore
-  (`POST /api/admin/onboarding/:id/restore`). Deleted records are kept
-  **indefinitely** and never auto-purge — onboarding records hold signed
-  agreements/signatures that must be retained. (There is no hard-delete endpoint;
-  a record only leaves the deleted list by being restored.)
+- **Soft delete + restore**: admin Delete marks `deleted:true` with a 30-day TTL
+  instead of destroying the record; a "Deleted (N)" trash table offers Restore
+  (`POST /api/admin/onboarding/:id/restore`). Records auto-purge after the window.
 - Added `timingSafeEqual()` for password-hash, admin-token, and write-token
   comparisons.
 
@@ -212,9 +209,8 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   lives in the same Cloudflare account as the data (so an account compromise
   still exposes everything). Broadening scope + key isolation is the next lift;
   the DIY crypto must be blessed by the professional security review.
-- No data retention policy for client-portal PII. Nothing onboarding-related
-  auto-expires now (active and soft-deleted records are both kept indefinitely) —
-  a real retention/disposal schedule still needs to be defined with compliance.
+- No data retention policy for client-portal PII. (Onboarding POC records now do
+  auto-expire when soft-deleted, but active records never age out.)
 - Not code: as an RIA handling client PII, a written information security program
   (WISP) under Reg S-P / GLBA is required — policies, incident response, vendor
   risk assessment for Cloudflare. Needs compliance counsel, not an engineer.
