@@ -496,7 +496,7 @@ while ($listener.IsListening) {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $all = @($auditLog.ToArray())
             [array]::Reverse($all)  # newest first, mirroring the worker
-            $limit = 50
+            $limit = 10
             # Mock cursor is a numeric offset into the newest-first list (the real
             # worker uses an opaque KV cursor; both are opaque to the client).
             $offset = 0

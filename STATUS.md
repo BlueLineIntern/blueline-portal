@@ -186,12 +186,12 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   before this change sort after the inverted ones and are re-sorted by `ts` in the
   response; they expire on their own.) **Viewer**: `GET /api/admin/audit`
   (admin-gated) → `{entries, limit, hasMore, cursor}`; pass the `cursor` back as
-  `?cursor=` to page to the next (older) 50 (opaque KV cursor in the worker, a
-  numeric offset in the mock). The admin page has an "Audit Log" card
-  (When / Admin / Action / Detail, newest first) loaded **once on entry and on
-  manual Refresh only — deliberately NOT on the 20s poll**, since the log doesn't
-  change live and polling it would burn Cloudflare reads per open tab. A **"Load
-  older"** button appends the next page and hides itself when `cursor` is
+  `?cursor=` to page to the next (older) 10 (opaque KV cursor in the worker, a
+  numeric offset in the mock; page size 10). The admin page has an "Audit Log"
+  card (When / Admin / Action / Detail, newest first) loaded **once on entry and
+  on manual Refresh only — deliberately NOT on the 20s poll**, since the log
+  doesn't change live and polling it would burn Cloudflare reads per open tab. A
+  **"Load older"** button appends the next page and hides itself when `cursor` is
   exhausted; Refresh collapses back to the newest page.
   (The local `dev-server.ps1` mirrors login/logout/session-gating with DEV-ONLY
   per-person passwords in `$adminPasswords` (`dev-fsabin-pass`/`dev-jyoung-pass`)

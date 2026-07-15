@@ -1377,7 +1377,7 @@ async function handleAdminAudit(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
 
-  const AUDIT_PAGE_SIZE = 50;
+  const AUDIT_PAGE_SIZE = 10;
   const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
   const listOpts = { prefix: 'audit:', limit: AUDIT_PAGE_SIZE };
   if (cursor) listOpts.cursor = cursor;
