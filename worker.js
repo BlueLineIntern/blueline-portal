@@ -1358,6 +1358,39 @@ async function handleAdminOnboarding(request, env, cors) {
   return json({ records }, 200, cors);
 }
 
+// Returns the most recent audit entries (who did what, when). Keys are
+// audit:<ISO ts>:<rand>, which sort chronologically, so we collect key names
+// cheaply, take the newest MAX_AUDIT_ENTRIES, and only fetch those values.
+async function handleAdminAudit(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+
+  const MAX_AUDIT_ENTRIES = 500;
+  const keyNames = [];
+  let cursor;
+  do {
+    const page = await env.PORTAL_KV.list({ prefix: 'audit:', cursor });
+    for (const key of page.keys) keyNames.push(key.name);
+    cursor = page.cursor;
+    if (page.list_complete) break;
+  } while (cursor);
+
+  keyNames.sort(); // chronological (ISO timestamp prefix)
+  const truncated = keyNames.length > MAX_AUDIT_ENTRIES;
+  const recent = keyNames.slice(-MAX_AUDIT_ENTRIES).reverse(); // newest first
+
+  const entries = [];
+  for (const name of recent) {
+    const raw = await env.PORTAL_KV.get(name);
+    if (!raw) continue;
+    try {
+      entries.push(JSON.parse(raw));
+    } catch {}
+  }
+
+  return json({ entries, total: keyNames.length, truncated }, 200, cors);
+}
+
 async function handleAdminClients(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -1448,6 +1481,9 @@ export default {
       }
       if (url.pathname === '/api/admin/onboarding' && request.method === 'GET') {
         return await handleAdminOnboarding(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/audit' && request.method === 'GET') {
+        return await handleAdminAudit(request, env, cors);
       }
       const onbRestoreMatch = url.pathname.match(/^\/api\/admin\/onboarding\/(BLA-ONB-\d{4}-\d{4})\/restore$/);
       if (onbRestoreMatch && request.method === 'POST') {

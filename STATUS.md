@@ -179,17 +179,21 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   (clearing the server session so the old token is rejected).
 - **Audit log**: `logAudit()` writes `audit:<ts>:<rand>` KV entries (~13-month
   TTL) on login, set-assignments, and onboarding delete/restore, each recording
-  `{ts,email,action,detail}`. Write-side only so far — no viewer UI yet.
+  `{ts,email,action,detail}`. **Viewer**: `GET /api/admin/audit` (admin-gated)
+  collects all `audit:` key names, sorts by the ISO-timestamp prefix, returns the
+  newest 500 (`{entries, total, truncated}`) so only those values are fetched.
+  The admin page has an "Audit Log" card (When / Admin / Action / Detail, newest
+  first) that loads alongside clients/onboarding on the same 20s poll.
   (The local `dev-server.ps1` mirrors login/logout/session-gating with DEV-ONLY
-  per-person passwords in `$adminPasswords` (`dev-fsabin-pass`/`dev-jyoung-pass`);
-  it does not implement the audit writes, which have no frontend surface.)
+  per-person passwords in `$adminPasswords` (`dev-fsabin-pass`/`dev-jyoung-pass`)
+  and now also mirrors the audit writes + `/api/admin/audit` in memory so the
+  viewer is exercisable locally.)
 
 ## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
-- Admin has per-person login, sessions, and a write-side audit log, but there is
-  still **no MFA**, **no audit-log viewer UI**, and no anomaly alerting yet.
-  Revoking one person now means rotating only that person's secret (e.g.
-  `ADMIN_PASSWORD_JYOUNG`) — as long as the legacy shared `ADMIN_PASSWORD` has
-  been deleted from Cloudflare.
+- Admin has per-person login, sessions, and an audit log with a viewer, but there
+  is still **no MFA** and no anomaly alerting yet. Revoking one person now means
+  rotating only that person's secret (e.g. `ADMIN_PASSWORD_JYOUNG`) — as long as
+  the legacy shared `ADMIN_PASSWORD` has been deleted from Cloudflare.
 - **Encryption scope is partial**: client assessment responses are now
   AES-256-GCM encrypted at rest (see Security hardening), but `user:` records,
   `onboarding:` POC records, and the audit log are still plaintext, and the key

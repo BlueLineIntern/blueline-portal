@@ -15,6 +15,18 @@ $onboardings = @{}
 $onbSecrets = @{}
 $script:onbCounter = 0
 $adminSessions = @{}  # admin session token -> admin email
+$auditLog = [System.Collections.ArrayList]::new()  # audit entries, appended in order
+
+# Mirror worker.js logAudit: record who did what, when. In the real worker these
+# are audit:<ts>:<rand> KV entries; here they live in memory for the session.
+function Write-Audit($email, $action, $detail) {
+    $null = $auditLog.Add([ordered]@{
+        ts     = (Get-Date).ToString('o')
+        email  = if ($email) { $email } else { 'unknown' }
+        action = $action
+        detail = $detail
+    })
+}
 # DEV ONLY credentials. The real worker uses ADMIN_ACCOUNTS + a per-email
 # password secret; these throwaway per-person passwords exist only so the mock
 # can be exercised locally and are intentionally NOT the production passwords.
@@ -399,6 +411,7 @@ while ($listener.IsListening) {
             }
             $token = New-Token
             $adminSessions[$token] = $email
+            Write-Audit $email 'login' $null
             Send-Json $ctx 200 @{ token = $token; email = $email }
         }
         elseif ($path -eq '/api/admin/logout' -and $method -eq 'POST') {
@@ -431,12 +444,14 @@ while ($listener.IsListening) {
             Send-Json $ctx 200 @{ assignments = $asg }
         }
         elseif ($path -match '^/api/admin/assignments/(.+)$' -and $method -eq 'POST') {
-            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $email = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
             if (-not $users.ContainsKey($email)) { Send-Json $ctx 404 @{ error = 'Unknown client' }; continue }
             $body = Read-Body $ctx
             if (-not $body -or $null -eq $body.assignments) { Send-Json $ctx 400 @{ error = 'assignments must be an array of module keys' }; continue }
             $assignments[$email] = @($body.assignments)
+            Write-Audit $adminEmail 'set-assignments' @{ client = $email; assignments = @($assignments[$email]) }
             Send-Json $ctx 200 @{ assignments = @($assignments[$email]) }
         }
         elseif ($path -eq '/api/onboarding/start' -and $method -eq 'POST') {
@@ -477,20 +492,30 @@ while ($listener.IsListening) {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             Send-Json $ctx 200 @{ records = @($onboardings.Values) }
         }
-        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})/restore$' -and $method -eq 'POST') {
+        elseif ($path -eq '/api/admin/audit' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $entries = @($auditLog.ToArray())
+            [array]::Reverse($entries)  # newest first, mirroring the worker
+            Send-Json $ctx 200 @{ entries = $entries; total = $entries.Count; truncated = $false }
+        }
+        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})/restore$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $id = $Matches[1]
             if (-not $onboardings.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Not found or already purged' }; continue }
             $onboardings[$id].deleted = $false
             $onboardings[$id].Remove('deletedAt')
+            Write-Audit $adminEmail 'restore-onboarding' @{ onboardingId = $id }
             Send-Json $ctx 200 @{ ok = $true }
         }
         elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})$' -and $method -eq 'DELETE') {
-            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $id = $Matches[1]
             if (-not $onboardings.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Not found' }; continue }
             $onboardings[$id].deleted = $true
             $onboardings[$id]['deletedAt'] = (Get-Date).ToString('o')
+            Write-Audit $adminEmail 'delete-onboarding' @{ onboardingId = $id }
             Send-Json $ctx 200 @{ ok = $true; deletedAt = $onboardings[$id]['deletedAt'] }
         }
         elseif ($path -eq '/api/admin/clients' -and $method -eq 'GET') {

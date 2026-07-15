@@ -268,6 +268,29 @@
       </div>
     </div>
 
+    <div class="card hidden" id="audit-card">
+      <div class="onb-card-header">
+        <h1>Audit Log</h1>
+        <div class="onb-card-actions">
+          <button type="button" class="btn btn-secondary btn-small" id="audit-refresh-btn">↻ Refresh</button>
+        </div>
+      </div>
+      <p class="admin-empty">Record of admin actions — sign-ins, module-assignment changes, and onboarding
+      delete/restore. Newest first. Retained ~13 months.</p>
+      <p class="admin-empty" id="audit-status"></p>
+      <table class="admin-table" id="audit-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Admin</th>
+            <th>Action</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody id="audit-body"></tbody>
+      </table>
+    </div>
+
     <div class="hidden" id="onb-detail-view">
       <div class="print-header">
         <div class="print-header-title">
@@ -308,6 +331,7 @@
 
     let allClients = [];
     let allOnboardings = [];
+    let allAudit = [];
     let adminToken = null;
     let adminEmail = null;
     let selectedEmail = '';
@@ -333,7 +357,9 @@
     // yanked out from under the person looking at it. The inline client
     // detail does refresh (renderClientPicker re-renders it in place).
     function tablesAreVisible() {
-      return !clientsCard.classList.contains('hidden') || !document.getElementById('onboarding-card').classList.contains('hidden');
+      return !clientsCard.classList.contains('hidden')
+        || !document.getElementById('onboarding-card').classList.contains('hidden')
+        || !document.getElementById('audit-card').classList.contains('hidden');
     }
 
     async function loadAdminData({ showStatus = false } = {}) {
@@ -342,19 +368,23 @@
       if (showStatus) statusEl.textContent = 'Refreshing…';
       try {
         const headers = { Authorization: `Bearer ${adminToken}` };
-        const [clientsRes, onbRes] = await Promise.all([
+        const [clientsRes, onbRes, auditRes] = await Promise.all([
           fetch('/api/admin/clients', { headers }),
           fetch('/api/admin/onboarding', { headers }),
+          fetch('/api/admin/audit', { headers }),
         ]);
         if (clientsRes.status === 401) { showLogin(); return; }
         const data = await clientsRes.json();
         if (!clientsRes.ok) throw new Error(data.error || 'Failed to load clients');
         const onbData = await onbRes.json().catch(() => ({ records: [] }));
+        const auditData = await auditRes.json().catch(() => ({ entries: [] }));
 
         allClients = data.clients;
         allOnboardings = (onbRes.ok && onbData.records) || [];
+        allAudit = (auditRes.ok && auditData.entries) || [];
         renderClientPicker();
         renderOnboardings(allOnboardings);
+        renderAudit(allAudit);
         if (showStatus) statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
       } catch (err) {
         if (showStatus) statusEl.textContent = `Refresh failed: ${err.message}`;
@@ -375,6 +405,7 @@
       tokenCard.classList.add('hidden');
       clientsCard.classList.remove('hidden');
       document.getElementById('onboarding-card').classList.remove('hidden');
+      document.getElementById('audit-card').classList.remove('hidden');
       startPolling();
       loadAdminData();
     }
@@ -389,6 +420,7 @@
       detailView.classList.add('hidden');
       document.getElementById('assignment-card').classList.add('hidden');
       document.getElementById('onboarding-card').classList.add('hidden');
+      document.getElementById('audit-card').classList.add('hidden');
       document.getElementById('onb-detail-view').classList.add('hidden');
       tokenCard.classList.remove('hidden');
       selectedEmail = '';
@@ -439,6 +471,7 @@
     });
 
     document.getElementById('refresh-btn').addEventListener('click', () => loadAdminData({ showStatus: true }));
+    document.getElementById('audit-refresh-btn').addEventListener('click', () => loadAdminData({ showStatus: true }));
     document.getElementById('toggle-deleted-btn').addEventListener('click', () => {
       showDeleted = !showDeleted;
       renderOnboardings(allOnboardings);
@@ -729,6 +762,48 @@
       const p = (r.data && r.data.profile) || {};
       const c = (r.data && r.data.consent) || {};
       return p.email || c.email || '—';
+    }
+
+    // Human-readable one-liner for an audit entry's detail payload.
+    function auditDetail(entry) {
+      const d = entry.detail;
+      if (d == null) return '—';
+      if (entry.action === 'set-assignments') {
+        const list = Array.isArray(d.assignments) ? d.assignments : [];
+        return `${d.client || '?'} — ${list.length} module${list.length === 1 ? '' : 's'} assigned`;
+      }
+      if (entry.action === 'delete-onboarding' || entry.action === 'restore-onboarding') {
+        return d.onboardingId || '—';
+      }
+      if (typeof d === 'string') return d;
+      try { return JSON.stringify(d); } catch { return '—'; }
+    }
+
+    const AUDIT_ACTION_LABELS = {
+      'login': 'Signed in',
+      'set-assignments': 'Changed module assignments',
+      'delete-onboarding': 'Deleted onboarding record',
+      'restore-onboarding': 'Restored onboarding record',
+    };
+
+    function renderAudit(entries) {
+      const body = document.getElementById('audit-body');
+      if (!entries.length) {
+        body.innerHTML = '<tr><td colspan="4" class="admin-empty">No admin activity recorded yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = entries
+        .map((e) => {
+          const when = e.ts ? new Date(e.ts).toLocaleString() : '—';
+          const action = AUDIT_ACTION_LABELS[e.action] || e.action || '—';
+          return `<tr>
+            <td>${escapeHtml(when)}</td>
+            <td>${escapeHtml(e.email || 'unknown')}</td>
+            <td>${escapeHtml(action)}</td>
+            <td>${escapeHtml(auditDetail(e))}</td>
+          </tr>`;
+        })
+        .join('');
     }
 
     function renderOnboardings(records) {
