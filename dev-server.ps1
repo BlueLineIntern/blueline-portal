@@ -43,6 +43,7 @@ $tasks = @{}   # id -> task record (listings sort by createdAt, so plain hashtab
 $notes = @{}   # id -> note record
 $timelineLog = [System.Collections.ArrayList]::new()  # client history entries (also the activity feed)
 $autoTaskMarkers = @{}  # rule:client -> fired
+$notifSeen = @{}        # admin email -> last time they opened notifications
 $script:crmCounter = 0
 $taskPriorities = @('low', 'medium', 'high')
 $taskCategories = @('follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other')
@@ -695,6 +696,18 @@ while ($listener.IsListening) {
             [array]::Reverse($entries)
             $entries = @($entries | Select-Object -First 30)
             Send-Json $ctx 200 @{ entries = $entries; hasMore = $false; cursor = $null }
+        }
+        elseif ($path -eq '/api/admin/notifseen' -and $method -eq 'GET') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $seen = if ($notifSeen.ContainsKey($adminEmail)) { $notifSeen[$adminEmail] } else { $null }
+            Send-Json $ctx 200 @{ seen = $seen }
+        }
+        elseif ($path -eq '/api/admin/notifseen' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $notifSeen[$adminEmail] = (Get-Date).ToString('o')
+            Send-Json $ctx 200 @{ seen = $notifSeen[$adminEmail] }
         }
         elseif ($path -eq '/api/admin/contacts' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }

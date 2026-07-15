@@ -990,11 +990,16 @@
   // Poll to keep the list + open profile fresh.
   setInterval(() => loadData(), POLL_INTERVAL_MS);
 
-  // Deep link: /admin/contacts.html?c=email opens that profile directly.
+  // Deep link: ?c=email opens that profile; ?tab=notes (etc.) lands on a tab.
   (async function init() {
     await loadData();
-    const want = new URLSearchParams(location.search).get('c');
-    if (want && allContacts.some((c) => c.email === want)) openProfile(want);
+    const params = new URLSearchParams(location.search);
+    const want = params.get('c');
+    const tab = params.get('tab');
+    if (want && allContacts.some((c) => c.email === want)) {
+      openProfile(want);
+      if (tab && document.querySelector(`#profile-tabs .tab[data-tab="${CSS.escape(tab)}"]`)) setTab(tab);
+    }
   })();
 </script>
 </body>

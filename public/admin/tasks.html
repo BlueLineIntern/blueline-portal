@@ -381,6 +381,21 @@
     }
   }
 
+  // Deep links: ?f=<quick filter> &cat=<category> &q=<search> preselect the view
+  // (used by dashboard work queues and the global search palette).
+  (function applyUrlParams() {
+    const params = new URLSearchParams(location.search);
+    const f = params.get('f');
+    if (f && QUICK_FILTERS.some((x) => x.id === f)) quickFilter = f;
+    const cat = params.get('cat');
+    if (cat) document.getElementById('filter-category').value = cat;
+    const q = params.get('q');
+    if (q) {
+      searchText = q;
+      document.getElementById('task-search').value = q;
+    }
+  })();
+
   setInterval(loadData, POLL_INTERVAL_MS);
   loadData();
 </script>

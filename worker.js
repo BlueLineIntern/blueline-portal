@@ -2112,6 +2112,24 @@ async function handleAdminActivity(request, env, cors) {
   return json(result, 200, cors);
 }
 
+// Per-admin notification read cursor. Notifications themselves are DERIVED
+// (activity newer than this timestamp + overdue tasks) — nothing is fanned out
+// or stored per event, so there is nothing to keep consistent.
+async function handleAdminGetNotifSeen(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const seen = await env.PORTAL_KV.get(`notif_seen:${adminEmail}`);
+  return json({ seen: seen || null }, 200, cors);
+}
+
+async function handleAdminSetNotifSeen(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const seen = new Date().toISOString();
+  await env.PORTAL_KV.put(`notif_seen:${adminEmail}`, seen);
+  return json({ seen }, 200, cors);
+}
+
 async function handleAdminClients(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -2238,6 +2256,12 @@ export default {
       }
       if (url.pathname === '/api/admin/activity' && request.method === 'GET') {
         return await handleAdminActivity(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/notifseen' && request.method === 'GET') {
+        return await handleAdminGetNotifSeen(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/notifseen' && request.method === 'POST') {
+        return await handleAdminSetNotifSeen(request, env, cors);
       }
       const resetMfaMatch = url.pathname.match(/^\/api\/admin\/mfa\/reset\/(.+)$/);
       if (resetMfaMatch && request.method === 'POST') {

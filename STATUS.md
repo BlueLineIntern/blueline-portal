@@ -277,6 +277,28 @@ untouched and keeps its own look.
   (module import + in-memory KV; harness files are gitignored) — CRM records
   confirmed encrypted at rest, auto-task dedupe confirmed, timeline dual-write
   confirmed.
+- **Dashboard** (`/admin/`): greeting, stat tiles (Active/Prospects/Onboarding
+  from contact statuses, Tasks Due Today, Overdue in red), one-click **work
+  queue** chips (Assessments to review → `tasks.html?cat=review`, Onboarding to
+  review, Unsigned agreements → onboarding page, Waiting on client → contacts,
+  Overdue → `tasks.html?f=overdue`), and six widgets: Today's Tasks + Overdue +
+  Upcoming Meetings + Waiting for Review (all with complete-from-dashboard
+  checkboxes), Recent Client Activity (from the activity feed, linked to
+  profiles), **Compliance Alerts** (rule-based, computed client-side: completed
+  onboarding w/o signature, admin without MFA, active account clients with no
+  recorded activity in 90+ days). 30s refresh.
+- **Global search** (Ctrl/Cmd-K palette in `shared.js`, on every admin page):
+  searches contacts (name/email/household/tags), tasks (title/description),
+  notes (body/tags), and onboarding records; grouped results, arrow-key +
+  Enter navigation, deep links (`contacts.html?c=&tab=`, `tasks.html?q=&f=`,
+  `onboarding.html?id=`). Data loads lazily on first open and is cached per
+  page view.
+- **Notifications** (bell in the sidebar, every page): DERIVED, not stored —
+  overdue open tasks (nag until completed) + activity entries newer than the
+  per-admin `notif_seen:<email>` cursor (`GET/POST /api/admin/notifseen`).
+  "Mark all read" advances the cursor; nothing is fanned out per event.
+- `tasks.html` honors `?f=<quick filter>&cat=<category>&q=<search>` deep links;
+  `contacts.html` honors `?c=<email>&tab=<tab>`.
 
 ## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
 - Admin has per-person login, sessions, mandatory TOTP MFA (with admin-resets-
