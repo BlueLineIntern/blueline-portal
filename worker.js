@@ -568,6 +568,36 @@ async function handleAdminMfaVerify(request, env, cors) {
   return json({ token, email: pending.email, usedBackup }, 200, cors);
 }
 
+// List the admin accounts and whether each has MFA set up — powers the
+// "Admin Accounts" card so one admin can see and reset the other.
+async function handleAdminListAdmins(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const admins = [];
+  for (const a of ADMIN_ACCOUNTS) {
+    const mfa = await getAdminMfa(env, a.email); // throws on decrypt fail -> 500 (fail closed)
+    admins.push({ email: a.email, mfaEnabled: !!(mfa && mfa.confirmed) });
+  }
+  return json({ admins, you: adminEmail }, 200, cors);
+}
+
+// One admin resets another's MFA (recovery for a lost authenticator). Deleting
+// the record forces fresh enrollment on that admin's next login. Any signed-in
+// admin may reset any admin account; the action is audit-logged. Trade-off: a
+// compromised admin session could reset the other's MFA — acceptable for a
+// two-person firm where both hold equal access anyway.
+async function handleAdminResetMfa(request, env, cors, targetEmail) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const normalized = String(targetEmail).trim().toLowerCase();
+  if (!ADMIN_ACCOUNTS.some((a) => a.email === normalized)) {
+    return json({ error: 'Not an admin account' }, 404, cors);
+  }
+  await env.PORTAL_KV.delete(`admin_mfa:${normalized}`);
+  await logAudit(env, adminEmail, 'reset-mfa', { target: normalized });
+  return json({ ok: true }, 200, cors);
+}
+
 // ---------- Data-at-rest encryption (AES-256-GCM) ----------
 // Sensitive client records (assessment responses) are encrypted before being
 // written to KV, so a leaked KV export is useless without the DATA_ENCRYPTION_KEY
@@ -1699,6 +1729,13 @@ export default {
       }
       if (url.pathname === '/api/admin/mfa/verify' && request.method === 'POST') {
         return await handleAdminMfaVerify(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/admins' && request.method === 'GET') {
+        return await handleAdminListAdmins(request, env, cors);
+      }
+      const resetMfaMatch = url.pathname.match(/^\/api\/admin\/mfa\/reset\/(.+)$/);
+      if (resetMfaMatch && request.method === 'POST') {
+        return await handleAdminResetMfa(request, env, cors, decodeURIComponent(resetMfaMatch[1]));
       }
       if (url.pathname === '/api/admin/logout' && request.method === 'POST') {
         return await handleAdminLogout(request, env, cors);

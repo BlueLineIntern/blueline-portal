@@ -526,6 +526,24 @@ while ($listener.IsListening) {
             Write-Audit $email 'login' @{ mfa = $mfaMethod }
             Send-Json $ctx 200 @{ token = $token; email = $email; usedBackup = $usedBackup }
         }
+        elseif ($path -eq '/api/admin/admins' -and $method -eq 'GET') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $admins = @($adminPasswords.Keys | ForEach-Object {
+                    $m = $adminMfa[$_]
+                    @{ email = $_; mfaEnabled = [bool]($m -and $m.confirmed) }
+                })
+            Send-Json $ctx 200 @{ admins = $admins; you = $adminEmail }
+        }
+        elseif ($path -match '^/api/admin/mfa/reset/(.+)$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if (-not $adminPasswords.ContainsKey($target)) { Send-Json $ctx 404 @{ error = 'Not an admin account' }; continue }
+            $adminMfa.Remove($target)
+            Write-Audit $adminEmail 'reset-mfa' @{ target = $target }
+            Send-Json $ctx 200 @{ ok = $true }
+        }
         elseif ($path -eq '/api/admin/logout' -and $method -eq 'POST') {
             $auth = $ctx.Request.Headers['Authorization']
             if ($auth -match '^Bearer\s+(.+)$') { $adminSessions.Remove($Matches[1]) }

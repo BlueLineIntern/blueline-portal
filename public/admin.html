@@ -338,6 +338,23 @@
       </div>
     </div>
 
+    <div class="card hidden" id="admins-card">
+      <h1>Admin Accounts</h1>
+      <p class="admin-empty">Two-factor status for each admin. If someone loses their authenticator and all backup
+      codes, reset their MFA here — they'll set up a new authenticator the next time they sign in.</p>
+      <p class="admin-empty" id="admins-status"></p>
+      <table class="admin-table" id="admins-table">
+        <thead>
+          <tr>
+            <th>Admin</th>
+            <th>Two-factor</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="admins-body"></tbody>
+      </table>
+    </div>
+
     <div class="hidden" id="onb-detail-view">
       <div class="print-header">
         <div class="print-header-title">
@@ -489,6 +506,57 @@
       btn.classList.toggle('hidden', !auditCursor);
     }
 
+    // Admin accounts / MFA status — loaded once on entry and after a reset.
+    function renderAdmins(admins, you) {
+      const body = document.getElementById('admins-body');
+      body.innerHTML = (admins || [])
+        .map((a) => {
+          const isYou = a.email === you;
+          const status = a.mfaEnabled
+            ? 'Enabled'
+            : '<span class="cell-missing">Not set up</span>';
+          const action = a.mfaEnabled
+            ? `<button type="button" class="btn btn-ghost btn-small reset-mfa-btn" data-email="${escapeHtml(a.email)}">Reset MFA</button>`
+            : '<span class="cell-missing">—</span>';
+          return `<tr><td>${escapeHtml(a.email)}${isYou ? ' <span class="admin-empty">(you)</span>' : ''}</td><td>${status}</td><td>${action}</td></tr>`;
+        })
+        .join('');
+    }
+
+    async function loadAdmins() {
+      if (!adminToken) return;
+      try {
+        const res = await fetch('/api/admin/admins', { headers: { Authorization: `Bearer ${adminToken}` } });
+        if (res.status === 401) { showLogin(); return; }
+        const data = await res.json().catch(() => ({ admins: [] }));
+        if (!res.ok) throw new Error(data.error || 'Failed to load admins');
+        renderAdmins(data.admins || [], data.you);
+      } catch (err) {
+        document.getElementById('admins-status').textContent = `Failed to load: ${err.message}`;
+      }
+    }
+
+    document.getElementById('admins-body').addEventListener('click', async (e) => {
+      const btn = e.target.closest('.reset-mfa-btn');
+      if (!btn) return;
+      const email = btn.dataset.email;
+      if (!confirm(`Reset two-factor authentication for ${email}? They'll set up a new authenticator app the next time they sign in.`)) return;
+      const statusEl = document.getElementById('admins-status');
+      statusEl.textContent = 'Resetting…';
+      try {
+        const res = await fetch(`/api/admin/mfa/reset/${encodeURIComponent(email)}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Reset failed');
+        statusEl.textContent = `Reset MFA for ${email} at ${new Date().toLocaleTimeString()}.`;
+        loadAdmins();
+      } catch (err) {
+        statusEl.textContent = `Reset failed: ${err.message}`;
+      }
+    });
+
     function startPolling() {
       if (pollTimer) return;
       pollTimer = setInterval(() => {
@@ -506,9 +574,11 @@
       clientsCard.classList.remove('hidden');
       document.getElementById('onboarding-card').classList.remove('hidden');
       document.getElementById('audit-card').classList.remove('hidden');
+      document.getElementById('admins-card').classList.remove('hidden');
       startPolling();
       loadAdminData();
       loadAudit();
+      loadAdmins();
     }
 
     // Return to the login card and forget the session (client-side).
@@ -522,6 +592,7 @@
       document.getElementById('assignment-card').classList.add('hidden');
       document.getElementById('onboarding-card').classList.add('hidden');
       document.getElementById('audit-card').classList.add('hidden');
+      document.getElementById('admins-card').classList.add('hidden');
       document.getElementById('onb-detail-view').classList.add('hidden');
       document.getElementById('mfa-card').classList.add('hidden');
       document.getElementById('mfa-enroll-card').classList.add('hidden');
@@ -962,6 +1033,12 @@
       if (entry.action === 'delete-onboarding' || entry.action === 'restore-onboarding') {
         return d.onboardingId || '—';
       }
+      if (entry.action === 'login') {
+        return d.mfa === 'backup-code' ? 'via backup code' : d.mfa === 'totp' ? 'via authenticator app' : '—';
+      }
+      if (entry.action === 'reset-mfa') {
+        return d.target ? `reset ${d.target}` : '—';
+      }
       if (typeof d === 'string') return d;
       try { return JSON.stringify(d); } catch { return '—'; }
     }
@@ -971,6 +1048,7 @@
       'set-assignments': 'Changed module assignments',
       'delete-onboarding': 'Deleted onboarding record',
       'restore-onboarding': 'Restored onboarding record',
+      'reset-mfa': 'Reset an admin\'s MFA',
     };
 
     function renderAudit(entries) {

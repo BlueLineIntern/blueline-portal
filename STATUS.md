@@ -186,8 +186,14 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   Admin page has "Enter code" and "Set up MFA" cards (secret shown for manual
   entry — no QR yet — plus backup codes); the mock mirrors the whole flow in
   memory (unencrypted) with matching TOTP so it's testable locally.
-  **NOTE:** losing the authenticator with all backup codes used = lockout;
-  recovery today is manual (delete `admin_mfa:<email>` in KV to force re-enroll).
+- **MFA recovery (admin-resets-admin)**: `GET /api/admin/admins` lists each admin
+  account + whether MFA is set up; `POST /api/admin/mfa/reset/:email`
+  (admin-session-gated, target must be in `ADMIN_ACCOUNTS`) deletes that admin's
+  `admin_mfa:<email>` so they re-enroll on next login. Audit-logged as `reset-mfa`
+  `{target}`. Admin page has an "Admin Accounts" card with per-admin MFA status
+  and a Reset MFA button. So a locked-out admin (lost device + all backup codes)
+  is rescued by the other admin — no Cloudflare dashboard needed. Last-resort
+  manual recovery is still to delete `admin_mfa:<email>` in KV directly.
 - Every admin endpoint now calls `getAdminEmail(request, env)` (resolves the
   bearer token → session email) instead of comparing a static token; a missing/
   expired session → 401. The admin page (`admin.html`) has an email+password
@@ -216,10 +222,10 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   viewer is exercisable locally.)
 
 ## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
-- Admin has per-person login, sessions, mandatory TOTP MFA, and an audit log with
-  a viewer, but there is still **no self-service MFA recovery** (a fully
-  locked-out admin needs `admin_mfa:<email>` deleted in KV) and no anomaly
-  alerting yet. Revoking one person now means rotating only that person's secret
+- Admin has per-person login, sessions, mandatory TOTP MFA (with admin-resets-
+  admin recovery), and an audit log with a viewer, but there is no anomaly
+  alerting yet, and if BOTH admins are simultaneously locked out recovery still
+  needs `admin_mfa:<email>` deleted in KV. Revoking one person now means rotating only that person's secret
   (e.g. `ADMIN_PASSWORD_JYOUNG`) — as long as the legacy shared `ADMIN_PASSWORD`
   has been deleted from Cloudflare. Clients have no MFA (deliberate — a
   compromised client login exposes only that one client's data).
