@@ -497,8 +497,16 @@ while ($listener.IsListening) {
             $all = @($auditLog.ToArray())
             [array]::Reverse($all)  # newest first, mirroring the worker
             $limit = 50
-            $entries = @($all | Select-Object -First $limit)
-            Send-Json $ctx 200 @{ entries = $entries; limit = $limit; hasMore = ($all.Count -gt $limit) }
+            # Mock cursor is a numeric offset into the newest-first list (the real
+            # worker uses an opaque KV cursor; both are opaque to the client).
+            $offset = 0
+            $q = $ctx.Request.QueryString['cursor']
+            if ($q) { [void][int]::TryParse($q, [ref]$offset) }
+            $entries = @($all | Select-Object -Skip $offset -First $limit)
+            $nextOffset = $offset + $limit
+            $hasMore = $nextOffset -lt $all.Count
+            $nextCursor = if ($hasMore) { "$nextOffset" } else { $null }
+            Send-Json $ctx 200 @{ entries = $entries; limit = $limit; hasMore = $hasMore; cursor = $nextCursor }
         }
         elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})/restore$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx

@@ -1368,17 +1368,20 @@ async function handleAdminOnboarding(request, env, cors) {
   return json({ records }, 200, cors);
 }
 
-// Returns the most recent audit entries (who did what, when). Because keys use
-// an inverted timestamp (see logAudit), the newest entries sort first, so a
-// single bounded KV list returns them directly — the cost of this endpoint is
-// flat regardless of how large the log grows. `hasMore` signals there are older
-// entries beyond this page (for a future "load older" control).
+// Returns a page of audit entries (who did what, when), newest first. Because
+// keys use an inverted timestamp (see logAudit), the newest entries sort first,
+// so a bounded KV list returns them directly — the cost is flat regardless of
+// how large the log grows. Pass the returned `cursor` back as ?cursor=... to
+// fetch the next (older) page; `hasMore`/`cursor` are null once exhausted.
 async function handleAdminAudit(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
 
   const AUDIT_PAGE_SIZE = 50;
-  const page = await env.PORTAL_KV.list({ prefix: 'audit:', limit: AUDIT_PAGE_SIZE });
+  const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
+  const listOpts = { prefix: 'audit:', limit: AUDIT_PAGE_SIZE };
+  if (cursor) listOpts.cursor = cursor;
+  const page = await env.PORTAL_KV.list(listOpts);
 
   const entries = [];
   for (const key of page.keys) {
@@ -1391,7 +1394,16 @@ async function handleAdminAudit(request, env, cors) {
 
   // Guarantee display order even if legacy (non-inverted) keys are mixed in.
   entries.sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
-  return json({ entries, limit: AUDIT_PAGE_SIZE, hasMore: !page.list_complete }, 200, cors);
+  return json(
+    {
+      entries,
+      limit: AUDIT_PAGE_SIZE,
+      hasMore: !page.list_complete,
+      cursor: page.list_complete ? null : page.cursor,
+    },
+    200,
+    cors
+  );
 }
 
 async function handleAdminClients(request, env, cors) {

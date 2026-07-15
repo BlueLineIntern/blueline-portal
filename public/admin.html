@@ -289,6 +289,9 @@
         </thead>
         <tbody id="audit-body"></tbody>
       </table>
+      <div class="audit-more-wrap" style="margin-top: 16px; text-align: center;">
+        <button type="button" class="btn btn-secondary btn-small hidden" id="audit-more-btn">Load older</button>
+      </div>
     </div>
 
     <div class="hidden" id="onb-detail-view">
@@ -332,6 +335,7 @@
     let allClients = [];
     let allOnboardings = [];
     let allAudit = [];
+    let auditCursor = null; // cursor for the next (older) audit page; null when none
     let adminToken = null;
     let adminEmail = null;
     let selectedEmail = '';
@@ -389,6 +393,7 @@
     // The audit log is loaded once on entry and on manual Refresh only — NOT on
     // the 20s poll. It doesn't change second-to-second, and polling it would scan
     // + fetch the log repeatedly for every open tab (needless Cloudflare reads).
+    // Fresh load: replaces the table with the newest page and resets pagination.
     async function loadAudit({ showStatus = false } = {}) {
       if (!adminToken) return;
       const statusEl = document.getElementById('audit-status');
@@ -399,11 +404,44 @@
         const data = await res.json().catch(() => ({ entries: [] }));
         if (!res.ok) throw new Error(data.error || 'Failed to load audit log');
         allAudit = data.entries || [];
+        auditCursor = data.hasMore ? data.cursor : null;
         renderAudit(allAudit);
-        statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}${data.hasMore ? ' · showing newest ' + (data.limit || allAudit.length) : ''}`;
+        updateAuditMoreButton();
+        statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
       } catch (err) {
         statusEl.textContent = `Refresh failed: ${err.message}`;
       }
+    }
+
+    // Fetches the next older page and appends it, so the operator can page back
+    // through history 50 at a time without ever loading the whole log at once.
+    async function loadOlderAudit() {
+      if (!adminToken || !auditCursor) return;
+      const btn = document.getElementById('audit-more-btn');
+      btn.disabled = true;
+      btn.textContent = 'Loading…';
+      try {
+        const res = await fetch(`/api/admin/audit?cursor=${encodeURIComponent(auditCursor)}`, {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+        if (res.status === 401) { showLogin(); return; }
+        const data = await res.json().catch(() => ({ entries: [] }));
+        if (!res.ok) throw new Error(data.error || 'Failed to load older entries');
+        allAudit = allAudit.concat(data.entries || []);
+        auditCursor = data.hasMore ? data.cursor : null;
+        renderAudit(allAudit);
+      } catch (err) {
+        document.getElementById('audit-status').textContent = `Load failed: ${err.message}`;
+      } finally {
+        updateAuditMoreButton();
+      }
+    }
+
+    function updateAuditMoreButton() {
+      const btn = document.getElementById('audit-more-btn');
+      btn.disabled = false;
+      btn.textContent = 'Load older';
+      btn.classList.toggle('hidden', !auditCursor);
     }
 
     function startPolling() {
@@ -488,6 +526,7 @@
 
     document.getElementById('refresh-btn').addEventListener('click', () => loadAdminData({ showStatus: true }));
     document.getElementById('audit-refresh-btn').addEventListener('click', () => loadAudit({ showStatus: true }));
+    document.getElementById('audit-more-btn').addEventListener('click', () => loadOlderAudit());
     document.getElementById('toggle-deleted-btn').addEventListener('click', () => {
       showDeleted = !showDeleted;
       renderOnboardings(allOnboardings);
