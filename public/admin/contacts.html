@@ -9,10 +9,11 @@
 <link rel="stylesheet" href="/admin/shared.css" />
 <style>
   /* Client detail (module cards + charts come from style.css/render.js) */
-  .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
-  .detail-header h1 { margin: 0; font-size: 1.3rem; }
+  .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+  .detail-header h1 { margin: 0 0 2px; font-size: 1.3rem; }
   .detail-header-actions { display: flex; gap: 10px; flex-wrap: wrap; }
-  .detail-client-email { color: var(--muted); margin: 4px 0 0; }
+  .detail-client-email { color: var(--muted); margin: 2px 0 0; }
+  .detail-title-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
   .detail-section { margin-top: 28px; }
   .detail-section > h2 { margin: 0 0 4px; font-size: 1.1rem; }
   .detail-section-desc { color: var(--muted); margin: 0 0 16px; }
@@ -22,6 +23,17 @@
   .detail-flags ul { margin: 0; padding-left: 20px; color: var(--amber); font-weight: 600; }
   .detail-empty-module { color: var(--muted); margin: 14px 0 0; }
   .onb-link-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: #fff; margin-bottom: 10px; }
+  .onb-signature { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px; max-width: 400px; margin-top: 12px; }
+  .onb-signature img { display: block; width: 100%; height: auto; }
+
+  /* Overview tab */
+  .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+  .overview-grid .panel { margin-bottom: 0; }
+  .kv-rows { display: flex; flex-direction: column; }
+  .kv-row { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
+  .kv-row:last-child { border-bottom: none; }
+  .kv-row span { color: var(--muted); }
+  .kv-row strong { font-weight: 600; text-align: right; }
 
   /* Assignment editor */
   .assignment-group { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-top: 14px; }
@@ -43,12 +55,15 @@
       <div class="page-head">
         <div>
           <h1>Contacts</h1>
-          <p class="sub">Every client with a portal account. Click a row to open their profile.</p>
+          <p class="sub">Clients and prospects. Click a row to open their profile.</p>
         </div>
         <div class="page-actions">
-          <input type="search" class="input search-input" id="contact-search" placeholder="Search contacts…" />
+          <input type="search" class="input search-input" id="contact-search" placeholder="Search name, email, household, tag…" />
+          <button type="button" class="btn btn-primary" id="new-contact-btn">+ New Contact</button>
         </div>
       </div>
+
+      <div class="filter-row" id="status-filters"></div>
 
       <div class="panel">
         <p class="panel-status" id="list-status"></p>
@@ -57,7 +72,9 @@
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Email</th>
+                <th>Status</th>
+                <th>Advisor</th>
+                <th>Tags</th>
                 <th>Assessments</th>
                 <th>Last Activity</th>
               </tr>
@@ -85,28 +102,95 @@
         <div>
           <h1 id="detail-name"></h1>
           <p class="detail-client-email" id="detail-email"></p>
-          <p class="detail-client-email" id="detail-progress"></p>
+          <div class="detail-title-badges" id="detail-badges"></div>
         </div>
         <div class="detail-header-actions">
+          <button type="button" class="btn btn-ghost" id="edit-contact-btn">Edit Contact</button>
           <button type="button" class="btn btn-primary" id="detail-print-btn">Print / Save PDF</button>
           <button type="button" class="btn btn-ghost" id="detail-back-btn">← All Contacts</button>
         </div>
       </div>
 
-      <div class="panel" id="assignment-card">
-        <div class="panel-head"><h2>Assigned Modules</h2></div>
-        <p class="hint">Uncheck a module to hide it from this client's portal. A client you haven't changed here
-        sees everything by default. Use a category's <em>Select all</em> box to flip a whole group at once.</p>
-        <div id="assignment-groups"></div>
-        <div class="assignment-actions">
-          <button type="button" class="btn btn-primary btn-small" id="assignment-save-btn">Save assignments</button>
-          <span class="panel-status" id="assignment-status"></span>
-        </div>
+      <div class="tabs" id="profile-tabs">
+        <button type="button" class="tab active" data-tab="overview">Overview</button>
+        <button type="button" class="tab" data-tab="assessments">Assessments</button>
+        <button type="button" class="tab" data-tab="documents">Documents</button>
+        <button type="button" class="tab" data-tab="activity">Activity Log</button>
       </div>
 
-      <div id="detail-body"></div>
+      <div id="tab-overview"></div>
+
+      <div class="hidden" id="tab-assessments">
+        <div class="panel" id="assignment-card">
+          <div class="panel-head"><h2>Assigned Modules</h2></div>
+          <p class="hint">Uncheck a module to hide it from this client's portal. A client you haven't changed here
+          sees everything by default. Use a category's <em>Select all</em> box to flip a whole group at once.</p>
+          <div id="assignment-groups"></div>
+          <div class="assignment-actions">
+            <button type="button" class="btn btn-primary btn-small" id="assignment-save-btn">Save assignments</button>
+            <span class="panel-status" id="assignment-status"></span>
+          </div>
+        </div>
+        <div id="detail-body"></div>
+      </div>
+
+      <div class="hidden" id="tab-documents"></div>
+      <div class="hidden" id="tab-activity"></div>
     </div>
   </main>
+</div>
+
+<!-- Create/edit contact modal -->
+<div class="modal-backdrop hidden" id="contact-modal-backdrop">
+  <div class="modal">
+    <h2 id="contact-modal-title">New Contact</h2>
+    <div class="field">
+      <label for="cm-email">Email</label>
+      <input type="email" id="cm-email" required />
+    </div>
+    <div class="field">
+      <label for="cm-name">Name</label>
+      <input type="text" id="cm-name" />
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="cm-status">Status</label>
+        <select id="cm-status">
+          <option value="prospect">Prospect</option>
+          <option value="onboarding">Onboarding</option>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="cm-advisor">Primary advisor</label>
+        <select id="cm-advisor"><option value="">— none —</option></select>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="cm-household">Household</label>
+        <input type="text" id="cm-household" placeholder="e.g. Example Family" />
+      </div>
+      <div class="field">
+        <label for="cm-phone">Phone</label>
+        <input type="text" id="cm-phone" />
+      </div>
+    </div>
+    <div class="field">
+      <label for="cm-tags">Tags (comma-separated)</label>
+      <input type="text" id="cm-tags" placeholder="Business Owner, Estate Planning" />
+    </div>
+    <div class="field">
+      <label for="cm-dates">Important dates (one per line, "Label: date")</label>
+      <textarea id="cm-dates" rows="3" placeholder="Birthday: 1975-04-12&#10;Client since: 2024-06-01"></textarea>
+    </div>
+    <p class="form-error" id="cm-error"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="cm-cancel-btn">Cancel</button>
+      <button type="button" class="btn btn-primary" id="cm-save-btn">Save Contact</button>
+    </div>
+  </div>
 </div>
 
 <script src="/assets/render.js"></script>
@@ -114,19 +198,33 @@
 <script>
   initShell('contacts');
 
-  let allClients = [];
+  let allContacts = [];
   let allOnboardings = [];
+  let adminList = [];
   let selectedEmail = '';
   let assignmentEditorEmail = '';
   let searchText = '';
+  let statusFilter = 'all';
+  let activeTab = 'overview';
+  let modalEmail = null; // null = creating; email = editing that contact
   const POLL_INTERVAL_MS = 20000;
 
   const ALL_MODULE_KEYS = [...MODULES.map((mod) => mod.key), ...CATEGORY_MODULES.map((mod) => mod.key)];
   const CATEGORY_MODULE_MAP = Object.fromEntries(CATEGORY_MODULES.map((mod) => [mod.key, mod]));
   const ONBOARDING_WIZARD_KEY = 'onboardingWizard';
+  const STATUS_BADGE = {
+    prospect: 'badge-amber',
+    onboarding: 'badge-sky',
+    active: 'badge-green',
+    inactive: 'badge-gray',
+  };
+  const STATUS_LABEL = { prospect: 'Prospect', onboarding: 'Onboarding', active: 'Active', inactive: 'Inactive' };
 
-  // A module/offering is shown in a client's detail when they have no
-  // assignment record (all visible) or it is explicitly assigned.
+  function statusBadge(status) {
+    const cls = STATUS_BADGE[status] || 'badge-gray';
+    return `<span class="badge ${cls}">${escapeHtml(STATUS_LABEL[status] || status)}</span>`;
+  }
+
   function clientIsAssigned(client, key) {
     const a = client.assignments;
     return a == null || a.includes(key);
@@ -152,40 +250,66 @@
     const statusEl = document.getElementById('list-status');
     if (showStatus) statusEl.textContent = 'Refreshing…';
     try {
-      const [clientsData, onbData] = await Promise.all([
-        api('/api/admin/clients'),
+      const [contactsData, onbData] = await Promise.all([
+        api('/api/admin/contacts'),
         api('/api/admin/onboarding').catch(() => ({ records: [] })),
       ]);
-      allClients = clientsData.clients || [];
+      allContacts = contactsData.contacts || [];
+      adminList = contactsData.admins || [];
       allOnboardings = onbData.records || [];
+      renderStatusFilters();
       renderContacts();
-      if (selectedEmail) renderClientDetail(); // refresh open profile in place
+      if (selectedEmail) renderProfile(); // refresh open profile in place
       if (showStatus) statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
     } catch (err) {
       if (showStatus) statusEl.textContent = `Refresh failed: ${err.message}`;
     }
   }
 
+  // ---------- Contact list ----------
+
+  function renderStatusFilters() {
+    const counts = { all: allContacts.length };
+    allContacts.forEach((c) => { counts[c.status] = (counts[c.status] || 0) + 1; });
+    const pills = ['all', 'prospect', 'onboarding', 'active', 'inactive']
+      .map((s) => `<button type="button" class="filter-pill ${statusFilter === s ? 'active' : ''}" data-status="${s}">
+        ${s === 'all' ? 'All' : escapeHtml(STATUS_LABEL[s])} (${counts[s] || 0})</button>`)
+      .join('');
+    const wrap = document.getElementById('status-filters');
+    wrap.innerHTML = pills;
+    wrap.querySelectorAll('.filter-pill').forEach((b) =>
+      b.addEventListener('click', () => { statusFilter = b.dataset.status; renderStatusFilters(); renderContacts(); })
+    );
+  }
+
+  function contactMatches(c, q) {
+    return `${c.name} ${c.email} ${c.household} ${(c.tags || []).join(' ')}`.toLowerCase().includes(q);
+  }
+
   function renderContacts() {
     const body = document.getElementById('contacts-body');
     const q = searchText.trim().toLowerCase();
-    const rows = allClients
+    const rows = allContacts
       .slice()
-      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
-      .filter((c) => !q || `${c.name} ${c.email}`.toLowerCase().includes(q))
+      .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)))
+      .filter((c) => (statusFilter === 'all' || c.status === statusFilter) && (!q || contactMatches(c, q)))
       .map((c) => {
         const p = clientProgress(c);
         const act = lastActivity(c);
+        const tags = (c.tags || []).slice(0, 3).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join(' ')
+          + ((c.tags || []).length > 3 ? ` <span class="cell-missing">+${c.tags.length - 3}</span>` : '');
         return `<tr class="row-click contact-row" data-email="${escapeHtml(c.email)}">
-          <td><strong>${escapeHtml(c.name || '—')}</strong></td>
-          <td>${escapeHtml(c.email)}</td>
-          <td>${p.done} / ${p.total} completed</td>
+          <td><strong>${escapeHtml(c.name || '—')}</strong><div class="cell-sub">${escapeHtml(c.household || c.email)}</div></td>
+          <td>${statusBadge(c.status)}</td>
+          <td>${c.advisor ? escapeHtml(c.advisor.split('@')[0]) : '<span class="cell-missing">—</span>'}</td>
+          <td>${tags || '<span class="cell-missing">—</span>'}</td>
+          <td>${c.hasAccount ? `${p.done} / ${p.total}` : '<span class="cell-missing">no portal account</span>'}</td>
           <td>${act ? escapeHtml(relTime(act)) : '<span class="cell-missing">—</span>'}</td>
         </tr>`;
       });
     body.innerHTML = rows.length
       ? rows.join('')
-      : `<tr><td colspan="4" class="empty">${allClients.length ? 'No contacts match your search.' : 'No client accounts yet.'}</td></tr>`;
+      : `<tr><td colspan="6" class="empty">${allContacts.length ? 'No contacts match.' : 'No contacts yet — add your first with New Contact.'}</td></tr>`;
     body.querySelectorAll('.contact-row').forEach((tr) => {
       tr.addEventListener('click', () => openProfile(tr.dataset.email));
     });
@@ -196,10 +320,86 @@
     renderContacts();
   });
 
+  // ---------- Create / edit contact modal ----------
+
+  function openContactModal(contact) {
+    modalEmail = contact ? contact.email : null;
+    document.getElementById('contact-modal-title').textContent = contact ? 'Edit Contact' : 'New Contact';
+    document.getElementById('cm-email').value = contact ? contact.email : '';
+    document.getElementById('cm-email').disabled = !!contact;
+    document.getElementById('cm-name').value = contact ? contact.name || '' : '';
+    document.getElementById('cm-status').value = contact ? contact.status || 'prospect' : 'prospect';
+    document.getElementById('cm-household').value = contact ? contact.household || '' : '';
+    document.getElementById('cm-phone').value = contact ? contact.phone || '' : '';
+    document.getElementById('cm-tags').value = contact ? (contact.tags || []).join(', ') : '';
+    document.getElementById('cm-dates').value = contact
+      ? (contact.importantDates || []).map((d) => `${d.label}: ${d.date}`).join('\n')
+      : '';
+    document.getElementById('cm-advisor').innerHTML =
+      '<option value="">— none —</option>' +
+      adminList.map((a) => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+    document.getElementById('cm-advisor').value = contact ? contact.advisor || '' : '';
+    document.getElementById('cm-error').textContent = '';
+    document.getElementById('contact-modal-backdrop').classList.remove('hidden');
+  }
+
+  function closeContactModal() {
+    document.getElementById('contact-modal-backdrop').classList.add('hidden');
+  }
+
+  document.getElementById('new-contact-btn').addEventListener('click', () => openContactModal(null));
+  document.getElementById('cm-cancel-btn').addEventListener('click', closeContactModal);
+  document.getElementById('contact-modal-backdrop').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeContactModal();
+  });
+
+  document.getElementById('cm-save-btn').addEventListener('click', async () => {
+    const errEl = document.getElementById('cm-error');
+    errEl.textContent = '';
+    const email = (modalEmail || document.getElementById('cm-email').value).trim().toLowerCase();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errEl.textContent = 'Enter a valid email address.';
+      return;
+    }
+    const importantDates = document.getElementById('cm-dates').value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const i = line.indexOf(':');
+        return i > 0
+          ? { label: line.slice(0, i).trim(), date: line.slice(i + 1).trim() }
+          : { label: line, date: '' };
+      });
+    const payload = {
+      name: document.getElementById('cm-name').value,
+      status: document.getElementById('cm-status').value,
+      household: document.getElementById('cm-household').value,
+      advisor: document.getElementById('cm-advisor').value,
+      phone: document.getElementById('cm-phone').value,
+      tags: document.getElementById('cm-tags').value.split(',').map((t) => t.trim()).filter(Boolean),
+      importantDates,
+    };
+    try {
+      await api(`/api/admin/contacts/${encodeURIComponent(email)}`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      closeContactModal();
+      await loadData();
+      if (!modalEmail) openProfile(email);
+    } catch (err) {
+      errEl.textContent = err.message;
+    }
+  });
+
+  // ---------- Profile ----------
+
   function openProfile(email) {
     selectedEmail = email;
+    activeTab = 'overview';
     history.replaceState(null, '', `?c=${encodeURIComponent(email)}`);
-    renderClientDetail();
+    renderProfile();
     document.getElementById('list-view').classList.add('hidden');
     document.getElementById('profile-view').classList.remove('hidden');
     window.scrollTo(0, 0);
@@ -214,7 +414,82 @@
     window.scrollTo(0, 0);
   }
 
-  // ---------- Client detail (moved from the old admin.html) ----------
+  function currentContact() {
+    return allContacts.find((c) => c.email === selectedEmail);
+  }
+
+  function setTab(tab) {
+    activeTab = tab;
+    document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
+      b.classList.toggle('active', b.dataset.tab === tab)
+    );
+    ['overview', 'assessments', 'documents', 'activity'].forEach((t) =>
+      document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab)
+    );
+    if (tab === 'activity') renderActivityTab(); // fetches on demand
+  }
+
+  document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
+    b.addEventListener('click', () => setTab(b.dataset.tab))
+  );
+
+  function renderProfile() {
+    const c = currentContact();
+    if (!c) { backToList(); return; }
+    const p = clientProgress(c);
+
+    document.getElementById('detail-name').textContent = c.name || c.email;
+    document.getElementById('detail-email').textContent = c.email;
+    document.getElementById('detail-badges').innerHTML =
+      statusBadge(c.status) +
+      (c.tags || []).map((t) => ` <span class="chip">${escapeHtml(t)}</span>`).join('');
+    document.getElementById('print-client-line').textContent = `Client: ${c.name || c.email} (${c.email})`;
+    document.getElementById('print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
+
+    renderOverviewTab(c, p);
+    renderAssessmentsTab(c);
+    renderDocumentsTab(c);
+    setTab(activeTab);
+  }
+
+  function kvRow(label, valueHtml) {
+    return `<div class="kv-row"><span>${escapeHtml(label)}</span><strong>${valueHtml}</strong></div>`;
+  }
+
+  function renderOverviewTab(c, p) {
+    const act = lastActivity(c);
+    document.getElementById('tab-overview').innerHTML = `
+      <div class="overview-grid">
+        <div class="panel">
+          <div class="panel-head"><h2>Contact Information</h2></div>
+          <div class="kv-rows">
+            ${kvRow('Email', escapeHtml(c.email))}
+            ${kvRow('Phone', c.phone ? escapeHtml(c.phone) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Household', c.household ? escapeHtml(c.household) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Primary advisor', c.advisor ? escapeHtml(c.advisor) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Status', statusBadge(c.status))}
+            ${kvRow('Portal account', c.hasAccount ? '<span class="badge badge-green">Registered</span>' : '<span class="badge badge-gray">Not registered</span>')}
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>At a Glance</h2></div>
+          <div class="kv-rows">
+            ${kvRow('Assessments completed', c.hasAccount ? `${p.done} / ${p.total}` : '<span class="cell-missing">no portal account</span>')}
+            ${kvRow('Last portal activity', act ? escapeHtml(relTime(act)) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Contact record created', c.createdAt ? escapeHtml(fmtDate(c.createdAt)) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Last updated', c.updatedAt ? escapeHtml(fmtDate(c.updatedAt)) : '<span class="cell-missing">—</span>')}
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Important Dates</h2></div>
+          ${(c.importantDates || []).length
+            ? `<div class="kv-rows">${c.importantDates.map((d) => kvRow(d.label, escapeHtml(d.date || '—'))).join('')}</div>`
+            : '<p class="empty">None recorded — add them via Edit Contact.</p>'}
+        </div>
+      </div>`;
+  }
+
+  // ---------- Assessments tab (the P0 client detail, unchanged) ----------
 
   function moduleCardHtml(mod, data, number) {
     if (!data) {
@@ -242,8 +517,6 @@
       </div>`;
   }
 
-  // The staff flags surfaced at the top of the detail so nothing gets buried
-  // below 17 module cards.
   function clientFlagsHtml(m) {
     const flags = [];
     if (m.retirement && m.retirement.oldEmployerPlans !== 'none') flags.push('Rollover opportunity');
@@ -258,21 +531,23 @@
 
   const ONB_SECTIONS_KEYS = ['consent', 'regdocs', 'agreement', 'profile', 'discovery', 'snapshot', 'risk', 'uploads', 'portal', 'meetingprep'];
 
-  // Onboarding-workflow records linked to this client by consent or profile email.
-  function clientOnboardingHtml(client) {
-    const email = String(client.email || '').toLowerCase();
-    const rows = [];
-    allOnboardings.forEach((r) => {
-      if (r.deleted) return;
-      const c = (r.data && r.data.consent) || {};
+  function linkedOnboardings(c) {
+    const email = String(c.email || '').toLowerCase();
+    return allOnboardings.filter((r) => {
+      if (r.deleted) return false;
+      const con = (r.data && r.data.consent) || {};
       const p = (r.data && r.data.profile) || {};
-      const match = [c.email, p.email].some((e) => e && String(e).toLowerCase() === email);
-      if (!match) return;
+      return [con.email, p.email].some((e) => e && String(e).toLowerCase() === email);
+    });
+  }
+
+  function clientOnboardingHtml(c) {
+    const rows = linkedOnboardings(c).map((r) => {
       const done = ONB_SECTIONS_KEYS.filter((k) => r.data && r.data[k]).length;
-      rows.push(`<div class="onb-link-row">
+      return `<div class="onb-link-row">
         <span><strong>${escapeHtml(r.onboardingId)}</strong> · ${done} / ${ONB_SECTIONS_KEYS.length} sections · ${r.completionTime ? 'Completed' : 'In progress'}</span>
         <a class="btn btn-ghost btn-small" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">View Onboarding</a>
-      </div>`);
+      </div>`;
     });
     return rows.length
       ? rows.join('')
@@ -301,34 +576,79 @@
     return `<section class="detail-section">${heading}<div class="module-grid">${cards}</div></section>`;
   }
 
-  function renderClientDetail() {
+  function renderAssessmentsTab(c) {
     const detailBody = document.getElementById('detail-body');
-    const client = allClients.find((c) => c.email === selectedEmail);
-    if (!client) {
-      backToList();
+    const assignmentCard = document.getElementById('assignment-card');
+    if (!c.hasAccount) {
+      assignmentCard.classList.add('hidden');
+      detailBody.innerHTML = '<div class="panel"><p class="empty">This contact has no portal account yet, so there are no assessments. They appear here automatically once they register.</p></div>';
       return;
     }
-    const m = client.modules || {};
-    const p = clientProgress(client);
-
-    document.getElementById('detail-name').textContent = client.name;
-    document.getElementById('detail-email').textContent = client.email;
-    document.getElementById('detail-progress').textContent = `${p.done} of ${p.total} modules completed`;
-    document.getElementById('print-client-line').textContent = `Client: ${client.name} (${client.email})`;
-    document.getElementById('print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
-
+    assignmentCard.classList.remove('hidden');
+    const m = c.modules || {};
     detailBody.innerHTML =
-      clientFlagsHtml(m) + CATEGORIES.map((cat) => categorySectionHtml(cat, m, client)).join('');
-
-    // Build the assignment editor once per selected client so a polling
-    // refresh can't wipe unsaved checkbox edits.
+      clientFlagsHtml(m) + CATEGORIES.map((cat) => categorySectionHtml(cat, m, c)).join('');
+    // Rebuild the assignment editor only when the selected client changes so a
+    // polling refresh can't wipe unsaved checkbox edits.
     if (assignmentEditorEmail !== selectedEmail) {
-      renderAssignmentEditor(client);
+      renderAssignmentEditor(c);
       assignmentEditorEmail = selectedEmail;
     }
   }
 
-  // ---------- Module assignment editor (moved from the old admin.html) ----------
+  // ---------- Documents tab (existing artifacts only; uploads come later) ----------
+
+  function renderDocumentsTab(c) {
+    const linked = linkedOnboardings(c);
+    const agreements = linked
+      .filter((r) => r.data && r.data.agreement)
+      .map((r) => {
+        const a = r.data.agreement;
+        const sig = a.signatureDataUrl
+          ? `<div class="onb-signature"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Client signature" /></div>`
+          : '<p class="empty">No signature captured.</p>';
+        return `<div class="panel">
+          <div class="panel-head"><h2>Advisory Agreement — ${escapeHtml(r.onboardingId)}</h2>
+            <a class="panel-link" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">Full record →</a></div>
+          <div class="kv-rows">
+            ${kvRow('Typed name', a.typedName ? escapeHtml(a.typedName) : '—')}
+            ${kvRow('Signed at', a.signedAt ? escapeHtml(fmtDateTime(a.signedAt)) : '—')}
+            ${kvRow('Acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No')}
+          </div>
+          ${sig}
+        </div>`;
+      });
+    document.getElementById('tab-documents').innerHTML =
+      (agreements.length ? agreements.join('') : '<div class="panel"><p class="empty">No signed agreements on file for this contact.</p></div>') +
+      '<p class="hint">Client file uploads (tax returns, statements) are a planned feature — signed onboarding agreements are shown here today.</p>';
+  }
+
+  // ---------- Activity tab (admin audit entries touching this contact) ----------
+
+  async function renderActivityTab() {
+    const wrap = document.getElementById('tab-activity');
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const data = await api('/api/admin/audit');
+      const mine = (data.entries || []).filter((e) => e.detail && e.detail.client === selectedEmail);
+      wrap.innerHTML = `<div class="panel">
+        <div class="panel-head"><h2>Admin Actions on This Contact</h2></div>
+        <p class="hint">From the audit log (newest ${data.entries ? data.entries.length : 0} entries scanned). The full log is under Settings.</p>
+        ${mine.length
+          ? `<div class="row-list">${mine.map((e) => `<div class="row-item">
+              <div class="row-main">
+                <div class="row-title">${escapeHtml(e.action)}</div>
+                <div class="row-sub">by ${escapeHtml(e.email)} · ${escapeHtml(fmtDateTime(e.ts))}</div>
+              </div>
+            </div>`).join('')}</div>`
+          : '<p class="empty">No logged admin actions reference this contact in the recent audit entries.</p>'}
+      </div>`;
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Module assignment editor ----------
 
   function assignmentGroups() {
     return CATEGORIES.map((cat) => {
@@ -407,7 +727,7 @@
         method: 'POST',
         body: JSON.stringify({ assignments: keys }),
       });
-      const client = allClients.find((c) => c.email === selectedEmail);
+      const client = currentContact();
       if (client) client.assignments = data.assignments;
       statusEl.textContent = `Saved ${new Date().toLocaleTimeString()}`;
     } catch (err) {
@@ -415,18 +735,21 @@
     }
   });
 
+  document.getElementById('edit-contact-btn').addEventListener('click', () => {
+    const c = currentContact();
+    if (c) openContactModal(c);
+  });
   document.getElementById('detail-print-btn').addEventListener('click', () => window.print());
   document.getElementById('detail-back-btn').addEventListener('click', backToList);
 
-  // Poll to keep list + open profile fresh (assignment editor is rebuilt only
-  // when the selected client changes, so edits survive the refresh).
+  // Poll to keep the list + open profile fresh.
   setInterval(() => loadData(), POLL_INTERVAL_MS);
 
   // Deep link: /admin/contacts.html?c=email opens that profile directly.
   (async function init() {
     await loadData();
     const want = new URLSearchParams(location.search).get('c');
-    if (want && allClients.some((c) => c.email === want)) openProfile(want);
+    if (want && allContacts.some((c) => c.email === want)) openProfile(want);
   })();
 </script>
 </body>

@@ -1647,6 +1647,147 @@ async function handleAdminAudit(request, env, cors) {
   );
 }
 
+// ---------- Advisor CRM: contacts ----------
+// contact:<email> holds the CRM fields an advisor manages about a person
+// (status, household, advisor, tags, …), stored encrypted. It exists
+// independently of a portal account: prospects can be created before they
+// register, and registered clients without a contact record still appear in
+// the merged listing with sensible defaults.
+const CONTACT_STATUSES = ['prospect', 'onboarding', 'active', 'inactive'];
+
+// Collect every key under a prefix (bounded by small-firm scale; the same
+// full-scan pattern the client listing already uses).
+async function listKeys(env, prefix) {
+  const names = [];
+  let cursor;
+  do {
+    const page = await env.PORTAL_KV.list({ prefix, cursor });
+    for (const key of page.keys) names.push(key.name);
+    cursor = page.cursor;
+    if (page.list_complete) break;
+  } while (cursor);
+  return names;
+}
+
+function sanitizeContactFields(body) {
+  const out = {};
+  if (typeof body.name === 'string') out.name = body.name.trim().slice(0, 200);
+  if (typeof body.status === 'string') {
+    if (!CONTACT_STATUSES.includes(body.status)) return { error: 'Invalid status' };
+    out.status = body.status;
+  }
+  if (typeof body.household === 'string') out.household = body.household.trim().slice(0, 200);
+  if (typeof body.phone === 'string') out.phone = body.phone.trim().slice(0, 50);
+  if (typeof body.advisor === 'string') {
+    const adv = body.advisor.trim().toLowerCase();
+    if (adv && !ADMIN_ACCOUNTS.some((a) => a.email === adv)) return { error: 'Advisor must be an admin account' };
+    out.advisor = adv;
+  }
+  if (Array.isArray(body.tags)) {
+    out.tags = body.tags
+      .filter((t) => typeof t === 'string' && t.trim())
+      .map((t) => t.trim().slice(0, 40))
+      .slice(0, 20);
+  }
+  if (Array.isArray(body.importantDates)) {
+    out.importantDates = body.importantDates
+      .filter((d) => d && typeof d.label === 'string' && d.label.trim())
+      .map((d) => ({ label: String(d.label).trim().slice(0, 60), date: String(d.date || '').trim().slice(0, 40) }))
+      .slice(0, 20);
+  }
+  return { fields: out };
+}
+
+// One boot payload for the CRM UI: contact records merged with portal
+// accounts, each entry carrying modules + assignments so the front end can
+// compute completion, filters, and search without further calls.
+async function handleAdminContacts(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+
+  const merged = new Map(); // email -> entry
+
+  // CRM contact records first (decrypt failure fails closed like elsewhere).
+  for (const keyName of await listKeys(env, 'contact:')) {
+    const rec = await decryptToObject(env, await env.PORTAL_KV.get(keyName));
+    if (!rec || !rec.email) continue;
+    merged.set(rec.email, {
+      email: rec.email,
+      name: rec.name || '',
+      status: rec.status || 'prospect',
+      household: rec.household || '',
+      advisor: rec.advisor || '',
+      phone: rec.phone || '',
+      tags: rec.tags || [],
+      importantDates: rec.importantDates || [],
+      createdAt: rec.createdAt || null,
+      updatedAt: rec.updatedAt || null,
+      hasAccount: false,
+      modules: {},
+      modulesError: false,
+      assignments: null,
+    });
+  }
+
+  // Portal accounts: merge into (or create) an entry per user.
+  for (const keyName of await listKeys(env, 'user:')) {
+    const email = keyName.slice('user:'.length);
+    const userRaw = await env.PORTAL_KV.get(keyName);
+    if (!userRaw) continue;
+    const user = JSON.parse(userRaw);
+    const entry = merged.get(email) || {
+      email,
+      name: '',
+      status: 'active', // an account holder you never categorized is a live client
+      household: '',
+      advisor: '',
+      phone: '',
+      tags: [],
+      importantDates: [],
+      createdAt: null,
+      updatedAt: null,
+      modules: {},
+      modulesError: false,
+      assignments: null,
+    };
+    entry.hasAccount = true;
+    if (!entry.name) entry.name = user.name || '';
+    try {
+      entry.modules = await loadModules(env, await env.PORTAL_KV.get(`responses:${email}`));
+    } catch {
+      entry.modulesError = true;
+    }
+    entry.assignments = loadAssignments(await env.PORTAL_KV.get(`assignments:${email}`));
+    merged.set(email, entry);
+  }
+
+  return json({ contacts: [...merged.values()], admins: ADMIN_ACCOUNTS.map((a) => a.email) }, 200, cors);
+}
+
+// Create/update the CRM fields for one contact. Partial update: only the
+// fields present in the body change; the rest of the record is preserved.
+async function handleAdminUpsertContact(request, env, cors, targetEmail) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const email = String(targetEmail).trim().toLowerCase();
+  if (!isValidEmail(email)) return json({ error: 'Invalid contact email' }, 400, cors);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+
+  const { fields, error } = sanitizeContactFields(body);
+  if (error) return json({ error }, 400, cors);
+
+  const existing = (await decryptToObject(env, await env.PORTAL_KV.get(`contact:${email}`))) || {
+    email,
+    status: 'prospect',
+    createdAt: new Date().toISOString(),
+  };
+  const record = { ...existing, ...fields, email, updatedAt: new Date().toISOString() };
+  await env.PORTAL_KV.put(`contact:${email}`, await encryptJSON(env, record));
+  await logAudit(env, adminEmail, 'update-contact', { client: email });
+  return json({ contact: record }, 200, cors);
+}
+
 async function handleAdminClients(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -1733,6 +1874,13 @@ export default {
       }
       if (url.pathname === '/api/admin/admins' && request.method === 'GET') {
         return await handleAdminListAdmins(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/contacts' && request.method === 'GET') {
+        return await handleAdminContacts(request, env, cors);
+      }
+      const contactMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)$/);
+      if (contactMatch && request.method === 'POST') {
+        return await handleAdminUpsertContact(request, env, cors, decodeURIComponent(contactMatch[1]));
       }
       const resetMfaMatch = url.pathname.match(/^\/api\/admin\/mfa\/reset\/(.+)$/);
       if (resetMfaMatch && request.method === 'POST') {

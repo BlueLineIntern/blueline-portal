@@ -37,6 +37,8 @@ $adminPasswords = @{
 }
 $adminMfa = @{}      # email -> @{ secret; confirmed; backupCodes=@(@{hash;used}); createdAt }
 $adminPending = @{}  # pending token -> email (short-lived between password and 2nd factor)
+$contacts = @{}      # email -> CRM contact record (worker stores these encrypted in KV)
+$contactStatuses = @('prospect', 'onboarding', 'active', 'inactive')
 
 # ---- Admin MFA (TOTP) mirror of worker.js. In-memory; no encryption (the real
 # worker encrypts the secret at rest). Algorithm validated vs RFC 6238 vectors. ----
@@ -526,6 +528,67 @@ while ($listener.IsListening) {
             $mfaMethod = if ($usedBackup) { 'backup-code' } else { 'totp' }
             Write-Audit $email 'login' @{ mfa = $mfaMethod }
             Send-Json $ctx 200 @{ token = $token; email = $email; usedBackup = $usedBackup }
+        }
+        elseif ($path -eq '/api/admin/contacts' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $merged = @{}
+            foreach ($rec in $contacts.Values) {
+                $merged[$rec.email] = [ordered]@{
+                    email = $rec.email; name = $rec.name; status = $rec.status
+                    household = $rec.household; advisor = $rec.advisor; phone = $rec.phone
+                    tags = @($rec.tags); importantDates = @($rec.importantDates)
+                    createdAt = $rec.createdAt; updatedAt = $rec.updatedAt
+                    hasAccount = $false; modules = @{}; modulesError = $false; assignments = $null
+                }
+            }
+            foreach ($u in $users.Values) {
+                $entry = $merged[$u.email]
+                if (-not $entry) {
+                    $entry = [ordered]@{
+                        email = $u.email; name = ''; status = 'active'
+                        household = ''; advisor = ''; phone = ''
+                        tags = @(); importantDates = @()
+                        createdAt = $null; updatedAt = $null
+                        hasAccount = $false; modules = @{}; modulesError = $false; assignments = $null
+                    }
+                }
+                $entry.hasAccount = $true
+                if (-not $entry.name) { $entry.name = $u.name }
+                $entry.modules = if ($responses.ContainsKey($u.email)) { $responses[$u.email] } else { @{} }
+                $entry.assignments = if ($assignments.ContainsKey($u.email)) { @($assignments[$u.email]) } else { $null }
+                $merged[$u.email] = $entry
+            }
+            Send-Json $ctx 200 @{ contacts = @($merged.Values); admins = @($adminPasswords.Keys) }
+        }
+        elseif ($path -match '^/api/admin/contacts/(.+)$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if ($target -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$') { Send-Json $ctx 400 @{ error = 'Invalid contact email' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
+            if ($body.PSObject.Properties['status'] -and $contactStatuses -notcontains [string]$body.status) {
+                Send-Json $ctx 400 @{ error = 'Invalid status' }; continue
+            }
+            if ($body.PSObject.Properties['advisor'] -and [string]$body.advisor -and -not $adminPasswords.ContainsKey(([string]$body.advisor).Trim().ToLower())) {
+                Send-Json $ctx 400 @{ error = 'Advisor must be an admin account' }; continue
+            }
+            $rec = $contacts[$target]
+            if (-not $rec) {
+                $rec = [ordered]@{ email = $target; name = ''; status = 'prospect'; household = ''; advisor = ''; phone = ''
+                    tags = @(); importantDates = @(); createdAt = (Get-Date).ToString('o'); updatedAt = $null }
+            }
+            foreach ($f in @('name', 'status', 'household', 'advisor', 'phone')) {
+                if ($body.PSObject.Properties[$f]) { $rec[$f] = ([string]$body.$f).Trim() }
+            }
+            if ($body.PSObject.Properties['tags']) { $rec.tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() }) }
+            if ($body.PSObject.Properties['importantDates']) {
+                $rec.importantDates = @($body.importantDates | Where-Object { $_ -and $_.label } | ForEach-Object { @{ label = ([string]$_.label).Trim(); date = [string]$_.date } })
+            }
+            $rec.updatedAt = (Get-Date).ToString('o')
+            $contacts[$target] = $rec
+            Write-Audit $adminEmail 'update-contact' @{ client = $target }
+            Send-Json $ctx 200 @{ contact = $rec }
         }
         elseif ($path -eq '/api/admin/admins' -and $method -eq 'GET') {
             $adminEmail = Get-AdminEmail $ctx

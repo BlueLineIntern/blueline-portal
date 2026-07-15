@@ -5,3 +5,9 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local browser test harnesses (run the real worker.js against a mock KV).
+# Never deploy these: worker-copy.js duplicates the backend source and the
+# harness pages have no place on the live site.
+public/worker-copy.js
+public/*-test.html
