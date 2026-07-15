@@ -34,6 +34,77 @@ $adminPasswords = @{
     'fsabin@blueline-advisors.com'  = 'dev-fsabin-pass'
     'jyoung@blueline-advisors.com'  = 'dev-jyoung-pass'
 }
+$adminMfa = @{}      # email -> @{ secret; confirmed; backupCodes=@(@{hash;used}); createdAt }
+$adminPending = @{}  # pending token -> email (short-lived between password and 2nd factor)
+
+# ---- Admin MFA (TOTP) mirror of worker.js. In-memory; no encryption (the real
+# worker encrypts the secret at rest). Algorithm validated vs RFC 6238 vectors. ----
+$base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+function ConvertTo-Base32([byte[]]$bytes) {
+    $bits = 0; $value = 0; $sb = New-Object System.Text.StringBuilder
+    foreach ($b in $bytes) {
+        $value = ($value -shl 8) -bor $b; $bits += 8
+        while ($bits -ge 5) { [void]$sb.Append($base32Alphabet[(($value -shr ($bits - 5)) -band 31)]); $bits -= 5 }
+    }
+    if ($bits -gt 0) { [void]$sb.Append($base32Alphabet[(($value -shl (5 - $bits)) -band 31)]) }
+    return $sb.ToString()
+}
+function ConvertFrom-Base32([string]$b32) {
+    $bits = 0; $value = 0; $out = New-Object System.Collections.Generic.List[byte]
+    foreach ($ch in $b32.TrimEnd('=').ToUpper().ToCharArray()) {
+        $idx = $base32Alphabet.IndexOf($ch)
+        if ($idx -lt 0) { continue }
+        $value = ($value -shl 5) -bor $idx; $bits += 5
+        if ($bits -ge 8) { $out.Add([byte](($value -shr ($bits - 8)) -band 0xff)); $bits -= 8 }
+    }
+    return $out.ToArray()
+}
+function Get-TotpCode([byte[]]$secret, [long]$counter) {
+    $msg = New-Object byte[] 8
+    $c = $counter
+    for ($i = 7; $i -ge 0; $i--) { $msg[$i] = [byte]($c -band 0xff); $c = [long][math]::Floor($c / 256) }
+    $hmac = New-Object System.Security.Cryptography.HMACSHA1
+    $hmac.Key = $secret
+    $sig = $hmac.ComputeHash($msg)
+    $offset = $sig[19] -band 0x0f
+    $bin = ((($sig[$offset] -band 0x7f) -shl 24) -bor (($sig[$offset + 1] -band 0xff) -shl 16) -bor (($sig[$offset + 2] -band 0xff) -shl 8) -bor ($sig[$offset + 3] -band 0xff))
+    return ('{0:D6}' -f ($bin % 1000000))
+}
+function Test-Totp([string]$secretB32, [string]$code) {
+    $clean = ($code -replace '\s', '')
+    if ($clean -notmatch '^\d{6}$') { return $false }
+    $secret = ConvertFrom-Base32 $secretB32
+    $counter = [long][math]::Floor([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 30)
+    for ($w = -1; $w -le 1; $w++) {
+        if ((Get-TotpCode $secret ($counter + $w)) -eq $clean) { return $true }
+    }
+    return $false
+}
+function Get-Sha256Hex([string]$s) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($s))
+    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+function New-TotpSecret {
+    $bytes = New-Object byte[] 20
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    return ConvertTo-Base32 $bytes
+}
+function New-BackupCodes {
+    $codes = @()
+    for ($i = 0; $i -lt 8; $i++) {
+        $b = New-Object byte[] 5
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+        $hex = (($b | ForEach-Object { $_.ToString('x2') }) -join '')
+        $codes += ($hex.Substring(0, 5) + '-' + $hex.Substring(5))
+    }
+    return $codes
+}
+function Get-OtpauthUri([string]$email, [string]$secret) {
+    $issuer = 'BlueLine Advisors'
+    $label = [Uri]::EscapeDataString("${issuer}:${email}")
+    return "otpauth://totp/$label`?secret=$secret&issuer=$([Uri]::EscapeDataString($issuer))&algorithm=SHA1&digits=6&period=30"
+}
 
 # Fixed-window rate limiting, mirroring worker.js. [limit, windowSeconds].
 $rateLimits = @{ login = @(10, 300); register = @(5, 3600); onboardingStart = @(20, 3600) }
@@ -409,10 +480,51 @@ while ($listener.IsListening) {
             if ((-not $expected) -or (([string]$body.password).Trim() -ne $expected.Trim())) {
                 Send-Json $ctx 401 @{ error = 'Invalid email or password' }; continue
             }
+            # Password OK, but a second factor is always required. Issue a pending token.
+            $mfa = $adminMfa[$email]
+            $enrolled = ($mfa -and $mfa.confirmed)
+            $pendingToken = New-Token
+            $adminPending[$pendingToken] = $email
+            $status = if ($enrolled) { 'mfa' } else { 'enroll' }
+            Send-Json $ctx 200 @{ status = $status; pendingToken = $pendingToken }
+        }
+        elseif ($path -eq '/api/admin/mfa/enroll' -and $method -eq 'POST') {
+            $body = Read-Body $ctx
+            $email = $adminPending[[string]$body.pendingToken]
+            if (-not $email) { Send-Json $ctx 401 @{ error = 'Session expired — please sign in again.' }; continue }
+            $existing = $adminMfa[$email]
+            if ($existing -and $existing.confirmed) { Send-Json $ctx 409 @{ error = 'MFA is already set up.' }; continue }
+            $secret = New-TotpSecret
+            $codes = New-BackupCodes
+            $hashed = @($codes | ForEach-Object { @{ hash = (Get-Sha256Hex $_); used = $false } })
+            $adminMfa[$email] = @{ secret = $secret; confirmed = $false; backupCodes = $hashed; createdAt = (Get-Date).ToString('o') }
+            Send-Json $ctx 200 @{ secret = $secret; otpauthUri = (Get-OtpauthUri $email $secret); backupCodes = $codes }
+        }
+        elseif ($path -eq '/api/admin/mfa/verify' -and $method -eq 'POST') {
+            $body = Read-Body $ctx
+            $pendingToken = [string]$body.pendingToken
+            $email = $adminPending[$pendingToken]
+            if (-not $email) { Send-Json $ctx 401 @{ error = 'Session expired — please sign in again.' }; continue }
+            $code = [string]$body.code
+            if (-not $code) { Send-Json $ctx 400 @{ error = 'Enter the 6-digit code.' }; continue }
+            $mfa = $adminMfa[$email]
+            if (-not $mfa) { Send-Json $ctx 400 @{ error = 'MFA is not set up.' }; continue }
+            $ok = Test-Totp $mfa.secret $code
+            $usedBackup = $false
+            if (-not $ok) {
+                $codeHash = Get-Sha256Hex (($code -replace '\s', '').ToLower())
+                foreach ($bc in $mfa.backupCodes) {
+                    if ((-not $bc.used) -and ($bc.hash -eq $codeHash)) { $bc.used = $true; $ok = $true; $usedBackup = $true; break }
+                }
+            }
+            if (-not $ok) { Send-Json $ctx 401 @{ error = 'Invalid code.' }; continue }
+            if ((-not $mfa.confirmed) -or $usedBackup) { $mfa.confirmed = $true }
+            $adminPending.Remove($pendingToken)
             $token = New-Token
             $adminSessions[$token] = $email
-            Write-Audit $email 'login' $null
-            Send-Json $ctx 200 @{ token = $token; email = $email }
+            $mfaMethod = if ($usedBackup) { 'backup-code' } else { 'totp' }
+            Write-Audit $email 'login' @{ mfa = $mfaMethod }
+            Send-Json $ctx 200 @{ token = $token; email = $email; usedBackup = $usedBackup }
         }
         elseif ($path -eq '/api/admin/logout' -and $method -eq 'POST') {
             $auth = $ctx.Request.Headers['Authorization']

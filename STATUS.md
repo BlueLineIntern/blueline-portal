@@ -168,9 +168,26 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   per-person. Set them with `wrangler secret put ADMIN_PASSWORD_FSABIN` (and
   `..._JYOUNG`), or in the Cloudflare dashboard.
 - `POST /api/admin/login` `{email,password}` → finds the account by email and
-  `timingSafeEqual(password, <that account's secret>)` (both trimmed), mints an
-  `admin_session:<token>` KV entry (12-hour TTL), returns `{token,email}`.
-  Rate-limited (`adminlogin`, 10/5min/IP). `POST /api/admin/logout` deletes the session.
+  `timingSafeEqual(password, <that account's secret>)` (both trimmed). Password is
+  **not sufficient on its own** — it returns `{status:'mfa'|'enroll', pendingToken}`
+  (10-min TTL `admin_pending:<token>`), never a session. Rate-limited (`adminlogin`,
+  10/5min/IP). `POST /api/admin/logout` deletes the session.
+- **MFA (TOTP, RFC 6238, mandatory)**: every admin signs in with a second factor.
+  `POST /api/admin/mfa/enroll` `{pendingToken}` mints a 160-bit base32 secret +
+  8 single-use backup codes (returns them once, with an `otpauth://` URI; refuses
+  if a confirmed authenticator already exists). `POST /api/admin/mfa/verify`
+  `{pendingToken,code}` accepts a TOTP (±1 30s step for clock skew) or an unused
+  backup code, confirms enrollment on first success, then mints the
+  `admin_session:<token>` (12-hour TTL) and returns `{token,email}`; also
+  rate-limited. The per-admin record `admin_mfa:<email>` (secret + hashed backup
+  codes) is stored **encrypted** (DATA_ENCRYPTION_KEY); a decrypt failure throws
+  (fail closed — never read as "no MFA"). Backup-code hashes are SHA-256. TOTP
+  (base32 + HMAC-SHA1 truncation) validated against the RFC 6238 test vectors.
+  Admin page has "Enter code" and "Set up MFA" cards (secret shown for manual
+  entry — no QR yet — plus backup codes); the mock mirrors the whole flow in
+  memory (unencrypted) with matching TOTP so it's testable locally.
+  **NOTE:** losing the authenticator with all backup codes used = lockout;
+  recovery today is manual (delete `admin_mfa:<email>` in KV to force re-enroll).
 - Every admin endpoint now calls `getAdminEmail(request, env)` (resolves the
   bearer token → session email) instead of comparing a static token; a missing/
   expired session → 401. The admin page (`admin.html`) has an email+password
@@ -199,10 +216,13 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   viewer is exercisable locally.)
 
 ## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
-- Admin has per-person login, sessions, and an audit log with a viewer, but there
-  is still **no MFA** and no anomaly alerting yet. Revoking one person now means
-  rotating only that person's secret (e.g. `ADMIN_PASSWORD_JYOUNG`) — as long as
-  the legacy shared `ADMIN_PASSWORD` has been deleted from Cloudflare.
+- Admin has per-person login, sessions, mandatory TOTP MFA, and an audit log with
+  a viewer, but there is still **no self-service MFA recovery** (a fully
+  locked-out admin needs `admin_mfa:<email>` deleted in KV) and no anomaly
+  alerting yet. Revoking one person now means rotating only that person's secret
+  (e.g. `ADMIN_PASSWORD_JYOUNG`) — as long as the legacy shared `ADMIN_PASSWORD`
+  has been deleted from Cloudflare. Clients have no MFA (deliberate — a
+  compromised client login exposes only that one client's data).
 - **Encryption scope is partial**: client assessment responses are now
   AES-256-GCM encrypted at rest (see Security hardening), but `user:` records,
   `onboarding:` POC records, and the audit log are still plaintext, and the key

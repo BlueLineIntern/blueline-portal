@@ -340,13 +340,20 @@ async function handleAdminLogin(request, env, cors) {
     return json({ error: 'Invalid email or password' }, 401, cors);
   }
 
-  const token = randomHex(32);
-  await env.PORTAL_KV.put(`admin_session:${token}`, normalizedEmail, {
-    expirationTtl: ADMIN_SESSION_TTL_SECONDS,
-  });
-  await logAudit(env, normalizedEmail, 'login', null);
-
-  return json({ token, email: normalizedEmail }, 200, cors);
+  // Password is correct, but it is NOT sufficient on its own — a second factor
+  // (TOTP) is always required. Issue a short-lived pending token; the caller
+  // must complete /api/admin/mfa/verify (or enroll first) to get a real session.
+  // getAdminMfa throws on a decrypt failure, which the top-level handler turns
+  // into a 500 — i.e. we fail closed rather than silently skipping MFA.
+  const mfa = await getAdminMfa(env, normalizedEmail);
+  const enrolled = !!(mfa && mfa.confirmed);
+  const pendingToken = randomHex(32);
+  await env.PORTAL_KV.put(
+    `admin_pending:${pendingToken}`,
+    JSON.stringify({ email: normalizedEmail }),
+    { expirationTtl: MFA_PENDING_TTL_SECONDS }
+  );
+  return json({ status: enrolled ? 'mfa' : 'enroll', pendingToken }, 200, cors);
 }
 
 async function handleAdminLogout(request, env, cors) {
@@ -356,6 +363,209 @@ async function handleAdminLogout(request, env, cors) {
     await env.PORTAL_KV.delete(`admin_session:${match[1]}`);
   }
   return json({ ok: true }, 200, cors);
+}
+
+// ---------- Admin MFA (TOTP, RFC 6238) ----------
+// Admin sign-in is two steps: password (handleAdminLogin) issues a short-lived
+// pending token; the caller then proves a second factor via mfa/verify to get a
+// real session. First-time users enroll (mfa/enroll) an authenticator secret and
+// confirm it with a code. TOTP verification (base32 + HMAC-SHA1 truncation) is
+// validated against the RFC 6238 test vectors. The per-admin secret + hashed
+// backup codes live encrypted (DATA_ENCRYPTION_KEY) under admin_mfa:<email>.
+const TOTP_STEP_SECONDS = 30;
+const TOTP_DIGITS = 6;
+const TOTP_ISSUER = 'BlueLine Advisors';
+const MFA_PENDING_TTL_SECONDS = 600; // 10 min to complete the second factor
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(bytes) {
+  let bits = 0;
+  let value = 0;
+  let out = '';
+  for (const b of bytes) {
+    value = (value << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      out += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) out += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  return out;
+}
+
+function base32Decode(b32) {
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (const ch of String(b32).replace(/=+$/, '').toUpperCase()) {
+    const idx = BASE32_ALPHABET.indexOf(ch);
+    if (idx === -1) continue;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return new Uint8Array(out);
+}
+
+async function totpAt(secretBytes, counter) {
+  const key = await crypto.subtle.importKey('raw', secretBytes, { name: 'HMAC', hash: 'SHA-1' }, false, [
+    'sign',
+  ]);
+  const msg = new Uint8Array(8);
+  let c = counter;
+  for (let i = 7; i >= 0; i--) {
+    msg[i] = c & 0xff;
+    c = Math.floor(c / 256);
+  }
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, msg));
+  const offset = sig[19] & 0x0f;
+  const bin =
+    ((sig[offset] & 0x7f) << 24) |
+    ((sig[offset + 1] & 0xff) << 16) |
+    ((sig[offset + 2] & 0xff) << 8) |
+    (sig[offset + 3] & 0xff);
+  return String(bin % 10 ** TOTP_DIGITS).padStart(TOTP_DIGITS, '0');
+}
+
+// Accept the current 30s step plus one on each side, to tolerate clock skew.
+async function verifyTotp(secretB32, code) {
+  const clean = String(code).replace(/\s/g, '');
+  if (!/^\d{6}$/.test(clean)) return false;
+  const secretBytes = base32Decode(secretB32);
+  const counter = Math.floor(Date.now() / 1000 / TOTP_STEP_SECONDS);
+  for (let w = -1; w <= 1; w++) {
+    const expected = await totpAt(secretBytes, counter + w);
+    if (timingSafeEqual(clean, expected)) return true;
+  }
+  return false;
+}
+
+function generateTotpSecret() {
+  return base32Encode(crypto.getRandomValues(new Uint8Array(20))); // 160-bit
+}
+
+function otpauthUri(email, secretB32) {
+  const label = encodeURIComponent(`${TOTP_ISSUER}:${email}`);
+  const params = new URLSearchParams({
+    secret: secretB32,
+    issuer: TOTP_ISSUER,
+    algorithm: 'SHA1',
+    digits: String(TOTP_DIGITS),
+    period: String(TOTP_STEP_SECONDS),
+  });
+  return `otpauth://totp/${label}?${params.toString()}`;
+}
+
+async function sha256Hex(str) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function generateBackupCodes(n = 8) {
+  const codes = [];
+  for (let i = 0; i < n; i++) {
+    const hex = randomHex(5); // 10 hex chars
+    codes.push(`${hex.slice(0, 5)}-${hex.slice(5)}`);
+  }
+  return codes;
+}
+
+// Load/save the per-admin MFA record. getAdminMfa lets a decrypt failure throw
+// (fail closed) so a broken key can never be read as "no MFA configured".
+async function getAdminMfa(env, email) {
+  const raw = await env.PORTAL_KV.get(`admin_mfa:${email}`);
+  if (!raw) return null;
+  return decryptToObject(env, raw);
+}
+
+async function putAdminMfa(env, email, record) {
+  await env.PORTAL_KV.put(`admin_mfa:${email}`, await encryptJSON(env, record));
+}
+
+async function resolvePending(env, token) {
+  if (!token) return null;
+  const raw = await env.PORTAL_KV.get(`admin_pending:${token}`);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// Begin enrollment: generate a fresh (unconfirmed) secret + backup codes and
+// return them once. Refuses if a confirmed authenticator already exists, so a
+// stolen password alone can't silently replace a working second factor.
+async function handleAdminMfaEnroll(request, env, cors) {
+  const body = await request.json().catch(() => null);
+  const pending = await resolvePending(env, body && body.pendingToken);
+  if (!pending) return json({ error: 'Session expired — please sign in again.' }, 401, cors);
+
+  const existing = await getAdminMfa(env, pending.email);
+  if (existing && existing.confirmed) return json({ error: 'MFA is already set up.' }, 409, cors);
+
+  const secret = generateTotpSecret();
+  const backupCodes = generateBackupCodes();
+  const hashed = [];
+  for (const code of backupCodes) hashed.push({ hash: await sha256Hex(code), used: false });
+  await putAdminMfa(env, pending.email, {
+    secret,
+    confirmed: false,
+    backupCodes: hashed,
+    createdAt: new Date().toISOString(),
+  });
+
+  return json(
+    { secret, otpauthUri: otpauthUri(pending.email, secret), backupCodes },
+    200,
+    cors
+  );
+}
+
+// Complete the second factor: accept a valid TOTP code or an unused backup code,
+// confirm enrollment on first success, and mint the real admin session.
+async function handleAdminMfaVerify(request, env, cors) {
+  if (!(await checkRateLimit(env, 'adminlogin', clientIp(request)))) {
+    return json({ error: 'Too many attempts. Please try again later.' }, 429, cors);
+  }
+  const body = await request.json().catch(() => null);
+  const pending = await resolvePending(env, body && body.pendingToken);
+  if (!pending) return json({ error: 'Session expired — please sign in again.' }, 401, cors);
+  const code = body && body.code;
+  if (!code) return json({ error: 'Enter the 6-digit code.' }, 400, cors);
+
+  const mfa = await getAdminMfa(env, pending.email);
+  if (!mfa) return json({ error: 'MFA is not set up.' }, 400, cors);
+
+  let ok = await verifyTotp(mfa.secret, code);
+  let usedBackup = false;
+  if (!ok) {
+    const codeHash = await sha256Hex(String(code).replace(/\s/g, '').toLowerCase());
+    const match = (mfa.backupCodes || []).find((bc) => !bc.used && timingSafeEqual(bc.hash, codeHash));
+    if (match) {
+      match.used = true;
+      ok = true;
+      usedBackup = true;
+    }
+  }
+  if (!ok) return json({ error: 'Invalid code.' }, 401, cors);
+
+  if (!mfa.confirmed || usedBackup) {
+    mfa.confirmed = true;
+    await putAdminMfa(env, pending.email, mfa);
+  }
+  await env.PORTAL_KV.delete(`admin_pending:${body.pendingToken}`);
+
+  const token = randomHex(32);
+  await env.PORTAL_KV.put(`admin_session:${token}`, pending.email, {
+    expirationTtl: ADMIN_SESSION_TTL_SECONDS,
+  });
+  await logAudit(env, pending.email, 'login', { mfa: usedBackup ? 'backup-code' : 'totp' });
+  return json({ token, email: pending.email, usedBackup }, 200, cors);
 }
 
 // ---------- Data-at-rest encryption (AES-256-GCM) ----------
@@ -1483,6 +1693,12 @@ export default {
       }
       if (url.pathname === '/api/admin/login' && request.method === 'POST') {
         return await handleAdminLogin(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/mfa/enroll' && request.method === 'POST') {
+        return await handleAdminMfaEnroll(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/mfa/verify' && request.method === 'POST') {
+        return await handleAdminMfaVerify(request, env, cors);
       }
       if (url.pathname === '/api/admin/logout' && request.method === 'POST') {
         return await handleAdminLogout(request, env, cors);

@@ -14,6 +14,14 @@
   .admin-table th { color: var(--navy); font-family: Georgia, serif; }
   .admin-empty { color: var(--text-muted); white-space: normal; }
   .token-form { max-width: 400px; margin: 60px auto 0; }
+  .mfa-steps { margin: 8px 0 0; padding-left: 20px; }
+  .mfa-steps li { margin-bottom: 18px; line-height: 1.5; }
+  .mfa-secret { font-family: 'Courier New', monospace; font-size: 1.15rem; letter-spacing: 2px; font-weight: 700;
+    background: #f4f6f9; border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; margin: 8px 0 0;
+    word-break: break-all; color: var(--navy); }
+  .mfa-backup { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 18px; font-family: 'Courier New', monospace;
+    background: #f4f6f9; border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; margin: 8px 0 0; }
+  #mfa-code, #mfa-enroll-code { letter-spacing: 4px; font-size: 1.2rem; text-align: center; }
   .cell-missing { color: var(--text-muted); }
   .module-count { font-weight: 700; color: var(--navy); }
   .btn-small { padding: 6px 14px; font-size: 0.85rem; }
@@ -172,6 +180,42 @@
         <p class="form-error" id="token-error"></p>
         <button type="submit" class="btn btn-primary">Sign In</button>
       </form>
+    </div>
+
+    <div class="card token-form hidden" id="mfa-card">
+      <h2>Two-Factor Verification</h2>
+      <p class="admin-empty">Open your authenticator app and enter the current 6-digit code for BlueLine Advisors.</p>
+      <form id="mfa-form" class="form">
+        <label for="mfa-code">6-digit code</label>
+        <input type="text" id="mfa-code" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="123456" required />
+        <p class="form-error" id="mfa-error"></p>
+        <button type="submit" class="btn btn-primary">Verify</button>
+        <button type="button" class="btn btn-ghost btn-small" id="mfa-cancel-btn">Cancel</button>
+      </form>
+      <p class="admin-empty" style="margin-top:14px;">Lost your device? Enter one of your backup codes above instead.</p>
+    </div>
+
+    <div class="card token-form hidden" id="mfa-enroll-card" style="max-width: 520px;">
+      <h2>Set Up Two-Factor Authentication</h2>
+      <p class="admin-empty">This is required to protect admin access. Add BlueLine Advisors to an authenticator
+      app (Google Authenticator, Authy, 1Password, etc.), then enter a code to confirm.</p>
+
+      <ol class="mfa-steps">
+        <li><strong>Add this account key</strong> to your authenticator app (type it in manually):
+          <div class="mfa-secret" id="mfa-enroll-secret"></div>
+        </li>
+        <li><strong>Save your backup codes</strong> somewhere safe — each works once if you lose your device:
+          <div class="mfa-backup" id="mfa-enroll-backup"></div>
+        </li>
+        <li><strong>Enter the current 6-digit code</strong> from the app to finish:
+          <form id="mfa-enroll-form" class="form">
+            <input type="text" id="mfa-enroll-code" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="123456" required />
+            <p class="form-error" id="mfa-enroll-error"></p>
+            <button type="submit" class="btn btn-primary">Confirm &amp; Sign In</button>
+            <button type="button" class="btn btn-ghost btn-small" id="mfa-enroll-cancel-btn">Cancel</button>
+          </form>
+        </li>
+      </ol>
     </div>
 
     <div class="card hidden" id="clients-card">
@@ -336,6 +380,7 @@
     let allOnboardings = [];
     let allAudit = [];
     let auditCursor = null; // cursor for the next (older) audit page; null when none
+    let mfaPendingToken = null; // short-lived token between password and 2nd factor
     let adminToken = null;
     let adminEmail = null;
     let selectedEmail = '';
@@ -456,6 +501,8 @@
       document.getElementById('admin-who').textContent = `Signed in as ${adminEmail}`;
       adminNav.classList.remove('hidden');
       tokenCard.classList.add('hidden');
+      document.getElementById('mfa-card').classList.add('hidden');
+      document.getElementById('mfa-enroll-card').classList.add('hidden');
       clientsCard.classList.remove('hidden');
       document.getElementById('onboarding-card').classList.remove('hidden');
       document.getElementById('audit-card').classList.remove('hidden');
@@ -476,11 +523,31 @@
       document.getElementById('onboarding-card').classList.add('hidden');
       document.getElementById('audit-card').classList.add('hidden');
       document.getElementById('onb-detail-view').classList.add('hidden');
+      document.getElementById('mfa-card').classList.add('hidden');
+      document.getElementById('mfa-enroll-card').classList.add('hidden');
       tokenCard.classList.remove('hidden');
+      mfaPendingToken = null;
       selectedEmail = '';
       assignmentEditorEmail = '';
     }
 
+    // Store a verified session and reveal the admin UI.
+    function completeSession(data) {
+      adminToken = data.token;
+      adminEmail = data.email;
+      localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ token: adminToken, email: adminEmail }));
+      mfaPendingToken = null;
+      enterAdmin();
+    }
+
+    function showCard(id) {
+      ['token-card', 'mfa-card', 'mfa-enroll-card'].forEach((c) =>
+        document.getElementById(c).classList.toggle('hidden', c !== id)
+      );
+    }
+
+    // Step 1: password. On success the server returns a pending token and whether
+    // this admin still needs to enroll a second factor or just enter a code.
     tokenForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       tokenError.textContent = '';
@@ -495,16 +562,81 @@
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Sign in failed');
-
-        adminToken = data.token;
-        adminEmail = data.email;
-        localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ token: adminToken, email: adminEmail }));
         document.getElementById('admin-password').value = '';
-        enterAdmin();
+        mfaPendingToken = data.pendingToken;
+        if (data.status === 'enroll') {
+          await beginEnrollment();
+        } else {
+          document.getElementById('mfa-code').value = '';
+          document.getElementById('mfa-error').textContent = '';
+          showCard('mfa-card');
+          document.getElementById('mfa-code').focus();
+        }
       } catch (err) {
         tokenError.textContent = err.message;
       }
     });
+
+    // Step 2a (returning admin): submit the authenticator / backup code.
+    document.getElementById('mfa-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errEl = document.getElementById('mfa-error');
+      errEl.textContent = '';
+      try {
+        const res = await fetch('/api/admin/mfa/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pendingToken: mfaPendingToken, code: document.getElementById('mfa-code').value }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Verification failed');
+        completeSession(data);
+      } catch (err) {
+        errEl.textContent = err.message;
+      }
+    });
+
+    // Step 2b (first time): fetch a fresh secret + backup codes and show setup.
+    async function beginEnrollment() {
+      const res = await fetch('/api/admin/mfa/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingToken: mfaPendingToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not start MFA setup');
+      // Show the key grouped in 4s for easier manual entry.
+      document.getElementById('mfa-enroll-secret').textContent = (data.secret || '').replace(/(.{4})/g, '$1 ').trim();
+      document.getElementById('mfa-enroll-backup').innerHTML = (data.backupCodes || [])
+        .map((c) => `<span>${escapeHtml(c)}</span>`)
+        .join('');
+      document.getElementById('mfa-enroll-code').value = '';
+      document.getElementById('mfa-enroll-error').textContent = '';
+      showCard('mfa-enroll-card');
+    }
+
+    // Confirm enrollment with a code — same verify endpoint, which flips the
+    // account to "confirmed" and issues the session on first success.
+    document.getElementById('mfa-enroll-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errEl = document.getElementById('mfa-enroll-error');
+      errEl.textContent = '';
+      try {
+        const res = await fetch('/api/admin/mfa/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pendingToken: mfaPendingToken, code: document.getElementById('mfa-enroll-code').value }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Verification failed');
+        completeSession(data);
+      } catch (err) {
+        errEl.textContent = err.message;
+      }
+    });
+
+    document.getElementById('mfa-cancel-btn').addEventListener('click', () => showLogin());
+    document.getElementById('mfa-enroll-cancel-btn').addEventListener('click', () => showLogin());
 
     document.getElementById('admin-logout-btn').addEventListener('click', async () => {
       if (adminToken) {
