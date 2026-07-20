@@ -433,7 +433,15 @@
 
   function renderBoard() {
     const board = document.getElementById('board');
-    const cols = columns();
+    let cols = columns();
+    // "Mine" collapses the board to just your own person list.
+    if (activeFilter === 'mine') {
+      cols = cols.filter((c) => c.type === 'person' && c.account === SESSION.email);
+      if (!cols.length) {
+        board.innerHTML = `<p class="empty">You don't have a personal list on the board yet — open <strong>Lists</strong> and add yourself (${escapeHtml(staffLabel(SESSION.email))}) as a person.</p>`;
+        return;
+      }
+    }
     const visible = allTasks.filter(matchesFilter);
     const byCol = {};
     cols.forEach((c) => { byCol[c.key] = []; });
