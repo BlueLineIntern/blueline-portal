@@ -242,7 +242,8 @@ untouched and keeps its own look.
   agreements from linked onboardings, Activity Log = audit entries for this
   contact).
 - **Tasks** (`task:<invTs>-<rand>` KV, **encrypted**): title, description,
-  client, assignee (admin), due, priority (low/medium/high), category
+  client, assignee (admin), **`list`** (board-column id, see below), due,
+  priority (low/medium/high), category
   (follow-up/review/meeting/onboarding/compliance/other), status (open/done),
   createdBy, completedAt, plus **`checklist`** ([{id,text,done}]) and per-task
   **`history`** ([{ts,actor,type,detail}] — created/assigned/completed/reopened/
@@ -251,12 +252,11 @@ untouched and keeps its own look.
   (a note, appended as a `comment` history entry — not a task column). Completing
   a task also writes a `task-completed` (or `meeting-held`) client-timeline event.
   **Meetings are tasks** with category `meeting` — no calendar integration yet.
-  **Assignees** are admin accounts (Frank=fsabin, jyoung=Jenn, intern) **plus
-  team-roster members** (see below); validation accepts an admin email or a
-  roster member id, else 400. The task UI lives entirely on the **Operations
-  page** now (Board + List views — see below); the contact profile still has a
-  Tasks tab with quick-add. Display names come from `staffLabel()` in shared.js
-  (static admin map + dynamic roster registry via `registerStaff()`).
+  **Assignees are admin accounts only** (Frank=fsabin, jyoung=Jenn, intern);
+  validation returns 400 otherwise. The task UI lives entirely on the
+  **Operations page** now (Board + List views — see below); the contact profile
+  still has a Tasks tab with quick-add. Display names come from `staffLabel()`
+  in shared.js.
 - **Notes** (`note:<client>:<invTs>-<rand>` KV, **encrypted**): body (plain
   text), tags, pinned, author. CRUD under `/api/admin/notes[/:id]`
   (`?client=` filter). Creating one writes a `note-added` timeline event.
@@ -304,15 +304,18 @@ untouched and keeps its own look.
   overdue open tasks (nag until completed) + activity entries newer than the
   per-admin `notif_seen:<email>` cursor (`GET/POST /api/admin/notifseen`).
   "Mark all read" advances the cursor; nothing is fanned out per event.
-- **Team roster** (`team_roster` KV, **encrypted**): an editable list of
-  teammates (`[{id: m-<hex>, name, createdAt}]`) who get a board column and can be
-  assigned tasks **without a login account**. `GET/POST/DELETE /api/admin/team`;
-  managed from the board's "Manage people" modal. Removing a member leaves their
-  tasks intact — they fall into Unassigned (columnForTask maps unknown ids there;
-  `staffLabel` renders a stale id as "(removed)"). Ids are stable so renaming
-  (future) never reassigns work. Login accounts always appear and aren't in the
-  roster. This is the successor to "Katie can't be assigned" — she now can, via
-  the roster, still with no login.
+- **Board lists** (`board_lists` KV, **encrypted**): the board's columns are an
+  editable, ordered list of `[{id: l-<hex>, type, account?, name?}]`. A **person**
+  list is bound to an admin `account` (shows tasks assigned to them); a **custom**
+  list is a named bucket (e.g. "Waiting on client") that tasks land in via
+  `task.list`. `GET/POST/DELETE /api/admin/lists`; managed from the board's
+  **"Lists"** modal (segmented Person/Custom add — Person picks from accounts not
+  already added). Nothing auto-appears: the board is **fully manual** (chosen in
+  design) — Unassigned + Completed are always present, everything else you add.
+  Removing a list leaves its tasks intact — they fall into Unassigned
+  (`columnForTask` maps unknown list/assignee there). Migrates the earlier
+  `team_roster` members → custom lists on first read. (This replaces the
+  short-lived non-login "team roster"; assignees are admin-only again.)
 - **Operations** (`operations.html`, sidebar "Operations") is the single task
   workspace — the old separate Tasks page was merged in as a **List view**. A
   Board/List toggle switches between them; both are views over the same `task:`
@@ -321,20 +324,20 @@ untouched and keeps its own look.
   manager") keeps working. **List view**: quick filters (My/All Open/Due
   Today/This Week/Overdue/Completed) + client/assignee/priority/category filters
   + search + rows with complete/edit/delete (edit opens the same drawer).
-- **Operations board** view: a Kanban
-  **view over the same `task:` records** — no second store. One column per admin
-  account (Frank/Jenn/Intern, canonical order enforced client-side) + roster
-  members + Unassigned + Completed. Native HTML5 drag-and-drop: drop on a person → `POST {assignee,
-  status:'open'}` (reopens if it was done); drop on Completed → `POST
-  {status:'done'}`; drop on Unassigned → clears assignee. Compact cards show
-  priority dot, colour-coded due, client, and checklist progress bar. **+ Add
-  Card** per column (prefills that column's assignee) and clicking a card open a
-  reusable **slide-out drawer** (`.drawer` in shared.css) to edit every field,
-  manage the checklist (toggles auto-save so board progress stays live), add
-  notes, and read task history. Filter pills (All/Mine/Due Today/This Week/
-  Overdue) with `?filter=` deep-link. Structured for future views (list/calendar)
-  via a single `renderBoard()`/`columnForTask()` seam. Drag-and-drop is
-  desktop-grade; on touch the drawer's assignee dropdown is the fallback.
+- **Operations board** view: a Kanban **view over the same `task:` records** — no
+  second store. Columns are the board lists you've added + Unassigned + Completed.
+  `columnForTask`: done→Completed; a custom-list placement (`task.list`) wins;
+  else the person list matching `task.assignee`; else Unassigned. Native HTML5
+  drag-and-drop: drop on a person → `POST {assignee, list:'', status:'open'}`;
+  drop on a custom list → `POST {list, status:'open'}` (assignee kept); drop on
+  Completed → `{status:'done'}`; drop on Unassigned → clears both. Compact cards
+  show priority dot, colour-coded due, client, and checklist progress bar. **+ Add
+  Card** per column (prefills that column's assignee or list) and clicking a card
+  opens a reusable **slide-out drawer** (`.drawer` in shared.css) to edit every
+  field (incl. an assignee dropdown and a List dropdown), manage the checklist
+  (toggles auto-save), add notes, and read history. Board filter pills (All/Mine/
+  Due Today/This Week/Overdue) with `?filter=` deep-link. Drag-and-drop is
+  desktop-grade; on touch the drawer's dropdowns are the fallback.
 - Dashboard has an **Operations widget** (My tasks today / Overdue / Due this
   week) linking into the board via `?filter=`.
 - `contacts.html` honors `?c=<email>&tab=<tab>`. `operations.html` honors

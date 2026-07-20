@@ -77,9 +77,17 @@
   .hist-when { color: var(--muted); font-size: 0.76rem; }
   .comment-box { display: flex; flex-direction: column; gap: 8px; }
 
-  /* Manage-people rows: name on the left, a clear Remove button on the right */
+  /* Board-lists modal rows: label + type tag on the left, Remove on the right */
   .team-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
   .team-row:last-child { border-bottom: none; }
+  .list-tag { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; margin-left: 8px; }
+  .lists-add { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 7px; overflow: hidden; align-self: flex-start; }
+  .seg button { border: none; background: var(--panel); color: var(--muted); padding: 6px 14px; font-family: var(--font); font-size: 0.82rem; font-weight: 600; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--border-strong); }
+  .seg button.active { background: var(--navy); color: #fff; }
+  .lists-add-row { display: flex; gap: 8px; }
+  .lists-add-row .input, .lists-add-row select { flex: 1; }
 
   /* Board / List view toggle */
   .view-toggle { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
@@ -110,7 +118,7 @@
       </div>
       <div class="page-actions">
         <button type="button" class="btn btn-primary btn-small" id="ops-new">+ New task</button>
-        <button type="button" class="btn btn-ghost btn-small" id="ops-manage">👥 Manage people</button>
+        <button type="button" class="btn btn-ghost btn-small" id="ops-manage">☰ Lists</button>
         <button type="button" class="btn btn-ghost btn-small" id="ops-refresh">↻ Refresh</button>
       </div>
     </div>
@@ -194,16 +202,22 @@
         </select>
       </div>
     </div>
-    <div class="field">
-      <label for="d-category">Category</label>
-      <select id="d-category">
-        <option value="follow-up">Follow-up</option>
-        <option value="review">Review</option>
-        <option value="meeting">Meeting</option>
-        <option value="onboarding">Onboarding</option>
-        <option value="compliance">Compliance</option>
-        <option value="other" selected>Other</option>
-      </select>
+    <div class="field-row">
+      <div class="field">
+        <label for="d-category">Category</label>
+        <select id="d-category">
+          <option value="follow-up">Follow-up</option>
+          <option value="review">Review</option>
+          <option value="meeting">Meeting</option>
+          <option value="onboarding">Onboarding</option>
+          <option value="compliance">Compliance</option>
+          <option value="other" selected>Other</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="d-list">List (board column)</label>
+        <select id="d-list"><option value="">— none (use assignee) —</option></select>
+      </div>
     </div>
 
     <div class="drawer-section">
@@ -235,20 +249,32 @@
   </div>
 </aside>
 
-<!-- Manage people (team roster) modal -->
-<div class="modal-backdrop hidden" id="team-modal-backdrop">
+<!-- Board lists modal -->
+<div class="modal-backdrop hidden" id="lists-modal-backdrop">
   <div class="modal">
-    <h2>Manage people</h2>
-    <p class="hint">Add teammates to give them a column on the board. Login accounts always appear
-    and are managed in Settings; people you add here can be assigned tasks without a login.</p>
-    <div id="team-list"></div>
-    <div class="checklist-add" style="margin-top:14px;">
-      <input type="text" class="input" id="team-new" placeholder="Add a person (e.g. Katie)…" maxlength="60" />
-      <button type="button" class="btn btn-primary btn-small" id="team-add">Add</button>
+    <h2>Board lists</h2>
+    <p class="hint">Lists are the columns on your board. Add a <strong>person</strong> (an existing
+    account — they'll own tasks assigned to them) or a <strong>custom list</strong> (a bucket like
+    "Waiting on client" that you drag tasks into).</p>
+    <div id="lists-current"></div>
+    <div class="lists-add">
+      <div class="seg" id="list-type-seg">
+        <button type="button" data-t="person" class="active">Person</button>
+        <button type="button" data-t="custom">Custom list</button>
+      </div>
+      <div class="lists-add-row">
+        <div id="list-add-person" style="flex:1;">
+          <select class="input" id="list-account"></select>
+        </div>
+        <div id="list-add-custom" class="hidden" style="flex:1;">
+          <input type="text" class="input" id="list-name" placeholder="List name (e.g. Waiting on client)" maxlength="60" />
+        </div>
+        <button type="button" class="btn btn-primary btn-small" id="list-add-btn">Add</button>
+      </div>
     </div>
-    <p class="form-error" id="team-error"></p>
+    <p class="form-error" id="lists-error"></p>
     <div class="modal-actions">
-      <button type="button" class="btn btn-ghost" id="team-close">Done</button>
+      <button type="button" class="btn btn-ghost" id="lists-close">Done</button>
     </div>
   </div>
 </div>
@@ -260,7 +286,8 @@
   let allTasks = [];
   let allContacts = [];
   let adminList = [];
-  let teamMembers = []; // editable roster of non-login teammates [{id,name}]
+  let boardLists = [];   // board columns: [{id, type:'person'|'custom', account?, name?}]
+  let listAddType = 'person'; // which add-mode the Lists modal is showing
   let activeFilter = 'all';       // board filter pill
   let currentView = 'board';      // 'board' | 'list'
   let listQuickFilter = 'my-open'; // list quick-filter pill
@@ -283,38 +310,44 @@
   // yet — she has no account. Add a member here when an account exists.)
   const SPECIAL = { UNASSIGNED: '__unassigned', COMPLETED: '__completed' };
 
+  // Columns are the lists you've added (people + custom buckets), in add-order,
+  // then the always-present Unassigned and Completed. Nothing auto-appears.
   function columns() {
-    // Canonical staff order (Frank, Jenn, Intern) regardless of how the API
-    // returns the admin list; any unmapped admin falls in after, alphabetically.
-    const order = Object.keys(STAFF_LABELS);
-    const rank = (email) => { const i = order.indexOf(email); return i === -1 ? order.length : i; };
-    const cols = adminList.slice()
-      .sort((a, b) => rank(a) - rank(b) || String(a).localeCompare(String(b)))
-      .map((email) => ({ key: email, type: 'person', label: staffLabel(email) }));
-    // Then the editable roster members, in the order they were added.
-    teamMembers.forEach((m) => cols.push({ key: m.id, type: 'person', label: m.name }));
+    const cols = boardLists.map((l) => ({
+      key: l.id,
+      type: l.type === 'person' ? 'person' : 'custom',
+      label: l.type === 'person' ? staffLabel(l.account) : l.name,
+      account: l.account || null,
+    }));
     cols.push({ key: SPECIAL.UNASSIGNED, type: 'unassigned', label: 'Unassigned' });
     cols.push({ key: SPECIAL.COMPLETED, type: 'completed', label: 'Completed' });
     return cols;
   }
 
-  // Every identifier a card can currently live under (drives column placement).
-  function knownAssignees() {
-    return new Set([...adminList, ...teamMembers.map((m) => m.id)]);
-  }
-
+  // Placement: done → Completed; a custom-list assignment wins; else the person
+  // list matching the assignee; else Unassigned. A list you haven't added means
+  // its tasks sit in Unassigned until you add it.
   function columnForTask(t) {
     if (t.status === 'done') return SPECIAL.COMPLETED;
-    if (!t.assignee) return SPECIAL.UNASSIGNED;
-    return knownAssignees().has(t.assignee) ? t.assignee : SPECIAL.UNASSIGNED;
+    if (t.list) {
+      const cl = boardLists.find((l) => l.id === t.list && l.type === 'custom');
+      if (cl) return cl.id;
+    }
+    if (t.assignee) {
+      const pl = boardLists.find((l) => l.type === 'person' && l.account === t.assignee);
+      if (pl) return pl.id;
+    }
+    return SPECIAL.UNASSIGNED;
   }
 
-  // Assignee dropdown options: admins + roster members.
+  // Assignee dropdown options: admin accounts only.
   function assignableOptions() {
-    return [
-      ...adminList.map((a) => ({ value: a, label: staffLabel(a) })),
-      ...teamMembers.map((m) => ({ value: m.id, label: m.name })),
-    ];
+    return adminList.map((a) => ({ value: a, label: staffLabel(a) }));
+  }
+
+  // Custom lists only (for the drawer's List dropdown).
+  function customListOptions() {
+    return boardLists.filter((l) => l.type === 'custom').map((l) => ({ value: l.id, label: l.name }));
   }
 
   function contactName(email) {
@@ -480,8 +513,16 @@
 
     let payload;
     if (colKey === SPECIAL.COMPLETED) payload = { status: 'done' };
-    else if (colKey === SPECIAL.UNASSIGNED) payload = { assignee: '', status: 'open' };
-    else payload = { assignee: colKey, status: 'open' };
+    else if (colKey === SPECIAL.UNASSIGNED) payload = { assignee: '', list: '', status: 'open' };
+    else {
+      const col = boardLists.find((l) => l.id === colKey);
+      if (!col) return;
+      // Person list → set assignee, clear any custom placement. Custom list →
+      // just set the list (assignee, i.e. who's responsible, is left intact).
+      payload = col.type === 'person'
+        ? { assignee: col.account, list: '', status: 'open' }
+        : { list: col.id, status: 'open' };
+    }
 
     // Optimistic move, then reconcile with the server response.
     const snapshot = { ...t };
@@ -515,13 +556,18 @@
   function refreshDrawerSelects(current) {
     fillSelect('d-assignee', assignableOptions(), current && current.assignee, true);
     fillSelect('d-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), current && current.client, true);
+    fillSelect('d-list', customListOptions(), current && current.list, true);
   }
 
   function openDrawerNew(colKey) {
     drawerMode = 'new';
     drawerTaskId = null;
-    const presetAssignee = (colKey && colKey.indexOf('__') !== 0) ? colKey : '';
-    draft = { title: '', description: '', assignee: presetAssignee, client: '', due: '', priority: 'medium', category: 'other', checklist: [] };
+    // Preset from the column the "+ Add Card" came from: a person list presets
+    // the assignee; a custom list presets the list. Unassigned/global → blank.
+    let presetAssignee = '', presetList = '';
+    const col = boardLists.find((l) => l.id === colKey);
+    if (col) { if (col.type === 'person') presetAssignee = col.account; else presetList = col.id; }
+    draft = { title: '', description: '', assignee: presetAssignee, list: presetList, client: '', due: '', priority: 'medium', category: 'other', checklist: [] };
     document.getElementById('drawer-title').textContent = 'New Task';
     populateDrawer();
     openDrawer();
@@ -535,7 +581,7 @@
     drawerTaskId = id;
     draft = {
       title: t.title || '', description: t.description || '', assignee: t.assignee || '',
-      client: t.client || '', due: t.due || '', priority: t.priority || 'medium',
+      list: t.list || '', client: t.client || '', due: t.due || '', priority: t.priority || 'medium',
       category: t.category || 'other', checklist: (Array.isArray(t.checklist) ? t.checklist : []).map((c) => ({ ...c })),
     };
     document.getElementById('drawer-title').textContent = 'Edit Task';
@@ -647,6 +693,7 @@
     draft.description = document.getElementById('d-description').value;
     draft.assignee = document.getElementById('d-assignee').value;
     draft.client = document.getElementById('d-client').value;
+    draft.list = document.getElementById('d-list').value;
     draft.due = document.getElementById('d-due').value;
     draft.priority = document.getElementById('d-priority').value;
     draft.category = document.getElementById('d-category').value;
@@ -659,7 +706,7 @@
     if (!draft.title.trim()) { errEl.textContent = 'Title is required.'; return; }
     const payload = {
       title: draft.title, description: draft.description, assignee: draft.assignee,
-      client: draft.client, due: draft.due, priority: draft.priority,
+      list: draft.list, client: draft.client, due: draft.due, priority: draft.priority,
       category: draft.category, checklist: draft.checklist,
     };
     try {
@@ -709,66 +756,95 @@
   document.getElementById('drawer-backdrop').addEventListener('click', closeDrawer);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawerMode) closeDrawer(); });
 
-  // ---------- Manage people (roster) ----------
+  // ---------- Board lists modal ----------
 
-  function renderTeamList() {
-    const box = document.getElementById('team-list');
-    if (!teamMembers.length) {
-      box.innerHTML = '<p class="cell-missing" style="font-size:0.86rem;">No custom people yet — add one below.</p>';
+  function listLabel(l) { return l.type === 'person' ? staffLabel(l.account) : l.name; }
+
+  function renderListsCurrent() {
+    const box = document.getElementById('lists-current');
+    if (!boardLists.length) {
+      box.innerHTML = '<p class="cell-missing" style="font-size:0.86rem;">No lists yet — add a person or a custom list below.</p>';
       return;
     }
-    box.innerHTML = teamMembers.map((m) => `
+    box.innerHTML = boardLists.map((l) => `
       <div class="team-row">
-        <span class="ci-text">${escapeHtml(m.name)}</span>
-        <button type="button" class="btn btn-danger btn-small team-remove" data-id="${escapeHtml(m.id)}">Remove</button>
+        <span class="ci-text">${escapeHtml(listLabel(l))}<span class="list-tag">${l.type === 'person' ? 'person' : 'list'}</span></span>
+        <button type="button" class="btn btn-danger btn-small list-remove" data-id="${escapeHtml(l.id)}">Remove</button>
       </div>`).join('');
-    box.querySelectorAll('.team-remove').forEach((b) =>
-      b.addEventListener('click', () => removeTeamMember(b.dataset.id))
+    box.querySelectorAll('.list-remove').forEach((b) =>
+      b.addEventListener('click', () => removeList(b.dataset.id))
     );
   }
 
-  function openTeamModal() {
-    document.getElementById('team-error').textContent = '';
-    document.getElementById('team-new').value = '';
-    renderTeamList();
-    document.getElementById('team-modal-backdrop').classList.remove('hidden');
-    document.getElementById('team-new').focus();
+  // Person add-mode offers only admin accounts that don't already have a list.
+  function refreshAccountOptions() {
+    const taken = new Set(boardLists.filter((l) => l.type === 'person').map((l) => l.account));
+    const available = adminList.filter((a) => !taken.has(a));
+    const sel = document.getElementById('list-account');
+    sel.innerHTML = available.length
+      ? available.map((a) => `<option value="${escapeHtml(a)}">${escapeHtml(staffLabel(a))}</option>`).join('')
+      : '<option value="">All accounts already added</option>';
+    sel.disabled = !available.length;
   }
-  function closeTeamModal() { document.getElementById('team-modal-backdrop').classList.add('hidden'); }
 
-  async function addTeamMember() {
-    const input = document.getElementById('team-new');
-    const name = input.value.trim();
-    const errEl = document.getElementById('team-error');
+  function setListAddType(type) {
+    listAddType = type;
+    document.querySelectorAll('#list-type-seg button').forEach((b) => b.classList.toggle('active', b.dataset.t === type));
+    document.getElementById('list-add-person').classList.toggle('hidden', type !== 'person');
+    document.getElementById('list-add-custom').classList.toggle('hidden', type !== 'custom');
+  }
+
+  function openListsModal() {
+    document.getElementById('lists-error').textContent = '';
+    document.getElementById('list-name').value = '';
+    setListAddType('person');
+    refreshAccountOptions();
+    renderListsCurrent();
+    document.getElementById('lists-modal-backdrop').classList.remove('hidden');
+  }
+  function closeListsModal() { document.getElementById('lists-modal-backdrop').classList.add('hidden'); }
+
+  async function addList() {
+    const errEl = document.getElementById('lists-error');
     errEl.textContent = '';
-    if (!name) return;
+    let payload;
+    if (listAddType === 'person') {
+      const account = document.getElementById('list-account').value;
+      if (!account) { errEl.textContent = 'No account selected.'; return; }
+      payload = { type: 'person', account };
+    } else {
+      const name = document.getElementById('list-name').value.trim();
+      if (!name) { errEl.textContent = 'Enter a list name.'; return; }
+      payload = { type: 'custom', name };
+    }
     try {
-      const data = await api('/api/admin/team', { method: 'POST', body: JSON.stringify({ name }) });
-      teamMembers = data.members || [];
-      registerStaff(teamMembers);
-      input.value = '';
-      renderTeamList();
+      const data = await api('/api/admin/lists', { method: 'POST', body: JSON.stringify(payload) });
+      boardLists = data.lists || [];
+      document.getElementById('list-name').value = '';
+      refreshAccountOptions();
+      renderListsCurrent();
       render();
-      input.focus();
     } catch (err) { errEl.textContent = err.message; }
   }
 
-  async function removeTeamMember(id) {
-    const m = teamMembers.find((x) => x.id === id);
-    if (!confirm(`Remove ${m ? m.name : 'this person'} from the board? Their tasks stay in the system and move to Unassigned.`)) return;
+  async function removeList(id) {
+    const l = boardLists.find((x) => x.id === id);
+    if (!confirm(`Remove the "${l ? listLabel(l) : ''}" list? Its tasks stay in the system and move to Unassigned.`)) return;
     try {
-      const data = await api(`/api/admin/team/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      teamMembers = data.members || [];
-      renderTeamList();
+      const data = await api(`/api/admin/lists/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      boardLists = data.lists || [];
+      refreshAccountOptions();
+      renderListsCurrent();
       render();
-    } catch (err) { document.getElementById('team-error').textContent = err.message; }
+    } catch (err) { document.getElementById('lists-error').textContent = err.message; }
   }
 
-  document.getElementById('ops-manage').addEventListener('click', openTeamModal);
-  document.getElementById('team-close').addEventListener('click', closeTeamModal);
-  document.getElementById('team-add').addEventListener('click', addTeamMember);
-  document.getElementById('team-new').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addTeamMember(); } });
-  document.getElementById('team-modal-backdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeTeamModal(); });
+  document.getElementById('ops-manage').addEventListener('click', openListsModal);
+  document.getElementById('lists-close').addEventListener('click', closeListsModal);
+  document.getElementById('list-add-btn').addEventListener('click', addList);
+  document.getElementById('list-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addList(); } });
+  document.querySelectorAll('#list-type-seg button').forEach((b) => b.addEventListener('click', () => setListAddType(b.dataset.t)));
+  document.getElementById('lists-modal-backdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeListsModal(); });
 
   // ---------- List view (same tasks, table layout) ----------
 
@@ -925,16 +1001,15 @@
     // Don't yank the board out from under an open drawer or an in-flight drag.
     if (drawerMode || dragTaskId) return;
     try {
-      const [taskData, contactData, teamData] = await Promise.all([
+      const [taskData, contactData, listData] = await Promise.all([
         api('/api/admin/tasks'),
         api('/api/admin/contacts'),
-        api('/api/admin/team').catch(() => ({ members: [] })),
+        api('/api/admin/lists').catch(() => ({ lists: [] })),
       ]);
       allTasks = taskData.tasks || [];
       allContacts = (contactData.contacts || []).sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
       adminList = contactData.admins || [];
-      teamMembers = teamData.members || [];
-      registerStaff(teamMembers);
+      boardLists = listData.lists || [];
       // List-view filter selects (board uses its own pill row).
       fillSelect('filter-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), document.getElementById('filter-client').value, true);
       fillSelect('filter-assignee', assignableOptions(), document.getElementById('filter-assignee').value, true);

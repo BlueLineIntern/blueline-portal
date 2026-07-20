@@ -44,18 +44,16 @@ $notes = @{}   # id -> note record
 $timelineLog = [System.Collections.ArrayList]::new()  # client history entries (also the activity feed)
 $autoTaskMarkers = @{}  # rule:client -> fired
 $notifSeen = @{}        # admin email -> last time they opened notifications
-$teamRoster = @()       # editable non-login teammates: [{id, name, createdAt}]
+$boardLists = @()       # board columns: [{id, type(person/custom), account?, name?, createdAt}]
 $script:crmCounter = 0
 $taskPriorities = @('low', 'medium', 'high')
 $taskCategories = @('follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other')
 
-# A task may be assigned to an admin account or a roster member id (or nobody).
+# Assignees are admin accounts only (board lists are a separate grouping).
 function Test-AssigneeAllowed($a) {
     $a = ([string]$a).Trim().ToLower()
     if (-not $a) { return $true }
-    if ($adminPasswords.ContainsKey($a)) { return $true }
-    foreach ($m in $teamRoster) { if ($m.id -eq $a) { return $true } }
-    return $false
+    return $adminPasswords.ContainsKey($a)
 }
 
 # Mirror worker.js logTimeline: one entry serves both the per-client timeline
@@ -96,6 +94,7 @@ function New-MockTask($fields) {
         description = [string]$fields.description
         client = [string]$fields.client
         assignee = [string]$fields.assignee
+        list = [string]$fields.list
         due = [string]$fields.due
         priority = if ($taskPriorities -contains $fields.priority) { $fields.priority } else { 'medium' }
         category = if ($taskCategories -contains $fields.category) { $fields.category } else { 'other' }
@@ -628,11 +627,12 @@ while ($listener.IsListening) {
             if ($body.PSObject.Properties['priority'] -and $taskPriorities -notcontains [string]$body.priority) { Send-Json $ctx 400 @{ error = 'Invalid priority' }; continue }
             if ($body.PSObject.Properties['category'] -and $taskCategories -notcontains [string]$body.category) { Send-Json $ctx 400 @{ error = 'Invalid category' }; continue }
             if ($body.PSObject.Properties['assignee'] -and -not (Test-AssigneeAllowed $body.assignee)) {
-                Send-Json $ctx 400 @{ error = 'Assignee must be a team member' }; continue
+                Send-Json $ctx 400 @{ error = 'Assignee must be an admin account' }; continue
             }
             $task = New-MockTask @{
                 title = [string]$body.title; description = [string]$body.description
                 client = ([string]$body.client).Trim().ToLower(); assignee = ([string]$body.assignee).Trim().ToLower()
+                list = ([string]$body.list).Trim()
                 due = [string]$body.due; priority = [string]$body.priority; category = [string]$body.category
                 checklist = $body.checklist
                 createdBy = $adminEmail
@@ -649,7 +649,7 @@ while ($listener.IsListening) {
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
             $wasOpen = $task.status -eq 'open'
             $prevAssignee = [string]$task.assignee
-            foreach ($f in @('title', 'description', 'client', 'assignee', 'due', 'priority', 'category', 'status')) {
+            foreach ($f in @('title', 'description', 'client', 'assignee', 'list', 'due', 'priority', 'category', 'status')) {
                 if ($body.PSObject.Properties[$f]) { $task[$f] = [string]$body.$f }
             }
             if ($body.PSObject.Properties['checklist']) { $task.checklist = ConvertTo-Checklist $body.checklist }
@@ -683,27 +683,39 @@ while ($listener.IsListening) {
             $tasks.Remove([Uri]::UnescapeDataString($Matches[1]))
             Send-Json $ctx 200 @{ ok = $true }
         }
-        elseif ($path -eq '/api/admin/team' -and $method -eq 'GET') {
+        elseif ($path -eq '/api/admin/lists' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            Send-Json $ctx 200 @{ members = @($teamRoster) }
+            Send-Json $ctx 200 @{ lists = @($boardLists) }
         }
-        elseif ($path -eq '/api/admin/team' -and $method -eq 'POST') {
+        elseif ($path -eq '/api/admin/lists' -and $method -eq 'POST') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $body = Read-Body $ctx
-            $name = ([string]$body.name).Trim()
-            if (-not $name) { Send-Json $ctx 400 @{ error = 'Name is required' }; continue }
-            if ($teamRoster | Where-Object { $_.name.ToLower() -eq $name.ToLower() }) {
-                Send-Json $ctx 400 @{ error = 'Someone with that name is already on the board' }; continue
+            $type = if (([string]$body.type) -eq 'person') { 'person' } else { 'custom' }
+            $newId = 'l-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 6))
+            if ($type -eq 'person') {
+                $account = ([string]$body.account).Trim().ToLower()
+                if (-not $adminPasswords.ContainsKey($account)) { Send-Json $ctx 400 @{ error = 'Pick an existing admin account' }; continue }
+                if ($boardLists | Where-Object { $_.type -eq 'person' -and $_.account -eq $account }) {
+                    Send-Json $ctx 400 @{ error = 'That person already has a list' }; continue
+                }
+                $list = [ordered]@{ id = $newId; type = 'person'; account = $account; createdAt = (Get-Date).ToString('o') }
             }
-            $member = [ordered]@{ id = 'm-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 6)); name = $name; createdAt = (Get-Date).ToString('o') }
-            $teamRoster = @($teamRoster) + $member
-            Send-Json $ctx 200 @{ member = $member; members = @($teamRoster) }
+            else {
+                $name = ([string]$body.name).Trim()
+                if (-not $name) { Send-Json $ctx 400 @{ error = 'List name is required' }; continue }
+                if ($boardLists | Where-Object { $_.type -eq 'custom' -and $_.name.ToLower() -eq $name.ToLower() }) {
+                    Send-Json $ctx 400 @{ error = 'A list with that name already exists' }; continue
+                }
+                $list = [ordered]@{ id = $newId; type = 'custom'; name = $name; createdAt = (Get-Date).ToString('o') }
+            }
+            $boardLists = @($boardLists) + $list
+            Send-Json $ctx 200 @{ list = $list; lists = @($boardLists) }
         }
-        elseif ($path -match '^/api/admin/team/(.+)$' -and $method -eq 'DELETE') {
+        elseif ($path -match '^/api/admin/lists/(.+)$' -and $method -eq 'DELETE') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $rid = [Uri]::UnescapeDataString($Matches[1])
-            $teamRoster = @($teamRoster | Where-Object { $_.id -ne $rid })
-            Send-Json $ctx 200 @{ members = @($teamRoster) }
+            $lid = [Uri]::UnescapeDataString($Matches[1])
+            $boardLists = @($boardLists | Where-Object { $_.id -ne $lid })
+            Send-Json $ctx 200 @{ lists = @($boardLists) }
         }
         elseif ($path -eq '/api/admin/notes' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }

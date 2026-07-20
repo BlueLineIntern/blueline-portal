@@ -1898,6 +1898,7 @@ async function createTask(env, fields) {
     description: String(fields.description || '').trim().slice(0, 2000),
     client: fields.client || '',
     assignee: fields.assignee || '',
+    list: fields.list || '',
     due: fields.due || '',
     priority: TASK_PRIORITIES.includes(fields.priority) ? fields.priority : 'medium',
     category: TASK_CATEGORIES.includes(fields.category) ? fields.category : 'other',
@@ -1954,8 +1955,9 @@ async function handleAdminListTasks(request, env, cors) {
   return json({ tasks: items, decryptErrors: errors }, 200, cors);
 }
 
-// allowedAssignees is a Set of every assignable identifier (admin emails plus
-// team-roster member ids). Passed in by the handlers because it's loaded async.
+// allowedAssignees is a Set of assignable identifiers (admin account emails).
+// Board "lists" are a separate grouping (task.list); only real accounts can own
+// work, so assignee stays admin-only.
 function sanitizeTaskFields(body, allowedAssignees) {
   const out = {};
   if (body.title !== undefined) {
@@ -1971,9 +1973,12 @@ function sanitizeTaskFields(body, allowedAssignees) {
   }
   if (body.assignee !== undefined) {
     const a = String(body.assignee || '').trim().toLowerCase();
-    if (a && allowedAssignees && !allowedAssignees.has(a)) return { error: 'Assignee must be a team member' };
+    if (a && allowedAssignees && !allowedAssignees.has(a)) return { error: 'Assignee must be an admin account' };
     out.assignee = a;
   }
+  // Which board list (custom bucket) the task sits in. Free string: an unknown
+  // id just means the task lands in Unassigned on the board.
+  if (body.list !== undefined) out.list = String(body.list || '').trim().slice(0, 40);
   if (body.due !== undefined) out.due = String(body.due || '').trim().slice(0, 40);
   if (body.priority !== undefined) {
     if (!TASK_PRIORITIES.includes(body.priority)) return { error: 'Invalid priority' };
@@ -2056,59 +2061,80 @@ async function handleAdminDeleteTask(request, env, cors, id) {
   return json({ ok: true }, 200, cors);
 }
 
-// ---------- Team roster ----------
-// Board columns / task assignees are admin accounts PLUS an editable roster of
-// teammates who don't (yet) have a login. Members get a stable `m-<hex>` id so
-// renaming a person never reassigns their tasks. One encrypted KV blob.
+// ---------- Board lists ----------
+// The Operations board is built from editable "lists" (columns). A list is
+// either a PERSON list (bound to an admin account — tasks assigned to that
+// account show there) or a CUSTOM list (a named bucket like "Waiting on client"
+// — tasks show there when task.list === list.id). One encrypted KV blob.
 
-const TEAM_ROSTER_KEY = 'team_roster';
-const TEAM_MEMBER_MAX = 50;
+const BOARD_LISTS_KEY = 'board_lists';
+const BOARD_LISTS_MAX = 50;
 
-async function getTeamRoster(env) {
+async function getBoardLists(env) {
   try {
-    const rec = await decryptToObject(env, await env.PORTAL_KV.get(TEAM_ROSTER_KEY));
-    if (rec && Array.isArray(rec.members)) return rec.members;
+    const rec = await decryptToObject(env, await env.PORTAL_KV.get(BOARD_LISTS_KEY));
+    if (rec && Array.isArray(rec.lists)) return rec.lists;
+    // Migrate the earlier team_roster (free-text members) → custom lists.
+    const legacy = await decryptToObject(env, await env.PORTAL_KV.get('team_roster'));
+    if (legacy && Array.isArray(legacy.members)) {
+      return legacy.members.map((m) => ({ id: m.id, type: 'custom', name: m.name, createdAt: m.createdAt || null }));
+    }
   } catch { /* fall through to empty */ }
   return [];
 }
 
-// Every identifier a task may legitimately be assigned to.
-async function allowedAssigneeSet(env) {
-  const roster = await getTeamRoster(env);
-  return new Set([...ADMIN_ACCOUNTS.map((a) => a.email), ...roster.map((m) => m.id)]);
+function isAdminAccount(email) {
+  return ADMIN_ACCOUNTS.some((a) => a.email === email);
 }
 
-async function handleAdminListTeam(request, env, cors) {
+// Assignees are admin accounts only (lists are a separate grouping dimension).
+async function allowedAssigneeSet(env) {
+  return new Set(ADMIN_ACCOUNTS.map((a) => a.email));
+}
+
+async function handleAdminListLists(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  return json({ members: await getTeamRoster(env) }, 200, cors);
+  return json({ lists: await getBoardLists(env) }, 200, cors);
 }
 
-async function handleAdminCreateTeamMember(request, env, cors) {
+async function handleAdminCreateList(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const body = await request.json().catch(() => null);
-  const name = String((body && body.name) || '').trim().slice(0, 60);
-  if (!name) return json({ error: 'Name is required' }, 400, cors);
-  const members = await getTeamRoster(env);
-  if (members.length >= TEAM_MEMBER_MAX) return json({ error: 'Team roster is full' }, 400, cors);
-  if (members.some((m) => m.name.toLowerCase() === name.toLowerCase())) {
-    return json({ error: 'Someone with that name is already on the board' }, 400, cors);
+  const type = (body && body.type) === 'person' ? 'person' : 'custom';
+  const lists = await getBoardLists(env);
+  if (lists.length >= BOARD_LISTS_MAX) return json({ error: 'Too many lists' }, 400, cors);
+
+  let list;
+  if (type === 'person') {
+    const account = String((body && body.account) || '').trim().toLowerCase();
+    if (!isAdminAccount(account)) return json({ error: 'Pick an existing admin account' }, 400, cors);
+    if (lists.some((l) => l.type === 'person' && l.account === account)) {
+      return json({ error: 'That person already has a list' }, 400, cors);
+    }
+    list = { id: `l-${randomHex(6)}`, type: 'person', account, createdAt: new Date().toISOString() };
+  } else {
+    const name = String((body && body.name) || '').trim().slice(0, 60);
+    if (!name) return json({ error: 'List name is required' }, 400, cors);
+    if (lists.some((l) => l.type === 'custom' && l.name.toLowerCase() === name.toLowerCase())) {
+      return json({ error: 'A list with that name already exists' }, 400, cors);
+    }
+    list = { id: `l-${randomHex(6)}`, type: 'custom', name, createdAt: new Date().toISOString() };
   }
-  const member = { id: `m-${randomHex(6)}`, name, createdAt: new Date().toISOString() };
-  members.push(member);
-  await env.PORTAL_KV.put(TEAM_ROSTER_KEY, await encryptJSON(env, { members }));
-  return json({ member, members }, 200, cors);
+  lists.push(list);
+  await env.PORTAL_KV.put(BOARD_LISTS_KEY, await encryptJSON(env, { lists }));
+  return json({ list, lists }, 200, cors);
 }
 
-async function handleAdminDeleteTeamMember(request, env, cors, id) {
+async function handleAdminDeleteList(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  const members = (await getTeamRoster(env)).filter((m) => m.id !== id);
-  await env.PORTAL_KV.put(TEAM_ROSTER_KEY, await encryptJSON(env, { members }));
-  // Tasks still carrying the removed id simply fall into Unassigned on the board
-  // (columnForTask maps unknown assignees there); they're not rewritten here.
-  return json({ members }, 200, cors);
+  const lists = (await getBoardLists(env)).filter((l) => l.id !== id);
+  await env.PORTAL_KV.put(BOARD_LISTS_KEY, await encryptJSON(env, { lists }));
+  // Tasks that referenced this list (or an unlisted assignee) just fall into
+  // Unassigned on the board; they aren't rewritten here.
+  return json({ lists }, 200, cors);
 }
 
 // ---------- Notes ----------
@@ -2339,15 +2365,15 @@ export default {
       if (taskMatch && request.method === 'DELETE') {
         return await handleAdminDeleteTask(request, env, cors, decodeURIComponent(taskMatch[1]));
       }
-      if (url.pathname === '/api/admin/team' && request.method === 'GET') {
-        return await handleAdminListTeam(request, env, cors);
+      if (url.pathname === '/api/admin/lists' && request.method === 'GET') {
+        return await handleAdminListLists(request, env, cors);
       }
-      if (url.pathname === '/api/admin/team' && request.method === 'POST') {
-        return await handleAdminCreateTeamMember(request, env, cors);
+      if (url.pathname === '/api/admin/lists' && request.method === 'POST') {
+        return await handleAdminCreateList(request, env, cors);
       }
-      const teamMatch = url.pathname.match(/^\/api\/admin\/team\/(.+)$/);
-      if (teamMatch && request.method === 'DELETE') {
-        return await handleAdminDeleteTeamMember(request, env, cors, decodeURIComponent(teamMatch[1]));
+      const listMatch = url.pathname.match(/^\/api\/admin\/lists\/(.+)$/);
+      if (listMatch && request.method === 'DELETE') {
+        return await handleAdminDeleteList(request, env, cors, decodeURIComponent(listMatch[1]));
       }
       if (url.pathname === '/api/admin/notes' && request.method === 'GET') {
         return await handleAdminListNotes(request, env, cors);
