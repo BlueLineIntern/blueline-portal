@@ -77,6 +77,10 @@
   .hist-when { color: var(--muted); font-size: 0.76rem; }
   .comment-box { display: flex; flex-direction: column; gap: 8px; }
 
+  /* Manage-people rows: name on the left, a clear Remove button on the right */
+  .team-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .team-row:last-child { border-bottom: none; }
+
   /* Board / List view toggle */
   .view-toggle { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
   .view-toggle button {
@@ -714,11 +718,11 @@
       return;
     }
     box.innerHTML = teamMembers.map((m) => `
-      <div class="checklist-item">
+      <div class="team-row">
         <span class="ci-text">${escapeHtml(m.name)}</span>
-        <button type="button" class="ci-remove" data-id="${escapeHtml(m.id)}" title="Remove">&times;</button>
+        <button type="button" class="btn btn-danger btn-small team-remove" data-id="${escapeHtml(m.id)}">Remove</button>
       </div>`).join('');
-    box.querySelectorAll('.ci-remove').forEach((b) =>
+    box.querySelectorAll('.team-remove').forEach((b) =>
       b.addEventListener('click', () => removeTeamMember(b.dataset.id))
     );
   }
