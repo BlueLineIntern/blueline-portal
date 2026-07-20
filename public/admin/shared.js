@@ -76,9 +76,25 @@ const NAV_ITEMS = [
   { id: 'dashboard', href: '/admin/', icon: '⌂', label: 'Dashboard' },
   { id: 'contacts', href: '/admin/contacts.html', icon: '☰', label: 'Contacts' },
   { id: 'tasks', href: '/admin/tasks.html', icon: '✓', label: 'Tasks' },
+  { id: 'operations', href: '/admin/operations.html', icon: '▦', label: 'Operations' },
   { id: 'onboarding', href: '/admin/onboarding.html', icon: '➔', label: 'Onboarding' },
   { id: 'settings', href: '/admin/settings.html', icon: '⚙', label: 'Settings' },
 ];
+
+// Friendly display name for a staff/assignee email. Keeps board columns and
+// task chips readable ("Frank" not "fsabin@…"). Falls back to a capitalized
+// local-part so a new admin account still renders sensibly before it's mapped.
+const STAFF_LABELS = {
+  'fsabin@blueline-advisors.com': 'Frank',
+  'jyoung@blueline-advisors.com': 'Jyoung',
+  'intern@blueline-advisors.com': 'Intern',
+};
+function staffLabel(email) {
+  if (!email) return 'Unassigned';
+  if (STAFF_LABELS[email]) return STAFF_LABELS[email];
+  const local = String(email).split('@')[0] || String(email);
+  return local.charAt(0).toUpperCase() + local.slice(1);
+}
 
 // Builds the sidebar into #sidebar-root and wires logout, the global search
 // palette (Ctrl/Cmd-K), and the notification bell. Call once per page.

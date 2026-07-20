@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
+<title>Operations — BlueLine Admin</title>
+<link rel="stylesheet" href="/admin/shared.css" />
+<style>
+  /* Board is a horizontal row of employee columns; the same task: records as
+     the Tasks page, grouped by assignee. Board-only styling lives here; the
+     reusable drawer + form/badge components come from shared.css. */
+  .board { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 14px; align-items: flex-start; }
+  .board-col {
+    flex: 0 0 300px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; display: flex; flex-direction: column;
+    max-height: calc(100vh - 210px);
+  }
+  .board-col-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 11px 13px; border-bottom: 1px solid var(--border);
+  }
+  .board-col-title { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 0.9rem; color: var(--navy); }
+  .board-col-title .col-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sky); }
+  .board-col.col-completed .col-dot { background: var(--green); }
+  .board-col.col-unassigned .col-dot { background: var(--border-strong); }
+  .col-count { background: var(--gray-bg); color: var(--muted); border-radius: 999px; padding: 1px 8px; font-size: 0.72rem; font-weight: 700; }
+  .board-col-body { padding: 10px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 44px; }
+  .board-col.drop-target { border-color: var(--sky); }
+  .board-col.drop-target .board-col-body { background: var(--sky-bg); border-radius: 8px; }
+
+  .kanban-card {
+    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; box-shadow: var(--shadow); cursor: grab; position: relative;
+  }
+  .kanban-card:hover { border-color: var(--border-strong); }
+  .kanban-card:active { cursor: grabbing; }
+  .kanban-card.dragging { opacity: 0.45; }
+  .kanban-card.card-done .kc-title { text-decoration: line-through; color: var(--muted); }
+  .kc-top { display: flex; align-items: flex-start; gap: 8px; }
+  .kc-prio { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+  .kc-prio.high { background: var(--red); }
+  .kc-prio.medium { background: var(--amber); }
+  .kc-prio.low { background: var(--border-strong); }
+  .kc-title { font-weight: 600; font-size: 0.88rem; word-break: break-word; flex: 1; }
+  .kc-meta { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; margin-top: 8px; font-size: 0.74rem; color: var(--muted); }
+  .kc-due.overdue { color: var(--red); font-weight: 650; }
+  .kc-due.today { color: var(--amber); font-weight: 650; }
+  .kc-client { display: inline-flex; align-items: center; gap: 4px; }
+  .kc-check { display: inline-flex; align-items: center; gap: 5px; }
+  .kc-check .kc-bar { width: 46px; height: 5px; border-radius: 999px; background: var(--gray-bg); overflow: hidden; }
+  .kc-check .kc-bar > span { display: block; height: 100%; background: var(--sky); }
+  .kc-auto { font-size: 0.68rem; }
+
+  .add-card-btn {
+    width: 100%; border: 1px dashed var(--border-strong); background: transparent;
+    color: var(--muted); border-radius: 8px; padding: 8px; font-family: var(--font);
+    font-size: 0.82rem; font-weight: 600; cursor: pointer;
+  }
+  .add-card-btn:hover { border-color: var(--sky); color: var(--sky-dark); background: var(--sky-bg); }
+
+  /* Drawer internals (checklist + history) */
+  .checklist-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+  .checklist-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--sky); flex-shrink: 0; }
+  .checklist-item .ci-text { flex: 1; font-size: 0.88rem; }
+  .checklist-item.done .ci-text { text-decoration: line-through; color: var(--muted); }
+  .checklist-item .ci-remove { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 0 4px; }
+  .checklist-item .ci-remove:hover { color: var(--red); }
+  .checklist-add { display: flex; gap: 8px; margin-top: 8px; }
+  .checklist-add input { flex: 1; }
+  .drawer-section { margin-top: 22px; }
+  .drawer-section > h3 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 10px; }
+  .hist-item { display: flex; gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 0.84rem; }
+  .hist-item:last-child { border-bottom: none; }
+  .hist-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sky); margin-top: 6px; flex-shrink: 0; }
+  .hist-item.hist-comment .hist-dot { background: var(--amber); }
+  .hist-when { color: var(--muted); font-size: 0.76rem; }
+  .comment-box { display: flex; flex-direction: column; gap: 8px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar-root"></aside>
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <h1>Operations</h1>
+        <p class="sub">A visual board of every task, grouped by who owns it. Drag a card to reassign it,
+        or into Completed to close it out. It's the same task list as the Tasks page — changes sync everywhere.</p>
+      </div>
+      <div class="page-actions">
+        <button type="button" class="btn btn-ghost btn-small" id="ops-refresh">↻ Refresh</button>
+      </div>
+    </div>
+
+    <div class="filter-row" id="ops-filters"></div>
+
+    <p class="panel-status" id="ops-status"></p>
+    <div class="board" id="board"></div>
+  </main>
+</div>
+
+<!-- Slide-out task drawer (create + edit) -->
+<div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <h2 id="drawer-title">Task</h2>
+    <button type="button" class="drawer-close" id="drawer-close" title="Close">&times;</button>
+  </div>
+  <div class="drawer-body">
+    <div class="field">
+      <label for="d-title">Title</label>
+      <input type="text" id="d-title" required />
+    </div>
+    <div class="field">
+      <label for="d-description">Description</label>
+      <textarea id="d-description" rows="3"></textarea>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="d-assignee">Assigned to</label>
+        <select id="d-assignee"><option value="">Unassigned</option></select>
+      </div>
+      <div class="field">
+        <label for="d-client">Related client</label>
+        <select id="d-client"><option value="">— none —</option></select>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="d-due">Due</label>
+        <input type="datetime-local" id="d-due" />
+      </div>
+      <div class="field">
+        <label for="d-priority">Priority</label>
+        <select id="d-priority">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label for="d-category">Category</label>
+      <select id="d-category">
+        <option value="follow-up">Follow-up</option>
+        <option value="review">Review</option>
+        <option value="meeting">Meeting</option>
+        <option value="onboarding">Onboarding</option>
+        <option value="compliance">Compliance</option>
+        <option value="other" selected>Other</option>
+      </select>
+    </div>
+
+    <div class="drawer-section">
+      <h3>Checklist <span id="d-check-progress" class="cell-missing"></span></h3>
+      <div id="d-checklist"></div>
+      <div class="checklist-add">
+        <input type="text" class="input" id="d-check-new" placeholder="Add a checklist item…" />
+        <button type="button" class="btn btn-ghost btn-small" id="d-check-add">Add</button>
+      </div>
+    </div>
+
+    <div class="drawer-section" id="d-notes-section">
+      <h3>Notes &amp; history</h3>
+      <div class="comment-box">
+        <textarea id="d-comment" rows="2" placeholder="Add a note…"></textarea>
+        <div><button type="button" class="btn btn-ghost btn-small" id="d-comment-add">Add note</button></div>
+      </div>
+      <div id="d-history" style="margin-top:14px;"></div>
+    </div>
+
+    <p class="form-error" id="d-error"></p>
+  </div>
+  <div class="drawer-foot">
+    <button type="button" class="btn btn-danger btn-small" id="d-delete" title="Delete task">Delete</button>
+    <div style="display:flex; gap:10px;">
+      <button type="button" class="btn btn-ghost" id="d-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="d-save">Save</button>
+    </div>
+  </div>
+</aside>
+
+<script src="/admin/shared.js"></script>
+<script>
+  initShell('operations');
+
+  let allTasks = [];
+  let allContacts = [];
+  let adminList = [];
+  let activeFilter = 'all';
+  let dragTaskId = null;
+  // Drawer working state. draft holds the in-progress edits (incl. checklist)
+  // so nothing persists until Save — except comments, which post immediately.
+  let drawerMode = null;   // 'new' | 'edit' | null(closed)
+  let drawerTaskId = null;
+  let draft = null;
+  const POLL_INTERVAL_MS = 30000;
+
+  const PRIORITY_BADGE = { high: 'badge-red', medium: 'badge-amber', low: 'badge-gray' };
+
+  // Columns: one per admin account, then Unassigned, then Completed. (No Katie
+  // yet — she has no account. Add a member here when an account exists.)
+  const SPECIAL = { UNASSIGNED: '__unassigned', COMPLETED: '__completed' };
+
+  function columns() {
+    // Canonical staff order (Frank, Jyoung, Intern) regardless of how the API
+    // returns the admin list; any unmapped admin falls in after, alphabetically.
+    const order = Object.keys(STAFF_LABELS);
+    const rank = (email) => { const i = order.indexOf(email); return i === -1 ? order.length : i; };
+    const cols = adminList.slice()
+      .sort((a, b) => rank(a) - rank(b) || String(a).localeCompare(String(b)))
+      .map((email) => ({ key: email, type: 'person', label: staffLabel(email) }));
+    cols.push({ key: SPECIAL.UNASSIGNED, type: 'unassigned', label: 'Unassigned' });
+    cols.push({ key: SPECIAL.COMPLETED, type: 'completed', label: 'Completed' });
+    return cols;
+  }
+
+  function columnForTask(t) {
+    if (t.status === 'done') return SPECIAL.COMPLETED;
+    if (!t.assignee) return SPECIAL.UNASSIGNED;
+    return adminList.includes(t.assignee) ? t.assignee : SPECIAL.UNASSIGNED;
+  }
+
+  function contactName(email) {
+    const c = allContacts.find((x) => x.email === email);
+    return (c && c.name) || email;
+  }
+
+  function isSameLocalDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+
+  function dueInfo(t) {
+    if (!t.due) return { text: '', overdue: false, today: false, thisWeek: false };
+    const d = new Date(t.due);
+    if (isNaN(d)) return { text: '', overdue: false, today: false, thisWeek: false };
+    const now = new Date();
+    const overdue = d < now && t.status === 'open' && !isSameLocalDay(d, now);
+    const today = isSameLocalDay(d, now);
+    const thisWeek = d >= now && d - now < 7 * 86400e3;
+    const label = today
+      ? `Today ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+      : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return { text: `${overdue ? 'Overdue · ' : ''}${label}`, overdue, today, thisWeek };
+  }
+
+  // ---------- Filters ----------
+
+  const FILTERS = [
+    { id: 'all', label: 'All' },
+    { id: 'mine', label: 'Mine' },
+    { id: 'today', label: 'Due Today' },
+    { id: 'week', label: 'This Week' },
+    { id: 'overdue', label: 'Overdue' },
+  ];
+
+  function matchesFilter(t) {
+    if (activeFilter === 'all') return true;
+    if (activeFilter === 'mine') return t.assignee === SESSION.email;
+    const d = dueInfo(t);
+    if (activeFilter === 'today') return t.status === 'open' && d.today;
+    if (activeFilter === 'week') return t.status === 'open' && (d.today || d.thisWeek);
+    if (activeFilter === 'overdue') return t.status === 'open' && d.overdue;
+    return true;
+  }
+
+  function renderFilters() {
+    const wrap = document.getElementById('ops-filters');
+    wrap.innerHTML = FILTERS
+      .map((f) => `<button type="button" class="filter-pill ${activeFilter === f.id ? 'active' : ''}" data-f="${f.id}">${f.label}</button>`)
+      .join('');
+    wrap.querySelectorAll('.filter-pill').forEach((b) =>
+      b.addEventListener('click', () => { activeFilter = b.dataset.f; renderFilters(); renderBoard(); })
+    );
+  }
+
+  // ---------- Board ----------
+
+  function checklistProgress(t) {
+    const list = Array.isArray(t.checklist) ? t.checklist : [];
+    if (!list.length) return null;
+    const done = list.filter((c) => c.done).length;
+    return { done, total: list.length, pct: Math.round((done / list.length) * 100) };
+  }
+
+  function cardHtml(t) {
+    const d = dueInfo(t);
+    const dueCls = d.overdue ? 'overdue' : d.today ? 'today' : '';
+    const cp = checklistProgress(t);
+    const metaBits = [];
+    if (d.text) metaBits.push(`<span class="kc-due ${dueCls}">${escapeHtml(d.text)}</span>`);
+    if (t.client) metaBits.push(`<span class="kc-client">◗ ${escapeHtml(contactName(t.client))}</span>`);
+    if (cp) metaBits.push(`<span class="kc-check" title="${cp.done}/${cp.total} checklist items">
+      <span class="kc-bar"><span style="width:${cp.pct}%"></span></span>${cp.done}/${cp.total}</span>`);
+    if (t.createdBy === 'auto') metaBits.push('<span class="badge badge-navy kc-auto">auto</span>');
+    return `<div class="kanban-card ${t.status === 'done' ? 'card-done' : ''}" draggable="true" data-id="${escapeHtml(t.id)}">
+      <div class="kc-top">
+        <span class="kc-prio ${escapeHtml(t.priority || 'medium')}" title="${escapeHtml(t.priority || 'medium')} priority"></span>
+        <span class="kc-title">${escapeHtml(t.title)}</span>
+      </div>
+      ${metaBits.length ? `<div class="kc-meta">${metaBits.join('')}</div>` : ''}
+    </div>`;
+  }
+
+  function renderBoard() {
+    const board = document.getElementById('board');
+    const cols = columns();
+    const visible = allTasks.filter(matchesFilter);
+    const byCol = {};
+    cols.forEach((c) => { byCol[c.key] = []; });
+    visible.forEach((t) => {
+      const key = columnForTask(t);
+      if (byCol[key]) byCol[key].push(t);
+    });
+    // Sort each column: open by due (soonest first, undated last) then priority;
+    // completed by most-recently-completed.
+    const pRank = { high: 0, medium: 1, low: 2 };
+    Object.keys(byCol).forEach((key) => {
+      byCol[key].sort((a, b) => {
+        if (key === SPECIAL.COMPLETED) return String(b.completedAt || '').localeCompare(String(a.completedAt || ''));
+        const ad = a.due ? new Date(a.due).getTime() : Infinity;
+        const bd = b.due ? new Date(b.due).getTime() : Infinity;
+        if (ad !== bd) return ad - bd;
+        return (pRank[a.priority] ?? 1) - (pRank[b.priority] ?? 1);
+      });
+    });
+
+    board.innerHTML = cols.map((c) => {
+      const items = byCol[c.key] || [];
+      const colCls = c.type === 'completed' ? 'col-completed' : c.type === 'unassigned' ? 'col-unassigned' : '';
+      const addBtn = c.type === 'completed' ? '' :
+        `<button type="button" class="add-card-btn" data-col="${escapeHtml(c.key)}">+ Add Card</button>`;
+      return `<div class="board-col ${colCls}" data-col="${escapeHtml(c.key)}">
+        <div class="board-col-head">
+          <span class="board-col-title"><span class="col-dot"></span>${escapeHtml(c.label)}</span>
+          <span class="col-count">${items.length}</span>
+        </div>
+        <div class="board-col-body" data-col="${escapeHtml(c.key)}">
+          ${items.map(cardHtml).join('')}
+          ${addBtn}
+        </div>
+      </div>`;
+    }).join('');
+
+    wireBoardEvents();
+  }
+
+  function wireBoardEvents() {
+    const board = document.getElementById('board');
+    board.querySelectorAll('.kanban-card').forEach((card) => {
+      card.addEventListener('click', () => openDrawerEdit(card.dataset.id));
+      card.addEventListener('dragstart', (e) => {
+        dragTaskId = card.dataset.id;
+        card.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', card.dataset.id); } catch {}
+      });
+      card.addEventListener('dragend', () => {
+        dragTaskId = null;
+        card.classList.remove('dragging');
+      });
+    });
+    board.querySelectorAll('.board-col').forEach((col) => {
+      const key = col.dataset.col;
+      col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drop-target'); });
+      col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('drop-target'); });
+      col.addEventListener('drop', (e) => {
+        e.preventDefault();
+        col.classList.remove('drop-target');
+        const id = dragTaskId || e.dataTransfer.getData('text/plain');
+        if (id) handleDrop(id, key);
+      });
+    });
+    board.querySelectorAll('.add-card-btn').forEach((b) =>
+      b.addEventListener('click', () => openDrawerNew(b.dataset.col))
+    );
+  }
+
+  // Dragging a card = the primary reassignment/completion gesture.
+  async function handleDrop(id, colKey) {
+    const t = allTasks.find((x) => x.id === id);
+    if (!t) return;
+    if (columnForTask(t) === colKey) return; // dropped where it already is
+
+    let payload;
+    if (colKey === SPECIAL.COMPLETED) payload = { status: 'done' };
+    else if (colKey === SPECIAL.UNASSIGNED) payload = { assignee: '', status: 'open' };
+    else payload = { assignee: colKey, status: 'open' };
+
+    // Optimistic move, then reconcile with the server response.
+    const snapshot = { ...t };
+    Object.assign(t, payload);
+    if (payload.status === 'done' && !t.completedAt) t.completedAt = new Date().toISOString();
+    if (payload.status === 'open') t.completedAt = null;
+    renderBoard();
+    try {
+      const data = await api(`/api/admin/tasks/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify(payload) });
+      const i = allTasks.findIndex((x) => x.id === id);
+      if (i >= 0) allTasks[i] = data.task;
+      renderBoard();
+    } catch (err) {
+      Object.assign(t, snapshot);
+      renderBoard();
+      setStatus(`Move failed: ${err.message}`);
+    }
+  }
+
+  function setStatus(msg) { document.getElementById('ops-status').textContent = msg || ''; }
+
+  // ---------- Drawer ----------
+
+  function fillSelect(id, options, current, keepFirst) {
+    const sel = document.getElementById(id);
+    const first = keepFirst ? sel.querySelector('option').outerHTML : '';
+    sel.innerHTML = first + options.map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`).join('');
+    sel.value = current || '';
+  }
+
+  function refreshDrawerSelects(current) {
+    fillSelect('d-assignee', adminList.map((a) => ({ value: a, label: staffLabel(a) })), current && current.assignee, true);
+    fillSelect('d-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), current && current.client, true);
+  }
+
+  function openDrawerNew(colKey) {
+    drawerMode = 'new';
+    drawerTaskId = null;
+    const presetAssignee = (colKey && colKey.indexOf('__') !== 0) ? colKey : '';
+    draft = { title: '', description: '', assignee: presetAssignee, client: '', due: '', priority: 'medium', category: 'other', checklist: [] };
+    document.getElementById('drawer-title').textContent = 'New Task';
+    populateDrawer();
+    openDrawer();
+    document.getElementById('d-title').focus();
+  }
+
+  function openDrawerEdit(id) {
+    const t = allTasks.find((x) => x.id === id);
+    if (!t) return;
+    drawerMode = 'edit';
+    drawerTaskId = id;
+    draft = {
+      title: t.title || '', description: t.description || '', assignee: t.assignee || '',
+      client: t.client || '', due: t.due || '', priority: t.priority || 'medium',
+      category: t.category || 'other', checklist: (Array.isArray(t.checklist) ? t.checklist : []).map((c) => ({ ...c })),
+    };
+    document.getElementById('drawer-title').textContent = 'Edit Task';
+    populateDrawer();
+    openDrawer();
+  }
+
+  function populateDrawer() {
+    document.getElementById('d-title').value = draft.title;
+    document.getElementById('d-description').value = draft.description;
+    refreshDrawerSelects(draft);
+    document.getElementById('d-due').value = draft.due ? String(draft.due).slice(0, 16) : '';
+    document.getElementById('d-priority').value = draft.priority;
+    document.getElementById('d-category').value = draft.category;
+    document.getElementById('d-error').textContent = '';
+    document.getElementById('d-comment').value = '';
+    renderChecklist();
+    renderHistory();
+    // Notes/history + delete only make sense for a saved task.
+    document.getElementById('d-notes-section').classList.toggle('hidden', drawerMode !== 'edit');
+    document.getElementById('d-delete').classList.toggle('hidden', drawerMode !== 'edit');
+  }
+
+  function renderChecklist() {
+    const box = document.getElementById('d-checklist');
+    const list = draft.checklist;
+    box.innerHTML = list.map((c, i) => `
+      <div class="checklist-item ${c.done ? 'done' : ''}">
+        <input type="checkbox" data-i="${i}" ${c.done ? 'checked' : ''} />
+        <span class="ci-text">${escapeHtml(c.text)}</span>
+        <button type="button" class="ci-remove" data-i="${i}" title="Remove">&times;</button>
+      </div>`).join('');
+    const done = list.filter((c) => c.done).length;
+    document.getElementById('d-check-progress').textContent = list.length ? `${done}/${list.length}` : '';
+    box.querySelectorAll('input[type="checkbox"]').forEach((cb) =>
+      cb.addEventListener('change', () => { draft.checklist[cb.dataset.i].done = cb.checked; renderChecklist(); persistChecklist(); })
+    );
+    box.querySelectorAll('.ci-remove').forEach((b) =>
+      b.addEventListener('click', () => { draft.checklist.splice(Number(b.dataset.i), 1); renderChecklist(); persistChecklist(); })
+    );
+  }
+
+  // In edit mode, checklist changes save immediately so progress on the board
+  // stays live. In new mode they ride along with the create request on Save.
+  async function persistChecklist() {
+    if (drawerMode !== 'edit' || !drawerTaskId) return;
+    try {
+      const data = await api(`/api/admin/tasks/${encodeURIComponent(drawerTaskId)}`, {
+        method: 'POST', body: JSON.stringify({ checklist: draft.checklist }),
+      });
+      const i = allTasks.findIndex((x) => x.id === drawerTaskId);
+      if (i >= 0) allTasks[i] = data.task;
+      renderBoard();
+    } catch (err) { setStatus(`Checklist save failed: ${err.message}`); }
+  }
+
+  document.getElementById('d-check-add').addEventListener('click', addChecklistItem);
+  document.getElementById('d-check-new').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addChecklistItem(); } });
+  function addChecklistItem() {
+    const input = document.getElementById('d-check-new');
+    const text = input.value.trim();
+    if (!text) return;
+    draft.checklist.push({ text, done: false });
+    input.value = '';
+    renderChecklist();
+    persistChecklist();
+    input.focus();
+  }
+
+  const HIST_LABELS = {
+    created: 'Task created', completed: 'Marked complete', reopened: 'Reopened', updated: 'Edited',
+  };
+  function historyLine(h) {
+    if (h.type === 'assigned') return `Assigned to ${escapeHtml(h.detail && h.detail.to ? staffLabel(h.detail.to) : 'Unassigned')}`;
+    if (h.type === 'comment') return escapeHtml((h.detail && h.detail.text) || '');
+    return escapeHtml(HIST_LABELS[h.type] || h.type);
+  }
+  function renderHistory() {
+    const box = document.getElementById('d-history');
+    const t = drawerTaskId ? allTasks.find((x) => x.id === drawerTaskId) : null;
+    const hist = (t && Array.isArray(t.history)) ? t.history.slice().reverse() : [];
+    box.innerHTML = hist.length ? hist.map((h) => `
+      <div class="hist-item ${h.type === 'comment' ? 'hist-comment' : ''}">
+        <span class="hist-dot"></span>
+        <div>
+          <div>${historyLine(h)}</div>
+          <div class="hist-when">${escapeHtml(staffLabel(h.actor))} · ${escapeHtml(relTime(h.ts))}</div>
+        </div>
+      </div>`).join('') : '<p class="cell-missing" style="font-size:0.84rem;">No history yet.</p>';
+  }
+
+  document.getElementById('d-comment-add').addEventListener('click', async () => {
+    const box = document.getElementById('d-comment');
+    const text = box.value.trim();
+    if (!text || drawerMode !== 'edit' || !drawerTaskId) return;
+    try {
+      const data = await api(`/api/admin/tasks/${encodeURIComponent(drawerTaskId)}`, {
+        method: 'POST', body: JSON.stringify({ comment: text }),
+      });
+      const i = allTasks.findIndex((x) => x.id === drawerTaskId);
+      if (i >= 0) allTasks[i] = data.task;
+      box.value = '';
+      renderHistory();
+    } catch (err) { document.getElementById('d-error').textContent = err.message; }
+  });
+
+  function collectDraftFromInputs() {
+    draft.title = document.getElementById('d-title').value;
+    draft.description = document.getElementById('d-description').value;
+    draft.assignee = document.getElementById('d-assignee').value;
+    draft.client = document.getElementById('d-client').value;
+    draft.due = document.getElementById('d-due').value;
+    draft.priority = document.getElementById('d-priority').value;
+    draft.category = document.getElementById('d-category').value;
+  }
+
+  document.getElementById('d-save').addEventListener('click', async () => {
+    collectDraftFromInputs();
+    const errEl = document.getElementById('d-error');
+    errEl.textContent = '';
+    if (!draft.title.trim()) { errEl.textContent = 'Title is required.'; return; }
+    const payload = {
+      title: draft.title, description: draft.description, assignee: draft.assignee,
+      client: draft.client, due: draft.due, priority: draft.priority,
+      category: draft.category, checklist: draft.checklist,
+    };
+    try {
+      if (drawerMode === 'edit') {
+        const data = await api(`/api/admin/tasks/${encodeURIComponent(drawerTaskId)}`, { method: 'POST', body: JSON.stringify(payload) });
+        const i = allTasks.findIndex((x) => x.id === drawerTaskId);
+        if (i >= 0) allTasks[i] = data.task;
+      } else {
+        const data = await api('/api/admin/tasks', { method: 'POST', body: JSON.stringify(payload) });
+        allTasks.unshift(data.task);
+      }
+      closeDrawer();
+      renderBoard();
+    } catch (err) { errEl.textContent = err.message; }
+  });
+
+  document.getElementById('d-delete').addEventListener('click', async () => {
+    if (drawerMode !== 'edit' || !drawerTaskId) return;
+    const t = allTasks.find((x) => x.id === drawerTaskId);
+    if (!confirm(`Delete task "${t ? t.title : ''}"? This cannot be undone.`)) return;
+    try {
+      await api(`/api/admin/tasks/${encodeURIComponent(drawerTaskId)}`, { method: 'DELETE' });
+      allTasks = allTasks.filter((x) => x.id !== drawerTaskId);
+      closeDrawer();
+      renderBoard();
+    } catch (err) { document.getElementById('d-error').textContent = err.message; }
+  });
+
+  function openDrawer() {
+    document.getElementById('drawer-backdrop').classList.remove('hidden');
+    requestAnimationFrame(() => {
+      document.getElementById('drawer-backdrop').classList.add('open');
+      document.getElementById('drawer').classList.add('open');
+    });
+    document.getElementById('drawer').setAttribute('aria-hidden', 'false');
+  }
+  function closeDrawer() {
+    drawerMode = null; drawerTaskId = null; draft = null;
+    const bd = document.getElementById('drawer-backdrop');
+    document.getElementById('drawer').classList.remove('open');
+    bd.classList.remove('open');
+    document.getElementById('drawer').setAttribute('aria-hidden', 'true');
+    setTimeout(() => bd.classList.add('hidden'), 200);
+  }
+  document.getElementById('drawer-close').addEventListener('click', closeDrawer);
+  document.getElementById('d-cancel').addEventListener('click', closeDrawer);
+  document.getElementById('drawer-backdrop').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawerMode) closeDrawer(); });
+
+  // ---------- Boot ----------
+
+  document.getElementById('ops-refresh').addEventListener('click', () => loadData());
+
+  async function loadData() {
+    // Don't yank the board out from under an open drawer or an in-flight drag.
+    if (drawerMode || dragTaskId) return;
+    try {
+      const [taskData, contactData] = await Promise.all([
+        api('/api/admin/tasks'),
+        api('/api/admin/contacts'),
+      ]);
+      allTasks = taskData.tasks || [];
+      allContacts = (contactData.contacts || []).sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
+      adminList = contactData.admins || [];
+      if (taskData.decryptErrors) setStatus(`Warning: ${taskData.decryptErrors} task(s) could not be decrypted.`);
+      else setStatus('');
+      renderFilters();
+      renderBoard();
+    } catch (err) {
+      setStatus(`Failed to load: ${err.message}`);
+    }
+  }
+
+  // Deep link from the dashboard Operations widget: ?filter=today|week|overdue|mine
+  (function applyUrlParams() {
+    const f = new URLSearchParams(location.search).get('filter');
+    if (f && FILTERS.some((x) => x.id === f)) activeFilter = f;
+  })();
+
+  setInterval(loadData, POLL_INTERVAL_MS);
+  loadData();
+</script>
+</body>
+</html>

@@ -61,9 +61,25 @@ function Write-Timeline($client, $type, $actor, $detail) {
     })
 }
 
+# Mirror worker.js sanitizeChecklist: normalize to [{id, text, done}], drop blanks.
+function ConvertTo-Checklist($raw) {
+    $out = @()
+    foreach ($item in @($raw)) {
+        if (-not $item) { continue }
+        $text = ([string]$item.text).Trim()
+        if (-not $text) { continue }
+        $id = if ($item.id) { [string]$item.id } else { 'ci-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 6)) }
+        $out += [ordered]@{ id = $id; text = $text; done = [bool]$item.done }
+        if ($out.Count -ge 50) { break }
+    }
+    return , @($out)
+}
+
 function New-MockTask($fields) {
     $script:crmCounter++
     $id = 'task-{0:d6}' -f $script:crmCounter
+    $now = (Get-Date).ToString('o')
+    $createdBy = if ($fields.createdBy) { $fields.createdBy } else { 'system' }
     $task = [ordered]@{
         id = $id
         title = [string]$fields.title
@@ -74,9 +90,11 @@ function New-MockTask($fields) {
         priority = if ($taskPriorities -contains $fields.priority) { $fields.priority } else { 'medium' }
         category = if ($taskCategories -contains $fields.category) { $fields.category } else { 'other' }
         status = 'open'
-        createdBy = if ($fields.createdBy) { $fields.createdBy } else { 'system' }
-        createdAt = (Get-Date).ToString('o')
+        checklist = ConvertTo-Checklist $fields.checklist
+        createdBy = $createdBy
+        createdAt = $now
         completedAt = $null
+        history = @([ordered]@{ ts = $now; actor = $createdBy; type = 'created'; detail = $null })
     }
     $tasks[$id] = $task
     return $task
@@ -606,6 +624,7 @@ while ($listener.IsListening) {
                 title = [string]$body.title; description = [string]$body.description
                 client = ([string]$body.client).Trim().ToLower(); assignee = ([string]$body.assignee).Trim().ToLower()
                 due = [string]$body.due; priority = [string]$body.priority; category = [string]$body.category
+                checklist = $body.checklist
                 createdBy = $adminEmail
             }
             Send-Json $ctx 200 @{ task = $task }
@@ -619,17 +638,34 @@ while ($listener.IsListening) {
             $body = Read-Body $ctx
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
             $wasOpen = $task.status -eq 'open'
+            $prevAssignee = [string]$task.assignee
             foreach ($f in @('title', 'description', 'client', 'assignee', 'due', 'priority', 'category', 'status')) {
                 if ($body.PSObject.Properties[$f]) { $task[$f] = [string]$body.$f }
             }
+            if ($body.PSObject.Properties['checklist']) { $task.checklist = ConvertTo-Checklist $body.checklist }
+            if (-not $task.history) { $task.history = @() }
+            $appendHistory = {
+                param($type, $detail)
+                $task.history = @($task.history) + , ([ordered]@{ ts = (Get-Date).ToString('o'); actor = $adminEmail; type = $type; detail = $detail })
+            }
+            if ($body.PSObject.Properties['assignee'] -and ([string]$task.assignee) -ne $prevAssignee) {
+                & $appendHistory 'assigned' ([ordered]@{ from = $prevAssignee; to = [string]$task.assignee })
+            }
             if ($wasOpen -and $task.status -eq 'done') {
                 $task.completedAt = (Get-Date).ToString('o')
+                & $appendHistory 'completed' $null
                 if ($task.client) {
                     $evt = if ($task.category -eq 'meeting') { 'meeting-held' } else { 'task-completed' }
                     Write-Timeline $task.client $evt $adminEmail @{ title = $task.title }
                 }
             }
-            if ((-not $wasOpen) -and $task.status -eq 'open') { $task.completedAt = $null }
+            if ((-not $wasOpen) -and $task.status -eq 'open') {
+                $task.completedAt = $null
+                & $appendHistory 'reopened' $null
+            }
+            if ($body.PSObject.Properties['comment'] -and ([string]$body.comment).Trim()) {
+                & $appendHistory 'comment' ([ordered]@{ text = ([string]$body.comment).Trim() })
+            }
             Send-Json $ctx 200 @{ task = $task }
         }
         elseif ($path -match '^/api/admin/tasks/(.+)$' -and $method -eq 'DELETE') {

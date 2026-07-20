@@ -1841,6 +1841,27 @@ async function handleAdminUpsertContact(request, env, cors, targetEmail) {
 
 const TASK_PRIORITIES = ['low', 'medium', 'high'];
 const TASK_CATEGORIES = ['follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other'];
+const TASK_CHECKLIST_MAX = 50;
+const TASK_HISTORY_MAX = 200;
+
+// Normalize a checklist payload into [{id, text, done}], dropping blank items
+// and capping the count. Ids are preserved when present so toggles are stable.
+function sanitizeChecklist(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (!item) continue;
+    const text = String(item.text || '').trim().slice(0, 300);
+    if (!text) continue;
+    out.push({
+      id: (typeof item.id === 'string' && item.id) ? item.id.slice(0, 40) : randomHex(6),
+      text,
+      done: !!item.done,
+    });
+    if (out.length >= TASK_CHECKLIST_MAX) break;
+  }
+  return out;
+}
 
 function invTs(now = Date.now()) {
   return String(AUDIT_TS_CEILING - now).padStart(14, '0');
@@ -1881,9 +1902,11 @@ async function createTask(env, fields) {
     priority: TASK_PRIORITIES.includes(fields.priority) ? fields.priority : 'medium',
     category: TASK_CATEGORIES.includes(fields.category) ? fields.category : 'other',
     status: 'open',
+    checklist: sanitizeChecklist(fields.checklist),
     createdBy: fields.createdBy || 'system',
     createdAt: new Date().toISOString(),
     completedAt: null,
+    history: [{ ts: new Date().toISOString(), actor: fields.createdBy || 'system', type: 'created', detail: null }],
   };
   await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
   return task;
@@ -1962,6 +1985,7 @@ function sanitizeTaskFields(body) {
     if (!['open', 'done'].includes(body.status)) return { error: 'Invalid status' };
     out.status = body.status;
   }
+  if (body.checklist !== undefined) out.checklist = sanitizeChecklist(body.checklist);
   return { fields: out };
 }
 
@@ -1989,15 +2013,36 @@ async function handleAdminUpdateTask(request, env, cors, id) {
   if (error) return json({ error }, 400, cors);
 
   const wasOpen = task.status === 'open';
+  const prevAssignee = task.assignee || '';
   Object.assign(task, fields);
+
+  // Per-task history: append meaningful events so the Operations drawer can
+  // show a task's story (assignments, completion, notes) without a new store.
+  if (!Array.isArray(task.history)) task.history = [];
+  const logHistory = (type, detail) =>
+    task.history.push({ ts: new Date().toISOString(), actor: adminEmail, type, detail: detail || null });
+
+  if ('assignee' in fields && (fields.assignee || '') !== prevAssignee) {
+    logHistory('assigned', { from: prevAssignee || null, to: fields.assignee || null });
+  }
   if (wasOpen && task.status === 'done') {
     task.completedAt = new Date().toISOString();
+    logHistory('completed', null);
     if (task.client) {
       await logTimeline(env, task.client, task.category === 'meeting' ? 'meeting-held' : 'task-completed',
         adminEmail, { title: task.title });
     }
   }
-  if (!wasOpen && task.status === 'open') task.completedAt = null; // reopened
+  if (!wasOpen && task.status === 'open') {
+    task.completedAt = null; // reopened
+    logHistory('reopened', null);
+  }
+  // A free-text note/comment travels on the update body (not a task field).
+  if (body.comment !== undefined && String(body.comment).trim()) {
+    logHistory('comment', { text: String(body.comment).trim().slice(0, 2000) });
+  }
+  if (task.history.length > TASK_HISTORY_MAX) task.history = task.history.slice(-TASK_HISTORY_MAX);
+
   await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
   return json({ task }, 200, cors);
 }

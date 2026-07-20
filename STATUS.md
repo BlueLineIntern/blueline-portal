@@ -244,12 +244,18 @@ untouched and keeps its own look.
 - **Tasks** (`task:<invTs>-<rand>` KV, **encrypted**): title, description,
   client, assignee (admin), due, priority (low/medium/high), category
   (follow-up/review/meeting/onboarding/compliance/other), status (open/done),
-  createdBy, completedAt. CRUD under `/api/admin/tasks[/:id]`. Completing a
-  task writes a `task-completed` (or `meeting-held` when category=meeting)
-  timeline event. **Meetings are tasks** with category `meeting` — no calendar
-  integration yet. Tasks page: quick filters (My/All Open/Due Today/This
-  Week/Overdue/Completed) + client/assignee/priority/category filters + search
-  + create/edit modal; contact profile has a Tasks tab with quick-add.
+  createdBy, completedAt, plus **`checklist`** ([{id,text,done}]) and per-task
+  **`history`** ([{ts,actor,type,detail}] — created/assigned/completed/reopened/
+  comment). CRUD under `/api/admin/tasks[/:id]`. The update endpoint appends
+  history automatically on assignee/status changes and accepts a `comment` field
+  (a note, appended as a `comment` history entry — not a task column). Completing
+  a task also writes a `task-completed` (or `meeting-held`) client-timeline event.
+  **Meetings are tasks** with category `meeting` — no calendar integration yet.
+  **Assignees must be admin accounts** (Frank=fsabin, jyoung, intern); there is
+  no separate staff roster yet, so a non-login teammate (e.g. Katie) can't be
+  assigned until they have an account. Tasks page: quick filters (My/All Open/Due
+  Today/This Week/Overdue/Completed) + client/assignee/priority/category filters
+  + search + create/edit modal; contact profile has a Tasks tab with quick-add.
 - **Notes** (`note:<client>:<invTs>-<rand>` KV, **encrypted**): body (plain
   text), tags, pinned, author. CRUD under `/api/admin/notes[/:id]`
   (`?client=` filter). Creating one writes a `note-added` timeline event.
@@ -297,8 +303,25 @@ untouched and keeps its own look.
   overdue open tasks (nag until completed) + activity entries newer than the
   per-admin `notif_seen:<email>` cursor (`GET/POST /api/admin/notifseen`).
   "Mark all read" advances the cursor; nothing is fanned out per event.
+- **Operations board** (`operations.html`, sidebar "Operations"): a Kanban
+  **view over the same `task:` records** — no second store. One column per admin
+  account (Frank/Jyoung/Intern, canonical order enforced client-side) + Unassigned
+  + Completed. Native HTML5 drag-and-drop: drop on a person → `POST {assignee,
+  status:'open'}` (reopens if it was done); drop on Completed → `POST
+  {status:'done'}`; drop on Unassigned → clears assignee. Compact cards show
+  priority dot, colour-coded due, client, and checklist progress bar. **+ Add
+  Card** per column (prefills that column's assignee) and clicking a card open a
+  reusable **slide-out drawer** (`.drawer` in shared.css) to edit every field,
+  manage the checklist (toggles auto-save so board progress stays live), add
+  notes, and read task history. Filter pills (All/Mine/Due Today/This Week/
+  Overdue) with `?filter=` deep-link. Structured for future views (list/calendar)
+  via a single `renderBoard()`/`columnForTask()` seam. Drag-and-drop is
+  desktop-grade; on touch the drawer's assignee dropdown is the fallback.
+- Dashboard has an **Operations widget** (My tasks today / Overdue / Due this
+  week) linking into the board via `?filter=`.
 - `tasks.html` honors `?f=<quick filter>&cat=<category>&q=<search>` deep links;
-  `contacts.html` honors `?c=<email>&tab=<tab>`.
+  `contacts.html` honors `?c=<email>&tab=<tab>`; `operations.html` honors
+  `?filter=<today|week|overdue|mine>`.
 
 ## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
 - Admin has per-person login, sessions, mandatory TOTP MFA (with admin-resets-
