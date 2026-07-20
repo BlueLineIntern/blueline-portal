@@ -251,11 +251,13 @@ untouched and keeps its own look.
   (a note, appended as a `comment` history entry — not a task column). Completing
   a task also writes a `task-completed` (or `meeting-held`) client-timeline event.
   **Meetings are tasks** with category `meeting` — no calendar integration yet.
-  **Assignees must be admin accounts** (Frank=fsabin, jyoung, intern); there is
-  no separate staff roster yet, so a non-login teammate (e.g. Katie) can't be
-  assigned until they have an account. Tasks page: quick filters (My/All Open/Due
+  **Assignees** are admin accounts (Frank=fsabin, jyoung=Jenn, intern) **plus
+  team-roster members** (see below); validation accepts an admin email or a
+  roster member id, else 400. Tasks page: quick filters (My/All Open/Due
   Today/This Week/Overdue/Completed) + client/assignee/priority/category filters
   + search + create/edit modal; contact profile has a Tasks tab with quick-add.
+  Display names come from `staffLabel()` in shared.js (static admin map +
+  dynamic roster registry via `registerStaff()`).
 - **Notes** (`note:<client>:<invTs>-<rand>` KV, **encrypted**): body (plain
   text), tags, pinned, author. CRUD under `/api/admin/notes[/:id]`
   (`?client=` filter). Creating one writes a `note-added` timeline event.
@@ -303,10 +305,19 @@ untouched and keeps its own look.
   overdue open tasks (nag until completed) + activity entries newer than the
   per-admin `notif_seen:<email>` cursor (`GET/POST /api/admin/notifseen`).
   "Mark all read" advances the cursor; nothing is fanned out per event.
+- **Team roster** (`team_roster` KV, **encrypted**): an editable list of
+  teammates (`[{id: m-<hex>, name, createdAt}]`) who get a board column and can be
+  assigned tasks **without a login account**. `GET/POST/DELETE /api/admin/team`;
+  managed from the board's "Manage people" modal. Removing a member leaves their
+  tasks intact — they fall into Unassigned (columnForTask maps unknown ids there;
+  `staffLabel` renders a stale id as "(removed)"). Ids are stable so renaming
+  (future) never reassigns work. Login accounts always appear and aren't in the
+  roster. This is the successor to "Katie can't be assigned" — she now can, via
+  the roster, still with no login.
 - **Operations board** (`operations.html`, sidebar "Operations"): a Kanban
   **view over the same `task:` records** — no second store. One column per admin
-  account (Frank/Jyoung/Intern, canonical order enforced client-side) + Unassigned
-  + Completed. Native HTML5 drag-and-drop: drop on a person → `POST {assignee,
+  account (Frank/Jenn/Intern, canonical order enforced client-side) + roster
+  members + Unassigned + Completed. Native HTML5 drag-and-drop: drop on a person → `POST {assignee,
   status:'open'}` (reopens if it was done); drop on Completed → `POST
   {status:'done'}`; drop on Unassigned → clears assignee. Compact cards show
   priority dot, colour-coded due, client, and checklist progress bar. **+ Add

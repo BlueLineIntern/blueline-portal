@@ -121,7 +121,16 @@
   let allTasks = [];
   let allContacts = [];
   let adminList = [];
+  let teamMembers = []; // non-login roster members (from Operations)
   let quickFilter = 'my-open';
+
+  // Assignees = admin accounts + roster members; used by the filter + modal.
+  function assignableOptions() {
+    return [
+      ...adminList.map((a) => ({ value: a, label: staffLabel(a) })),
+      ...teamMembers.map((m) => ({ value: m.id, label: m.name })),
+    ];
+  }
   let searchText = '';
   let editingTaskId = null;
   const POLL_INTERVAL_MS = 30000;
@@ -227,7 +236,7 @@
           const clientBit = t.client
             ? ` · <a href="/admin/contacts.html?c=${encodeURIComponent(t.client)}">${escapeHtml(contactName(t.client))}</a>`
             : '';
-          const assigneeBit = t.assignee ? escapeHtml(t.assignee.split('@')[0]) : 'unassigned';
+          const assigneeBit = t.assignee ? escapeHtml(staffLabel(t.assignee)) : 'unassigned';
           const autoBit = t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : '';
           return `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
             <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark complete'}" />
@@ -299,7 +308,7 @@
     document.getElementById('tm-title').value = task ? task.title : '';
     document.getElementById('tm-description').value = task ? task.description || '' : '';
     fillSelect('tm-client', allContacts.map((c) => ({ value: c.email, label: `${c.name || c.email}` })), task && task.client);
-    fillSelect('tm-assignee', adminList.map((a) => ({ value: a, label: a })), task && task.assignee);
+    fillSelect('tm-assignee', assignableOptions(), task && task.assignee);
     document.getElementById('tm-due').value = task && task.due ? task.due.slice(0, 16) : '';
     document.getElementById('tm-priority').value = task ? task.priority : 'medium';
     document.getElementById('tm-category').value = task ? task.category : 'other';
@@ -362,15 +371,18 @@
 
   async function loadData() {
     try {
-      const [taskData, contactData] = await Promise.all([
+      const [taskData, contactData, teamData] = await Promise.all([
         api('/api/admin/tasks'),
         api('/api/admin/contacts'),
+        api('/api/admin/team').catch(() => ({ members: [] })),
       ]);
       allTasks = taskData.tasks || [];
       allContacts = (contactData.contacts || []).sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
       adminList = contactData.admins || [];
+      teamMembers = teamData.members || [];
+      registerStaff(teamMembers);
       fillSelect('filter-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), document.getElementById('filter-client').value);
-      fillSelect('filter-assignee', adminList.map((a) => ({ value: a, label: a.split('@')[0] })), document.getElementById('filter-assignee').value);
+      fillSelect('filter-assignee', assignableOptions(), document.getElementById('filter-assignee').value);
       if (taskData.decryptErrors) {
         document.getElementById('task-status').textContent = `Warning: ${taskData.decryptErrors} task(s) could not be decrypted.`;
       }

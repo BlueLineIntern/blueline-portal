@@ -86,13 +86,21 @@ const NAV_ITEMS = [
 // local-part so a new admin account still renders sensibly before it's mapped.
 const STAFF_LABELS = {
   'fsabin@blueline-advisors.com': 'Frank',
-  'jyoung@blueline-advisors.com': 'Jyoung',
+  'jyoung@blueline-advisors.com': 'Jenn',
   'intern@blueline-advisors.com': 'Intern',
 };
-function staffLabel(email) {
-  if (!email) return 'Unassigned';
-  if (STAFF_LABELS[email]) return STAFF_LABELS[email];
-  const local = String(email).split('@')[0] || String(email);
+// Roster members (non-login teammates) resolve their id -> name here; pages call
+// registerStaff() after loading /api/admin/team so labels work everywhere.
+const DYNAMIC_STAFF_LABELS = {};
+function registerStaff(members) {
+  (members || []).forEach((m) => { if (m && m.id) DYNAMIC_STAFF_LABELS[m.id] = m.name; });
+}
+function staffLabel(id) {
+  if (!id) return 'Unassigned';
+  if (STAFF_LABELS[id]) return STAFF_LABELS[id];
+  if (DYNAMIC_STAFF_LABELS[id]) return DYNAMIC_STAFF_LABELS[id];
+  if (String(id).startsWith('m-')) return '(removed)'; // roster member since deleted
+  const local = String(id).split('@')[0] || String(id);
   return local.charAt(0).toUpperCase() + local.slice(1);
 }
 

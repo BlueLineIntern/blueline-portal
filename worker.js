@@ -1954,7 +1954,9 @@ async function handleAdminListTasks(request, env, cors) {
   return json({ tasks: items, decryptErrors: errors }, 200, cors);
 }
 
-function sanitizeTaskFields(body) {
+// allowedAssignees is a Set of every assignable identifier (admin emails plus
+// team-roster member ids). Passed in by the handlers because it's loaded async.
+function sanitizeTaskFields(body, allowedAssignees) {
   const out = {};
   if (body.title !== undefined) {
     const t = String(body.title || '').trim();
@@ -1969,7 +1971,7 @@ function sanitizeTaskFields(body) {
   }
   if (body.assignee !== undefined) {
     const a = String(body.assignee || '').trim().toLowerCase();
-    if (a && !ADMIN_ACCOUNTS.some((acc) => acc.email === a)) return { error: 'Assignee must be an admin account' };
+    if (a && allowedAssignees && !allowedAssignees.has(a)) return { error: 'Assignee must be a team member' };
     out.assignee = a;
   }
   if (body.due !== undefined) out.due = String(body.due || '').trim().slice(0, 40);
@@ -1995,7 +1997,7 @@ async function handleAdminCreateTask(request, env, cors) {
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   if (!body.title || !String(body.title).trim()) return json({ error: 'Title is required' }, 400, cors);
-  const { fields, error } = sanitizeTaskFields(body);
+  const { fields, error } = sanitizeTaskFields(body, await allowedAssigneeSet(env));
   if (error) return json({ error }, 400, cors);
   const task = await createTask(env, { ...fields, createdBy: adminEmail });
   return json({ task }, 200, cors);
@@ -2009,7 +2011,7 @@ async function handleAdminUpdateTask(request, env, cors, id) {
   const task = await decryptToObject(env, raw);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
-  const { fields, error } = sanitizeTaskFields(body);
+  const { fields, error } = sanitizeTaskFields(body, await allowedAssigneeSet(env));
   if (error) return json({ error }, 400, cors);
 
   const wasOpen = task.status === 'open';
@@ -2052,6 +2054,61 @@ async function handleAdminDeleteTask(request, env, cors, id) {
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   await env.PORTAL_KV.delete(`task:${id}`);
   return json({ ok: true }, 200, cors);
+}
+
+// ---------- Team roster ----------
+// Board columns / task assignees are admin accounts PLUS an editable roster of
+// teammates who don't (yet) have a login. Members get a stable `m-<hex>` id so
+// renaming a person never reassigns their tasks. One encrypted KV blob.
+
+const TEAM_ROSTER_KEY = 'team_roster';
+const TEAM_MEMBER_MAX = 50;
+
+async function getTeamRoster(env) {
+  try {
+    const rec = await decryptToObject(env, await env.PORTAL_KV.get(TEAM_ROSTER_KEY));
+    if (rec && Array.isArray(rec.members)) return rec.members;
+  } catch { /* fall through to empty */ }
+  return [];
+}
+
+// Every identifier a task may legitimately be assigned to.
+async function allowedAssigneeSet(env) {
+  const roster = await getTeamRoster(env);
+  return new Set([...ADMIN_ACCOUNTS.map((a) => a.email), ...roster.map((m) => m.id)]);
+}
+
+async function handleAdminListTeam(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  return json({ members: await getTeamRoster(env) }, 200, cors);
+}
+
+async function handleAdminCreateTeamMember(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const body = await request.json().catch(() => null);
+  const name = String((body && body.name) || '').trim().slice(0, 60);
+  if (!name) return json({ error: 'Name is required' }, 400, cors);
+  const members = await getTeamRoster(env);
+  if (members.length >= TEAM_MEMBER_MAX) return json({ error: 'Team roster is full' }, 400, cors);
+  if (members.some((m) => m.name.toLowerCase() === name.toLowerCase())) {
+    return json({ error: 'Someone with that name is already on the board' }, 400, cors);
+  }
+  const member = { id: `m-${randomHex(6)}`, name, createdAt: new Date().toISOString() };
+  members.push(member);
+  await env.PORTAL_KV.put(TEAM_ROSTER_KEY, await encryptJSON(env, { members }));
+  return json({ member, members }, 200, cors);
+}
+
+async function handleAdminDeleteTeamMember(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const members = (await getTeamRoster(env)).filter((m) => m.id !== id);
+  await env.PORTAL_KV.put(TEAM_ROSTER_KEY, await encryptJSON(env, { members }));
+  // Tasks still carrying the removed id simply fall into Unassigned on the board
+  // (columnForTask maps unknown assignees there); they're not rewritten here.
+  return json({ members }, 200, cors);
 }
 
 // ---------- Notes ----------
@@ -2281,6 +2338,16 @@ export default {
       }
       if (taskMatch && request.method === 'DELETE') {
         return await handleAdminDeleteTask(request, env, cors, decodeURIComponent(taskMatch[1]));
+      }
+      if (url.pathname === '/api/admin/team' && request.method === 'GET') {
+        return await handleAdminListTeam(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/team' && request.method === 'POST') {
+        return await handleAdminCreateTeamMember(request, env, cors);
+      }
+      const teamMatch = url.pathname.match(/^\/api\/admin\/team\/(.+)$/);
+      if (teamMatch && request.method === 'DELETE') {
+        return await handleAdminDeleteTeamMember(request, env, cors, decodeURIComponent(teamMatch[1]));
       }
       if (url.pathname === '/api/admin/notes' && request.method === 'GET') {
         return await handleAdminListNotes(request, env, cors);

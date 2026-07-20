@@ -44,9 +44,19 @@ $notes = @{}   # id -> note record
 $timelineLog = [System.Collections.ArrayList]::new()  # client history entries (also the activity feed)
 $autoTaskMarkers = @{}  # rule:client -> fired
 $notifSeen = @{}        # admin email -> last time they opened notifications
+$teamRoster = @()       # editable non-login teammates: [{id, name, createdAt}]
 $script:crmCounter = 0
 $taskPriorities = @('low', 'medium', 'high')
 $taskCategories = @('follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other')
+
+# A task may be assigned to an admin account or a roster member id (or nobody).
+function Test-AssigneeAllowed($a) {
+    $a = ([string]$a).Trim().ToLower()
+    if (-not $a) { return $true }
+    if ($adminPasswords.ContainsKey($a)) { return $true }
+    foreach ($m in $teamRoster) { if ($m.id -eq $a) { return $true } }
+    return $false
+}
 
 # Mirror worker.js logTimeline: one entry serves both the per-client timeline
 # and the global activity feed in the mock.
@@ -617,8 +627,8 @@ while ($listener.IsListening) {
             if (-not $body -or -not [string]$body.title) { Send-Json $ctx 400 @{ error = 'Title is required' }; continue }
             if ($body.PSObject.Properties['priority'] -and $taskPriorities -notcontains [string]$body.priority) { Send-Json $ctx 400 @{ error = 'Invalid priority' }; continue }
             if ($body.PSObject.Properties['category'] -and $taskCategories -notcontains [string]$body.category) { Send-Json $ctx 400 @{ error = 'Invalid category' }; continue }
-            if ($body.PSObject.Properties['assignee'] -and [string]$body.assignee -and -not $adminPasswords.ContainsKey(([string]$body.assignee).Trim().ToLower())) {
-                Send-Json $ctx 400 @{ error = 'Assignee must be an admin account' }; continue
+            if ($body.PSObject.Properties['assignee'] -and -not (Test-AssigneeAllowed $body.assignee)) {
+                Send-Json $ctx 400 @{ error = 'Assignee must be a team member' }; continue
             }
             $task = New-MockTask @{
                 title = [string]$body.title; description = [string]$body.description
@@ -672,6 +682,28 @@ while ($listener.IsListening) {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $tasks.Remove([Uri]::UnescapeDataString($Matches[1]))
             Send-Json $ctx 200 @{ ok = $true }
+        }
+        elseif ($path -eq '/api/admin/team' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            Send-Json $ctx 200 @{ members = @($teamRoster) }
+        }
+        elseif ($path -eq '/api/admin/team' -and $method -eq 'POST') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $body = Read-Body $ctx
+            $name = ([string]$body.name).Trim()
+            if (-not $name) { Send-Json $ctx 400 @{ error = 'Name is required' }; continue }
+            if ($teamRoster | Where-Object { $_.name.ToLower() -eq $name.ToLower() }) {
+                Send-Json $ctx 400 @{ error = 'Someone with that name is already on the board' }; continue
+            }
+            $member = [ordered]@{ id = 'm-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 6)); name = $name; createdAt = (Get-Date).ToString('o') }
+            $teamRoster = @($teamRoster) + $member
+            Send-Json $ctx 200 @{ member = $member; members = @($teamRoster) }
+        }
+        elseif ($path -match '^/api/admin/team/(.+)$' -and $method -eq 'DELETE') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $rid = [Uri]::UnescapeDataString($Matches[1])
+            $teamRoster = @($teamRoster | Where-Object { $_.id -ne $rid })
+            Send-Json $ctx 200 @{ members = @($teamRoster) }
         }
         elseif ($path -eq '/api/admin/notes' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
