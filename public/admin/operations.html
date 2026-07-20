@@ -76,6 +76,22 @@
   .hist-item.hist-comment .hist-dot { background: var(--amber); }
   .hist-when { color: var(--muted); font-size: 0.76rem; }
   .comment-box { display: flex; flex-direction: column; gap: 8px; }
+
+  /* Board / List view toggle */
+  .view-toggle { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+  .view-toggle button {
+    border: none; background: var(--panel); color: var(--muted); padding: 7px 15px;
+    font-family: var(--font); font-size: 0.85rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .view-toggle button + button { border-left: 1px solid var(--border-strong); }
+  .view-toggle button.active { background: var(--navy); color: #fff; }
+
+  /* List view (ported from the old Tasks page) */
+  .task-filters-secondary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .task-filters-secondary select, .task-filters-secondary input { min-width: 150px; }
+  .task-done .row-title { text-decoration: line-through; color: var(--muted); }
+  .due-overdue { color: var(--red); font-weight: 650; }
+  .due-today { color: var(--amber); font-weight: 650; }
 </style>
 </head>
 <body>
@@ -85,19 +101,52 @@
     <div class="page-head">
       <div>
         <h1>Operations</h1>
-        <p class="sub">A visual board of every task, grouped by who owns it. Drag a card to reassign it,
-        or into Completed to close it out. It's the same task list as the Tasks page — changes sync everywhere.</p>
+        <p class="sub">Every task in one place. Use the <strong>Board</strong> to drag work between people,
+        or switch to the <strong>List</strong> for filtering and search. Same tasks, two views.</p>
       </div>
       <div class="page-actions">
+        <button type="button" class="btn btn-primary btn-small" id="ops-new">+ New task</button>
         <button type="button" class="btn btn-ghost btn-small" id="ops-manage">👥 Manage people</button>
         <button type="button" class="btn btn-ghost btn-small" id="ops-refresh">↻ Refresh</button>
       </div>
     </div>
 
-    <div class="filter-row" id="ops-filters"></div>
+    <div class="view-toggle" id="view-toggle">
+      <button type="button" data-view="board" class="active">▦ Board</button>
+      <button type="button" data-view="list">☰ List</button>
+    </div>
 
     <p class="panel-status" id="ops-status"></p>
-    <div class="board" id="board"></div>
+
+    <div id="board-view">
+      <div class="filter-row" id="ops-filters"></div>
+      <div class="board" id="board"></div>
+    </div>
+
+    <div id="list-view" class="hidden">
+      <div class="filter-row" id="list-filters"></div>
+      <div class="task-filters-secondary">
+        <input type="search" class="input" id="task-search" placeholder="Search tasks…" />
+        <select class="input" id="filter-client"><option value="">All clients</option></select>
+        <select class="input" id="filter-assignee"><option value="">All assignees</option></select>
+        <select class="input" id="filter-priority">
+          <option value="">Any priority</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+        <select class="input" id="filter-category">
+          <option value="">Any category</option>
+          <option value="follow-up">Follow-up</option>
+          <option value="review">Review</option>
+          <option value="meeting">Meeting</option>
+          <option value="onboarding">Onboarding</option>
+          <option value="compliance">Compliance</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="panel"><div class="row-list" id="task-list"></div></div>
+    </div>
   </main>
 </div>
 
@@ -208,7 +257,10 @@
   let allContacts = [];
   let adminList = [];
   let teamMembers = []; // editable roster of non-login teammates [{id,name}]
-  let activeFilter = 'all';
+  let activeFilter = 'all';       // board filter pill
+  let currentView = 'board';      // 'board' | 'list'
+  let listQuickFilter = 'my-open'; // list quick-filter pill
+  let listSearch = '';
   let dragTaskId = null;
   // Drawer working state. draft holds the in-progress edits (incl. checklist)
   // so nothing persists until Save — except comments, which post immediately.
@@ -218,6 +270,10 @@
   const POLL_INTERVAL_MS = 30000;
 
   const PRIORITY_BADGE = { high: 'badge-red', medium: 'badge-amber', low: 'badge-gray' };
+  const CATEGORY_BADGE = {
+    'follow-up': 'badge-sky', review: 'badge-navy', meeting: 'badge-green',
+    onboarding: 'badge-sky', compliance: 'badge-red', other: 'badge-gray',
+  };
 
   // Columns: one per admin account, then Unassigned, then Completed. (No Katie
   // yet — she has no account. Add a member here when an account exists.)
@@ -428,15 +484,15 @@
     Object.assign(t, payload);
     if (payload.status === 'done' && !t.completedAt) t.completedAt = new Date().toISOString();
     if (payload.status === 'open') t.completedAt = null;
-    renderBoard();
+    render();
     try {
       const data = await api(`/api/admin/tasks/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify(payload) });
       const i = allTasks.findIndex((x) => x.id === id);
       if (i >= 0) allTasks[i] = data.task;
-      renderBoard();
+      render();
     } catch (err) {
       Object.assign(t, snapshot);
-      renderBoard();
+      render();
       setStatus(`Move failed: ${err.message}`);
     }
   }
@@ -528,7 +584,7 @@
       });
       const i = allTasks.findIndex((x) => x.id === drawerTaskId);
       if (i >= 0) allTasks[i] = data.task;
-      renderBoard();
+      render();
     } catch (err) { setStatus(`Checklist save failed: ${err.message}`); }
   }
 
@@ -612,7 +668,7 @@
         allTasks.unshift(data.task);
       }
       closeDrawer();
-      renderBoard();
+      render();
     } catch (err) { errEl.textContent = err.message; }
   });
 
@@ -624,7 +680,7 @@
       await api(`/api/admin/tasks/${encodeURIComponent(drawerTaskId)}`, { method: 'DELETE' });
       allTasks = allTasks.filter((x) => x.id !== drawerTaskId);
       closeDrawer();
-      renderBoard();
+      render();
     } catch (err) { document.getElementById('d-error').textContent = err.message; }
   });
 
@@ -688,7 +744,7 @@
       registerStaff(teamMembers);
       input.value = '';
       renderTeamList();
-      renderBoard();
+      render();
       input.focus();
     } catch (err) { errEl.textContent = err.message; }
   }
@@ -700,7 +756,7 @@
       const data = await api(`/api/admin/team/${encodeURIComponent(id)}`, { method: 'DELETE' });
       teamMembers = data.members || [];
       renderTeamList();
-      renderBoard();
+      render();
     } catch (err) { document.getElementById('team-error').textContent = err.message; }
   }
 
@@ -710,9 +766,156 @@
   document.getElementById('team-new').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addTeamMember(); } });
   document.getElementById('team-modal-backdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeTeamModal(); });
 
+  // ---------- List view (same tasks, table layout) ----------
+
+  const QUICK_FILTERS = [
+    { id: 'my-open', label: 'My Tasks' },
+    { id: 'open', label: 'All Open' },
+    { id: 'today', label: 'Due Today' },
+    { id: 'week', label: 'This Week' },
+    { id: 'overdue', label: 'Overdue' },
+    { id: 'done', label: 'Completed' },
+  ];
+
+  function taskPassesQuickFilter(t) {
+    const d = dueInfo(t);
+    switch (listQuickFilter) {
+      case 'my-open': return t.status === 'open' && (t.assignee === SESSION.email || !t.assignee);
+      case 'open': return t.status === 'open';
+      case 'today': return t.status === 'open' && d.today;
+      case 'week': return t.status === 'open' && (d.today || d.thisWeek);
+      case 'overdue': return t.status === 'open' && d.overdue;
+      case 'done': return t.status === 'done';
+      default: return true;
+    }
+  }
+
+  function renderQuickFilters() {
+    const counts = {};
+    QUICK_FILTERS.forEach((f) => {
+      const saved = listQuickFilter; listQuickFilter = f.id;
+      counts[f.id] = allTasks.filter(taskPassesQuickFilter).length;
+      listQuickFilter = saved;
+    });
+    const wrap = document.getElementById('list-filters');
+    wrap.innerHTML = QUICK_FILTERS
+      .map((f) => `<button type="button" class="filter-pill ${listQuickFilter === f.id ? 'active' : ''}" data-f="${f.id}">${f.label} (${counts[f.id]})</button>`)
+      .join('');
+    wrap.querySelectorAll('.filter-pill').forEach((b) =>
+      b.addEventListener('click', () => { listQuickFilter = b.dataset.f; renderQuickFilters(); renderTasks(); })
+    );
+  }
+
+  function renderTasks() {
+    const list = document.getElementById('task-list');
+    const q = listSearch.trim().toLowerCase();
+    const fClient = document.getElementById('filter-client').value;
+    const fAssignee = document.getElementById('filter-assignee').value;
+    const fPriority = document.getElementById('filter-priority').value;
+    const fCategory = document.getElementById('filter-category').value;
+
+    let items = allTasks.filter(taskPassesQuickFilter)
+      .filter((t) => !fClient || t.client === fClient)
+      .filter((t) => !fAssignee || t.assignee === fAssignee)
+      .filter((t) => !fPriority || t.priority === fPriority)
+      .filter((t) => !fCategory || t.category === fCategory)
+      .filter((t) => !q || `${t.title} ${t.description} ${t.client}`.toLowerCase().includes(q));
+
+    if (listQuickFilter === 'done') {
+      items.sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
+    } else {
+      const pRank = { high: 0, medium: 1, low: 2 };
+      items.sort((a, b) => {
+        const ad = a.due ? new Date(a.due).getTime() : Infinity;
+        const bd = b.due ? new Date(b.due).getTime() : Infinity;
+        if (ad !== bd) return ad - bd;
+        return (pRank[a.priority] ?? 1) - (pRank[b.priority] ?? 1);
+      });
+    }
+
+    list.innerHTML = items.length
+      ? items.map((t) => {
+          const d = dueInfo(t);
+          const dueCls = d.overdue ? 'due-overdue' : d.today ? 'due-today' : '';
+          const clientBit = t.client
+            ? ` · <a href="/admin/contacts.html?c=${encodeURIComponent(t.client)}">${escapeHtml(contactName(t.client))}</a>`
+            : '';
+          const assigneeBit = t.assignee ? escapeHtml(staffLabel(t.assignee)) : 'unassigned';
+          const autoBit = t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : '';
+          const cp = checklistProgress(t);
+          const checkBit = cp ? ` · ✓ ${cp.done}/${cp.total}` : '';
+          return `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
+            <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark complete'}" />
+            <div class="row-main">
+              <div class="row-title">${escapeHtml(t.title)}${autoBit}</div>
+              <div class="row-sub"><span class="${dueCls}">${escapeHtml(d.text || 'no due date')}</span>${clientBit} · ${assigneeBit}${checkBit}${t.description ? `<br>${escapeHtml(t.description)}` : ''}</div>
+            </div>
+            <div class="row-side">
+              <span class="badge ${CATEGORY_BADGE[t.category] || 'badge-gray'}">${escapeHtml(t.category)}</span>
+              <span class="badge ${PRIORITY_BADGE[t.priority] || 'badge-gray'}">${escapeHtml(t.priority)}</span>
+              <button type="button" class="btn btn-ghost btn-small list-edit-btn" data-id="${escapeHtml(t.id)}">Edit</button>
+              <button type="button" class="btn btn-danger btn-small list-del-btn" data-id="${escapeHtml(t.id)}">Delete</button>
+            </div>
+          </div>`;
+        }).join('')
+      : '<p class="empty">Nothing here. Enjoy the quiet, or create a task.</p>';
+
+    list.querySelectorAll('.task-check').forEach((cb) =>
+      cb.addEventListener('change', () => toggleTask(cb.dataset.id, cb.checked))
+    );
+    list.querySelectorAll('.list-edit-btn').forEach((b) =>
+      b.addEventListener('click', () => openDrawerEdit(b.dataset.id))
+    );
+    list.querySelectorAll('.list-del-btn').forEach((b) =>
+      b.addEventListener('click', () => deleteTaskById(b.dataset.id))
+    );
+  }
+
+  async function toggleTask(id, done) {
+    try {
+      const data = await api(`/api/admin/tasks/${encodeURIComponent(id)}`, {
+        method: 'POST', body: JSON.stringify({ status: done ? 'done' : 'open' }),
+      });
+      const i = allTasks.findIndex((t) => t.id === id);
+      if (i >= 0) allTasks[i] = data.task;
+      render();
+    } catch (err) { setStatus(`Update failed: ${err.message}`); }
+  }
+
+  async function deleteTaskById(id) {
+    const t = allTasks.find((x) => x.id === id);
+    if (!confirm(`Delete task "${t ? t.title : id}"? This cannot be undone.`)) return;
+    try {
+      await api(`/api/admin/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      allTasks = allTasks.filter((x) => x.id !== id);
+      render();
+    } catch (err) { setStatus(`Delete failed: ${err.message}`); }
+  }
+
+  // ---------- View dispatch ----------
+
+  function render() {
+    document.getElementById('board-view').classList.toggle('hidden', currentView !== 'board');
+    document.getElementById('list-view').classList.toggle('hidden', currentView !== 'list');
+    // Manage-people is board-centric; keep it out of the way in list view.
+    document.getElementById('ops-manage').classList.toggle('hidden', currentView !== 'board');
+    document.querySelectorAll('#view-toggle button').forEach((b) => b.classList.toggle('active', b.dataset.view === currentView));
+    if (currentView === 'board') { renderFilters(); renderBoard(); }
+    else { renderQuickFilters(); renderTasks(); }
+  }
+
+  document.querySelectorAll('#view-toggle button').forEach((b) =>
+    b.addEventListener('click', () => { currentView = b.dataset.view; render(); })
+  );
+
   // ---------- Boot ----------
 
   document.getElementById('ops-refresh').addEventListener('click', () => loadData());
+  document.getElementById('ops-new').addEventListener('click', () => openDrawerNew(''));
+  ['filter-client', 'filter-assignee', 'filter-priority', 'filter-category'].forEach((id) =>
+    document.getElementById(id).addEventListener('change', renderTasks)
+  );
+  document.getElementById('task-search').addEventListener('input', (e) => { listSearch = e.target.value; renderTasks(); });
 
   async function loadData() {
     // Don't yank the board out from under an open drawer or an in-flight drag.
@@ -728,19 +931,33 @@
       adminList = contactData.admins || [];
       teamMembers = teamData.members || [];
       registerStaff(teamMembers);
+      // List-view filter selects (board uses its own pill row).
+      fillSelect('filter-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), document.getElementById('filter-client').value, true);
+      fillSelect('filter-assignee', assignableOptions(), document.getElementById('filter-assignee').value, true);
       if (taskData.decryptErrors) setStatus(`Warning: ${taskData.decryptErrors} task(s) could not be decrypted.`);
       else setStatus('');
-      renderFilters();
-      renderBoard();
+      render();
     } catch (err) {
       setStatus(`Failed to load: ${err.message}`);
     }
   }
 
-  // Deep link from the dashboard Operations widget: ?filter=today|week|overdue|mine
+  // Deep links. Board (dashboard Operations widget): ?filter=today|week|overdue|mine.
+  // List (dashboard queues / search / old Tasks links, via tasks.html redirect):
+  // ?view=list&f=<quick>&cat=<category>&q=<search>.
   (function applyUrlParams() {
-    const f = new URLSearchParams(location.search).get('filter');
-    if (f && FILTERS.some((x) => x.id === f)) activeFilter = f;
+    const p = new URLSearchParams(location.search);
+    const view = p.get('view');
+    if (view === 'list' || view === 'board') currentView = view;
+    else if (p.has('f') || p.has('cat') || p.has('q')) currentView = 'list';
+    const bf = p.get('filter');
+    if (bf && FILTERS.some((x) => x.id === bf)) activeFilter = bf;
+    const f = p.get('f');
+    if (f && QUICK_FILTERS.some((x) => x.id === f)) listQuickFilter = f;
+    const cat = p.get('cat');
+    if (cat) document.getElementById('filter-category').value = cat;
+    const q = p.get('q');
+    if (q) { listSearch = q; document.getElementById('task-search').value = q; }
   })();
 
   setInterval(loadData, POLL_INTERVAL_MS);

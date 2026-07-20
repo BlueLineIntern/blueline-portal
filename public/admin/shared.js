@@ -75,7 +75,6 @@ function relTime(iso) {
 const NAV_ITEMS = [
   { id: 'dashboard', href: '/admin/', icon: '⌂', label: 'Dashboard' },
   { id: 'contacts', href: '/admin/contacts.html', icon: '☰', label: 'Contacts' },
-  { id: 'tasks', href: '/admin/tasks.html', icon: '✓', label: 'Tasks' },
   { id: 'operations', href: '/admin/operations.html', icon: '▦', label: 'Operations' },
   { id: 'onboarding', href: '/admin/onboarding.html', icon: '➔', label: 'Onboarding' },
   { id: 'settings', href: '/admin/settings.html', icon: '⚙', label: 'Settings' },

@@ -253,11 +253,10 @@ untouched and keeps its own look.
   **Meetings are tasks** with category `meeting` — no calendar integration yet.
   **Assignees** are admin accounts (Frank=fsabin, jyoung=Jenn, intern) **plus
   team-roster members** (see below); validation accepts an admin email or a
-  roster member id, else 400. Tasks page: quick filters (My/All Open/Due
-  Today/This Week/Overdue/Completed) + client/assignee/priority/category filters
-  + search + create/edit modal; contact profile has a Tasks tab with quick-add.
-  Display names come from `staffLabel()` in shared.js (static admin map +
-  dynamic roster registry via `registerStaff()`).
+  roster member id, else 400. The task UI lives entirely on the **Operations
+  page** now (Board + List views — see below); the contact profile still has a
+  Tasks tab with quick-add. Display names come from `staffLabel()` in shared.js
+  (static admin map + dynamic roster registry via `registerStaff()`).
 - **Notes** (`note:<client>:<invTs>-<rand>` KV, **encrypted**): body (plain
   text), tags, pinned, author. CRUD under `/api/admin/notes[/:id]`
   (`?client=` filter). Creating one writes a `note-added` timeline event.
@@ -314,7 +313,15 @@ untouched and keeps its own look.
   (future) never reassigns work. Login accounts always appear and aren't in the
   roster. This is the successor to "Katie can't be assigned" — she now can, via
   the roster, still with no login.
-- **Operations board** (`operations.html`, sidebar "Operations"): a Kanban
+- **Operations** (`operations.html`, sidebar "Operations") is the single task
+  workspace — the old separate Tasks page was merged in as a **List view**. A
+  Board/List toggle switches between them; both are views over the same `task:`
+  records. `tasks.html` is now a redirect stub → `operations.html?view=list&…`
+  so every old link (dashboard queues, search palette, contacts "full task
+  manager") keeps working. **List view**: quick filters (My/All Open/Due
+  Today/This Week/Overdue/Completed) + client/assignee/priority/category filters
+  + search + rows with complete/edit/delete (edit opens the same drawer).
+- **Operations board** view: a Kanban
   **view over the same `task:` records** — no second store. One column per admin
   account (Frank/Jenn/Intern, canonical order enforced client-side) + roster
   members + Unassigned + Completed. Native HTML5 drag-and-drop: drop on a person → `POST {assignee,
@@ -330,9 +337,10 @@ untouched and keeps its own look.
   desktop-grade; on touch the drawer's assignee dropdown is the fallback.
 - Dashboard has an **Operations widget** (My tasks today / Overdue / Due this
   week) linking into the board via `?filter=`.
-- `tasks.html` honors `?f=<quick filter>&cat=<category>&q=<search>` deep links;
-  `contacts.html` honors `?c=<email>&tab=<tab>`; `operations.html` honors
-  `?filter=<today|week|overdue|mine>`.
+- `contacts.html` honors `?c=<email>&tab=<tab>`. `operations.html` honors
+  `?view=<board|list>`, `?filter=<today|week|overdue|mine>` (board pill), and
+  `?f=<quick filter>&cat=<category>&q=<search>` (list; presence of any implies
+  `view=list`). `tasks.html` is a redirect stub preserving these params.
 
 ## Known gaps / STILL NOT addressed (the "bigger lifts" — need real work)
 - Admin has per-person login, sessions, mandatory TOTP MFA (with admin-resets-
