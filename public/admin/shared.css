@@ -224,7 +224,7 @@ a.stat-tile:hover { border-color: var(--sky); text-decoration: none; }
   display: inline-flex; align-items: center; gap: 6px; justify-content: center;
   padding: 8px 16px; border-radius: 6px; border: 1px solid transparent;
   font-family: var(--font); font-size: 0.88rem; font-weight: 600; cursor: pointer;
-  text-decoration: none;
+  text-decoration: none; white-space: nowrap; align-self: center; margin: 0;
 }
 .btn:hover { text-decoration: none; }
 .btn-primary { background: var(--sky); color: #fff; }
@@ -273,7 +273,7 @@ a.stat-tile:hover { border-color: var(--sky); text-decoration: none; }
   width: 100%; max-width: 540px; padding: 22px; max-height: calc(100vh - 120px); overflow-y: auto;
 }
 .modal h2 { font-size: 1.05rem; margin-bottom: 16px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
 /* ---------- List rows (tasks, notes, timeline, activity) ---------- */
 .row-list { display: flex; flex-direction: column; }
