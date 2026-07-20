@@ -55,7 +55,7 @@
         <div class="row-list" id="w-overdue"></div>
       </div>
       <div class="panel">
-        <div class="panel-head"><h2>Upcoming Meetings</h2><a class="panel-link" href="/admin/tasks.html?cat=meeting">View →</a></div>
+        <div class="panel-head"><h2>Upcoming Meetings</h2><a class="panel-link" href="/admin/calendar.html">Calendar →</a></div>
         <div class="row-list" id="w-meetings"></div>
       </div>
       <div class="panel">
@@ -172,7 +172,32 @@
         .sort((a, b) => new Date(a.due) - new Date(b.due));
       fill('w-today', dueToday.map((t) => taskRow(t, contacts)).join(''), 'Nothing due today.');
       fill('w-overdue', overdue.map((t) => taskRow(t, contacts)).join(''), 'Nothing overdue. Well done.');
-      fill('w-meetings', meetings.slice(0, 6).map((t) => taskRow(t, contacts)).join(''), 'No meetings scheduled — add one as a task with the Meeting category.');
+
+      // Upcoming meeting rows carry prep progress, missing docs, and the client's
+      // open-task count so the advisor sees readiness at a glance.
+      const meetingRow = (m) => {
+        const d = new Date(m.due);
+        const timeStr = String(m.due).includes('T')
+          ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+          : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        const cObj = contacts.find((x) => x.email === m.client);
+        const who = m.client ? escapeHtml((cObj && cObj.name) || m.client) : 'Internal';
+        const cl = Array.isArray(m.checklist) ? m.checklist : [];
+        const docs = Array.isArray(m.documents) ? m.documents : [];
+        const missing = docs.filter((x) => !x.ready).length;
+        const openForClient = m.client ? tasks.filter((t) => t.client === m.client && t.id !== m.id && t.status === 'open').length : 0;
+        const bits = [];
+        if (cl.length) bits.push(`${cl.filter((c) => c.done).length}/${cl.length} prep`);
+        if (docs.length) bits.push(missing ? `<span class="badge badge-red">${missing} doc${missing > 1 ? 's' : ''} missing</span>` : '<span class="badge badge-green">docs ready</span>');
+        if (openForClient) bits.push(`${openForClient} open task${openForClient > 1 ? 's' : ''}`);
+        return `<a class="row-item" style="text-decoration:none;color:inherit" href="/admin/calendar.html?task=${encodeURIComponent(m.id)}&view=day&date=${escapeHtml(String(m.due).slice(0, 10))}">
+          <div class="row-main">
+            <div class="row-title">${escapeHtml(m.title)}</div>
+            <div class="row-sub">${who} · ${escapeHtml(timeStr)}${bits.length ? ' · ' + bits.join(' · ') : ''}</div>
+          </div>
+        </a>`;
+      };
+      fill('w-meetings', meetings.slice(0, 6).map(meetingRow).join(''), 'No meetings scheduled — add one in the Calendar.');
       fill('w-review', reviewTasks.concat(onbTasks).slice(0, 6).map((t) => taskRow(t, contacts)).join(''), 'Nothing waiting for review.');
 
       // ----- Operations widget: quick pulse into the board -----

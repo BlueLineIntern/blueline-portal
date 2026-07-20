@@ -76,6 +76,7 @@ const NAV_ITEMS = [
   { id: 'dashboard', href: '/admin/', icon: '⌂', label: 'Dashboard' },
   { id: 'contacts', href: '/admin/contacts.html', icon: '☰', label: 'Contacts' },
   { id: 'operations', href: '/admin/operations.html', icon: '▦', label: 'Operations' },
+  { id: 'calendar', href: '/admin/calendar.html', icon: '▤', label: 'Calendar' },
   { id: 'onboarding', href: '/admin/onboarding.html', icon: '➔', label: 'Onboarding' },
   { id: 'settings', href: '/admin/settings.html', icon: '⚙', label: 'Settings' },
 ];

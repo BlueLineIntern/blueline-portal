@@ -1870,6 +1870,7 @@ async function handleAdminArchiveContact(request, env, cors, targetEmail, archiv
 const TASK_PRIORITIES = ['low', 'medium', 'high'];
 const TASK_CATEGORIES = ['follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other'];
 const TASK_CHECKLIST_MAX = 50;
+const TASK_DOCUMENTS_MAX = 50;
 const TASK_HISTORY_MAX = 200;
 
 // Normalize a checklist payload into [{id, text, done}], dropping blank items
@@ -1887,6 +1888,26 @@ function sanitizeChecklist(raw) {
       done: !!item.done,
     });
     if (out.length >= TASK_CHECKLIST_MAX) break;
+  }
+  return out;
+}
+
+// Required-documents list for a meeting: [{id, name, ready}]. Same shape as the
+// checklist (there's no file storage yet — R2 is a later phase — so this tracks
+// which documents have been gathered, not the files themselves).
+function sanitizeDocuments(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (!item) continue;
+    const name = String(item.name || '').trim().slice(0, 200);
+    if (!name) continue;
+    out.push({
+      id: (typeof item.id === 'string' && item.id) ? item.id.slice(0, 40) : randomHex(6),
+      name,
+      ready: !!item.ready,
+    });
+    if (out.length >= TASK_DOCUMENTS_MAX) break;
   }
   return out;
 }
@@ -1932,6 +1953,8 @@ async function createTask(env, fields) {
     category: TASK_CATEGORIES.includes(fields.category) ? fields.category : 'other',
     status: 'open',
     checklist: sanitizeChecklist(fields.checklist),
+    meetingType: fields.meetingType || '',
+    documents: sanitizeDocuments(fields.documents),
     createdBy: fields.createdBy || 'system',
     createdAt: new Date().toISOString(),
     completedAt: null,
@@ -2021,6 +2044,8 @@ function sanitizeTaskFields(body, allowedAssignees) {
     out.status = body.status;
   }
   if (body.checklist !== undefined) out.checklist = sanitizeChecklist(body.checklist);
+  if (body.meetingType !== undefined) out.meetingType = String(body.meetingType || '').trim().slice(0, 40);
+  if (body.documents !== undefined) out.documents = sanitizeDocuments(body.documents);
   return { fields: out };
 }
 

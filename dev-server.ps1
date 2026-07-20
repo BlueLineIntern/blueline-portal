@@ -83,6 +83,20 @@ function ConvertTo-Checklist($raw) {
     return , @($out)
 }
 
+# Mirror worker.js sanitizeDocuments: normalize to [{id, name, ready}], drop blanks.
+function ConvertTo-Documents($raw) {
+    $out = @()
+    foreach ($item in @($raw)) {
+        if (-not $item) { continue }
+        $name = ([string]$item.name).Trim()
+        if (-not $name) { continue }
+        $id = if ($item.id) { [string]$item.id } else { 'doc-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 6)) }
+        $out += [ordered]@{ id = $id; name = $name; ready = [bool]$item.ready }
+        if ($out.Count -ge 50) { break }
+    }
+    return , @($out)
+}
+
 function New-MockTask($fields) {
     $script:crmCounter++
     $id = 'task-{0:d6}' -f $script:crmCounter
@@ -100,6 +114,8 @@ function New-MockTask($fields) {
         category = if ($taskCategories -contains $fields.category) { $fields.category } else { 'other' }
         status = 'open'
         checklist = ConvertTo-Checklist $fields.checklist
+        meetingType = [string]$fields.meetingType
+        documents = ConvertTo-Documents $fields.documents
         createdBy = $createdBy
         createdAt = $now
         completedAt = $null
@@ -635,6 +651,8 @@ while ($listener.IsListening) {
                 list = ([string]$body.list).Trim()
                 due = [string]$body.due; priority = [string]$body.priority; category = [string]$body.category
                 checklist = $body.checklist
+                meetingType = [string]$body.meetingType
+                documents = $body.documents
                 createdBy = $adminEmail
             }
             Send-Json $ctx 200 @{ task = $task }
@@ -649,10 +667,11 @@ while ($listener.IsListening) {
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
             $wasOpen = $task.status -eq 'open'
             $prevAssignee = [string]$task.assignee
-            foreach ($f in @('title', 'description', 'client', 'assignee', 'list', 'due', 'priority', 'category', 'status')) {
+            foreach ($f in @('title', 'description', 'client', 'assignee', 'list', 'due', 'priority', 'category', 'status', 'meetingType')) {
                 if ($body.PSObject.Properties[$f]) { $task[$f] = [string]$body.$f }
             }
             if ($body.PSObject.Properties['checklist']) { $task.checklist = ConvertTo-Checklist $body.checklist }
+            if ($body.PSObject.Properties['documents']) { $task.documents = ConvertTo-Documents $body.documents }
             if (-not $task.history) { $task.history = @() }
             $appendHistory = {
                 param($type, $detail)

@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
+<title>Calendar — BlueLine Admin</title>
+<link rel="stylesheet" href="/admin/shared.css" />
+<style>
+  /* Calendar is a view over the same task: records (meetings are tasks with
+     category 'meeting'; every task with a due date appears). No new store. */
+  .cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .cal-nav { display: flex; align-items: center; gap: 8px; }
+  .cal-period { font-weight: 650; font-size: 1rem; color: var(--navy); min-width: 180px; }
+  .cal-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+  .cal-seg button { border: none; background: var(--panel); color: var(--muted); padding: 7px 14px; font-family: var(--font); font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+  .cal-seg button + button { border-left: 1px solid var(--border-strong); }
+  .cal-seg button.active { background: var(--navy); color: #fff; }
+
+  /* Month grid */
+  .cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-bottom: 6px; }
+  .cal-weekdays span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; text-align: left; padding-left: 4px; }
+  .cal-month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+  .cal-cell { min-height: 108px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+  .cal-cell:hover { border-color: var(--sky); }
+  .cal-cell.other-month { background: var(--bg); opacity: 0.6; }
+  .cal-cell.today { border-color: var(--sky); box-shadow: inset 0 0 0 1px var(--sky); }
+  .cal-daynum { font-size: 0.78rem; font-weight: 650; color: var(--text); }
+  .cal-cell.today .cal-daynum { color: var(--sky-dark); }
+  .cal-more { font-size: 0.7rem; color: var(--muted); font-weight: 600; }
+
+  /* Event chips */
+  .cal-chip { font-size: 0.72rem; padding: 2px 6px; border-radius: 5px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--border); background: var(--panel); display: flex; align-items: center; gap: 5px; }
+  .cal-chip:hover { border-color: var(--sky); }
+  .cal-chip .cal-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .cal-chip.meeting { background: var(--sky-bg); border-color: var(--sky); color: var(--navy); font-weight: 600; }
+  .cal-chip.done { opacity: 0.55; text-decoration: line-through; }
+  .cal-chip .cal-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* Week + day */
+  .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: start; }
+  .cal-col { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; min-height: 120px; display: flex; flex-direction: column; }
+  .cal-col.today { border-color: var(--sky); }
+  .cal-col-head { padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 0.78rem; font-weight: 650; color: var(--navy); cursor: pointer; }
+  .cal-col-head span { color: var(--muted); font-weight: 500; }
+  .cal-col-body { padding: 8px; display: flex; flex-direction: column; gap: 6px; flex: 1; cursor: pointer; }
+  .cal-day-single { max-width: 640px; }
+  .cal-day-single .cal-col { min-height: 300px; }
+
+  /* Agenda */
+  .cal-agenda { display: flex; flex-direction: column; gap: 18px; max-width: 720px; }
+  .agenda-day-label { font-weight: 650; color: var(--navy); font-size: 0.9rem; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .agenda-day-label.is-today { color: var(--sky-dark); }
+  .agenda-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); cursor: pointer; margin-bottom: 6px; }
+  .agenda-row:hover { border-color: var(--sky); }
+  .agenda-time { font-size: 0.8rem; color: var(--muted); min-width: 74px; font-variant-numeric: tabular-nums; }
+  .agenda-title { font-weight: 600; font-size: 0.88rem; flex: 1; }
+  .cal-empty { color: var(--muted); font-size: 0.86rem; padding: 8px 0; }
+
+  /* Drawer internals (prep checklist, documents, history) */
+  .checklist-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+  .checklist-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--sky); flex-shrink: 0; }
+  .checklist-item .ci-text { flex: 1; font-size: 0.88rem; }
+  .checklist-item.done .ci-text { text-decoration: line-through; color: var(--muted); }
+  .checklist-item .ci-remove { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 0 4px; }
+  .checklist-item .ci-remove:hover { color: var(--red); }
+  .checklist-add { display: flex; gap: 8px; margin-top: 8px; }
+  .checklist-add input { flex: 1; }
+  .drawer-section { margin-top: 22px; }
+  .drawer-section > h3 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .drawer-section .sec-count { color: var(--muted); font-weight: 600; }
+  .related-item { display: block; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; cursor: pointer; color: var(--text); }
+  .related-item:last-child { border-bottom: none; }
+  .related-item:hover { color: var(--sky-dark); }
+  .hist-item { display: flex; gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 0.84rem; }
+  .hist-item:last-child { border-bottom: none; }
+  .hist-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sky); margin-top: 6px; flex-shrink: 0; }
+  .hist-item.hist-comment .hist-dot { background: var(--amber); }
+  .hist-when { color: var(--muted); font-size: 0.76rem; }
+  .comment-box { display: flex; flex-direction: column; gap: 8px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar-root"></aside>
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <h1>Calendar</h1>
+        <p class="sub">Your meetings, deadlines, and prep in one place. Everything here is the same
+        task list as Operations — a meeting is just a task with a date. Click any day to add one.</p>
+      </div>
+      <div class="page-actions">
+        <button type="button" class="btn btn-primary btn-small" id="cal-new">+ New meeting</button>
+        <button type="button" class="btn btn-ghost btn-small" id="cal-refresh">↻ Refresh</button>
+      </div>
+    </div>
+
+    <div class="cal-toolbar">
+      <div class="cal-nav">
+        <button type="button" class="btn btn-ghost btn-small" id="cal-prev" title="Previous">‹</button>
+        <button type="button" class="btn btn-ghost btn-small" id="cal-today">Today</button>
+        <button type="button" class="btn btn-ghost btn-small" id="cal-next" title="Next">›</button>
+        <span class="cal-period" id="cal-period"></span>
+      </div>
+      <div class="cal-seg" id="cal-views">
+        <button type="button" data-v="month" class="active">Month</button>
+        <button type="button" data-v="week">Week</button>
+        <button type="button" data-v="day">Day</button>
+        <button type="button" data-v="agenda">Agenda</button>
+      </div>
+    </div>
+
+    <p class="panel-status" id="cal-status"></p>
+    <div id="cal-body"></div>
+  </main>
+</div>
+
+<!-- Slide-out meeting / event panel -->
+<div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <h2 id="drawer-title">Meeting</h2>
+    <button type="button" class="drawer-close" id="drawer-close" title="Close">&times;</button>
+  </div>
+  <div class="drawer-body">
+    <div class="field">
+      <label for="d-title">Title</label>
+      <input type="text" id="d-title" required />
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="d-type">Meeting type</label>
+        <select id="d-type"><option value="">— none / general —</option></select>
+      </div>
+      <div class="field">
+        <label for="d-category">Category</label>
+        <select id="d-category">
+          <option value="meeting">Meeting</option>
+          <option value="follow-up">Follow-up</option>
+          <option value="review">Review</option>
+          <option value="onboarding">Onboarding</option>
+          <option value="compliance">Compliance</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="d-client">Client</label>
+        <select id="d-client"><option value="">— none (internal) —</option></select>
+      </div>
+      <div class="field">
+        <label for="d-assignee">Advisor</label>
+        <select id="d-assignee"><option value="">Unassigned</option></select>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="d-due">Date &amp; time</label>
+        <input type="datetime-local" id="d-due" />
+      </div>
+      <div class="field">
+        <label for="d-priority">Priority</label>
+        <select id="d-priority">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label for="d-description">Notes</label>
+      <textarea id="d-description" rows="3"></textarea>
+    </div>
+    <div id="d-template-apply" class="hidden" style="margin-top:-4px;">
+      <button type="button" class="btn btn-ghost btn-small" id="d-apply-template">↧ Fill prep &amp; documents from template</button>
+    </div>
+
+    <div class="drawer-section">
+      <h3>Preparation checklist <span class="sec-count" id="d-check-progress"></span></h3>
+      <div id="d-checklist"></div>
+      <div class="checklist-add">
+        <input type="text" class="input" id="d-check-new" placeholder="Add a prep item…" />
+        <button type="button" class="btn btn-ghost btn-small" id="d-check-add">Add</button>
+      </div>
+    </div>
+
+    <div class="drawer-section">
+      <h3>Required documents <span class="sec-count" id="d-doc-progress"></span></h3>
+      <div id="d-documents"></div>
+      <div class="checklist-add">
+        <input type="text" class="input" id="d-doc-new" placeholder="Add a required document…" />
+        <button type="button" class="btn btn-ghost btn-small" id="d-doc-add">Add</button>
+      </div>
+    </div>
+
+    <div class="drawer-section" id="d-related-section">
+      <h3>Related tasks for this client</h3>
+      <div id="d-related"></div>
+    </div>
+
+    <div class="drawer-section" id="d-notes-section">
+      <h3>Notes &amp; history</h3>
+      <div class="comment-box">
+        <textarea id="d-comment" rows="2" placeholder="Add a note…"></textarea>
+        <div><button type="button" class="btn btn-ghost btn-small" id="d-comment-add">Add note</button></div>
+      </div>
+      <div id="d-history" style="margin-top:14px;"></div>
+    </div>
+
+    <p class="form-error" id="d-error"></p>
+  </div>
+  <div class="drawer-foot">
+    <button type="button" class="btn btn-danger btn-small" id="d-delete" title="Delete">Delete</button>
+    <div style="display:flex; gap:10px;">
+      <button type="button" class="btn btn-ghost" id="d-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="d-save">Save</button>
+    </div>
+  </div>
+</aside>
+
+<script src="/admin/shared.js"></script>
+<script>
+  initShell('calendar');
+
+  let allTasks = [];
+  let allContacts = [];
+  let adminList = [];
+  let currentView = 'month';
+  let viewDate = new Date();
+  let drawerMode = null, drawerTaskId = null, draft = null;
+  const POLL_INTERVAL_MS = 45000;
+
+  // Templates seed a prep checklist + required-document list for common meetings.
+  const MEETING_TEMPLATES = {
+    'initial-consultation': {
+      label: 'Initial Consultation',
+      checklist: ['Confirm meeting & send agenda', 'Review intake form', 'Prepare firm overview', 'Draft discovery questions'],
+      documents: ['Signed advisory agreement', 'Government ID', 'Recent account statements', 'Most recent tax return'],
+    },
+    'annual-review': {
+      label: 'Annual Review',
+      checklist: ['Pull performance report', 'Review goals & life changes', 'Prepare rebalance recommendations', 'Build review deck'],
+      documents: ['Portfolio performance report', 'Updated net-worth statement', 'Beneficiary confirmations'],
+    },
+    'investment-review': {
+      label: 'Investment Review',
+      checklist: ['Review allocation vs target', 'Flag drift & tax-loss opportunities', 'Prepare trade proposals'],
+      documents: ['Current holdings report', 'Risk tolerance questionnaire', 'Investment policy statement'],
+    },
+    'retirement-planning': {
+      label: 'Retirement Planning',
+      checklist: ['Update retirement projection', 'Review Social Security strategy', 'Model withdrawal scenarios', 'Check contribution limits'],
+      documents: ['Latest retirement account statements', 'Social Security estimate', 'Pension / annuity details', 'Budget / expense worksheet'],
+    },
+    'tax-planning': {
+      label: 'Tax Planning',
+      checklist: ['Review YTD realized gains/losses', 'Identify tax-loss harvesting', 'Check Roth conversion window', 'Coordinate with CPA'],
+      documents: ['Most recent tax return', 'YTD gain/loss report', 'W-2 / 1099 forms', 'Estimated tax payment records'],
+    },
+  };
+  const CATEGORY_DOT = {
+    meeting: 'var(--sky)', 'follow-up': 'var(--amber)', review: 'var(--navy)',
+    onboarding: 'var(--sky-dark)', compliance: 'var(--red)', other: 'var(--border-strong)',
+  };
+
+  // ---------- Date helpers (all local time) ----------
+  const MS_DAY = 86400e3;
+  function ymd(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+  function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
+  function startOfWeek(d) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - x.getDay()); return x; }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+  function taskDate(t) { if (!t.due) return null; const d = new Date(t.due); return isNaN(d) ? null : d; }
+  function hasTime(t) { return typeof t.due === 'string' && t.due.includes('T'); }
+  function timeLabel(t) {
+    const d = taskDate(t);
+    if (!d) return '';
+    return hasTime(t) ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'All day';
+  }
+  function contactName(email) { const c = allContacts.find((x) => x.email === email); return (c && c.name) || email; }
+
+  // Tasks that have a due date land on the calendar. Sorted by time then priority.
+  function itemsForDay(date) {
+    const pRank = { high: 0, medium: 1, low: 2 };
+    return allTasks
+      .filter((t) => { const d = taskDate(t); return d && sameDay(d, date); })
+      .sort((a, b) => {
+        const at = hasTime(a) ? taskDate(a).getTime() : -1, bt = hasTime(b) ? taskDate(b).getTime() : -1;
+        if (at !== bt) return at - bt;
+        return (pRank[a.priority] ?? 1) - (pRank[b.priority] ?? 1);
+      });
+  }
+
+  function progress(list, key) {
+    const arr = Array.isArray(list) ? list : [];
+    return { done: arr.filter((x) => x[key]).length, total: arr.length };
+  }
+
+  // ---------- Rendering ----------
+  function chipHtml(t) {
+    const cat = t.category || 'other';
+    const isMeeting = cat === 'meeting';
+    const tl = timeLabel(t);
+    return `<div class="cal-chip ${isMeeting ? 'meeting' : ''} ${t.status === 'done' ? 'done' : ''}" data-id="${escapeHtml(t.id)}" title="${escapeHtml(t.title)}">
+      <span class="cal-dot" style="background:${CATEGORY_DOT[cat] || CATEGORY_DOT.other}"></span>
+      ${hasTime(t) ? `<span class="cal-time">${escapeHtml(tl)}</span>` : ''}
+      <span class="cal-chip-title">${escapeHtml(t.title)}</span>
+    </div>`;
+  }
+
+  function render() {
+    document.querySelectorAll('#cal-views button').forEach((b) => b.classList.toggle('active', b.dataset.v === currentView));
+    const body = document.getElementById('cal-body');
+    const period = document.getElementById('cal-period');
+    if (currentView === 'month') { period.textContent = viewDate.toLocaleDateString([], { month: 'long', year: 'numeric' }); body.innerHTML = renderMonth(); }
+    else if (currentView === 'week') { renderWeekPeriod(period); body.innerHTML = renderWeek(); }
+    else if (currentView === 'day') { period.textContent = viewDate.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' }); body.innerHTML = renderDay(); }
+    else { period.textContent = `Agenda · from ${viewDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}`; body.innerHTML = renderAgenda(); }
+  }
+
+  function renderMonth() {
+    const first = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1);
+    const gridStart = startOfWeek(first);
+    const today = new Date();
+    const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((w) => `<span>${w}</span>`).join('');
+    let cells = '';
+    for (let i = 0; i < 42; i++) {
+      const d = addDays(gridStart, i);
+      const items = itemsForDay(d);
+      const shown = items.slice(0, 3).map(chipHtml).join('');
+      const more = items.length > 3 ? `<div class="cal-more" data-more="${ymd(d)}">+${items.length - 3} more</div>` : '';
+      cells += `<div class="cal-cell ${d.getMonth() !== viewDate.getMonth() ? 'other-month' : ''} ${sameDay(d, today) ? 'today' : ''}" data-date="${ymd(d)}">
+        <div class="cal-daynum">${d.getDate()}</div>${shown}${more}
+      </div>`;
+      if (i === 41 && d.getMonth() !== viewDate.getMonth() && i >= 34 && addDays(gridStart, 35).getMonth() !== viewDate.getMonth()) break;
+    }
+    return `<div class="cal-weekdays">${weekdays}</div><div class="cal-month">${cells}</div>`;
+  }
+
+  function renderWeekPeriod(period) {
+    const s = startOfWeek(viewDate), e = addDays(s, 6);
+    const sameMonth = s.getMonth() === e.getMonth();
+    period.textContent = sameMonth
+      ? `${s.toLocaleDateString([], { month: 'short', day: 'numeric' })} – ${e.getDate()}, ${e.getFullYear()}`
+      : `${s.toLocaleDateString([], { month: 'short', day: 'numeric' })} – ${e.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${e.getFullYear()}`;
+  }
+
+  function dayColumn(d) {
+    const today = new Date();
+    const items = itemsForDay(d);
+    return `<div class="cal-col ${sameDay(d, today) ? 'today' : ''}">
+      <div class="cal-col-head" data-goday="${ymd(d)}">${d.toLocaleDateString([], { weekday: 'short' })} <span>${d.getDate()}</span></div>
+      <div class="cal-col-body" data-date="${ymd(d)}">
+        ${items.length ? items.map(chipHtml).join('') : '<span class="cal-empty">—</span>'}
+      </div>
+    </div>`;
+  }
+
+  function renderWeek() {
+    const s = startOfWeek(viewDate);
+    let cols = '';
+    for (let i = 0; i < 7; i++) cols += dayColumn(addDays(s, i));
+    return `<div class="cal-week">${cols}</div>`;
+  }
+
+  function renderDay() {
+    return `<div class="cal-day-single">${dayColumn(new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate()))}</div>`;
+  }
+
+  function renderAgenda() {
+    const start = new Date(viewDate.getFullYear(), viewDate.getMonth(), viewDate.getDate());
+    const today = new Date();
+    let out = '';
+    let any = false;
+    for (let i = 0; i < 30; i++) {
+      const d = addDays(start, i);
+      const items = itemsForDay(d);
+      if (!items.length) continue;
+      any = true;
+      out += `<div><div class="agenda-day-label ${sameDay(d, today) ? 'is-today' : ''}">${d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
+        ${items.map((t) => `<div class="agenda-row" data-id="${escapeHtml(t.id)}">
+          <span class="agenda-time">${escapeHtml(timeLabel(t) || '—')}</span>
+          <span class="cal-dot" style="width:8px;height:8px;border-radius:50%;background:${CATEGORY_DOT[t.category] || CATEGORY_DOT.other}"></span>
+          <span class="agenda-title ${t.status === 'done' ? 'done' : ''}">${escapeHtml(t.title)}</span>
+          <span class="cell-sub">${t.client ? escapeHtml(contactName(t.client)) : (t.category === 'meeting' ? 'Internal' : '')}</span>
+        </div>`).join('')}</div>`;
+    }
+    return `<div class="cal-agenda">${any ? out : '<p class="cal-empty">Nothing scheduled in the next 30 days. Click a day to add a meeting.</p>'}</div>`;
+  }
+
+  // ---------- Navigation ----------
+  function navigate(dir) {
+    if (currentView === 'month') viewDate = new Date(viewDate.getFullYear(), viewDate.getMonth() + dir, 1);
+    else if (currentView === 'week') viewDate = addDays(viewDate, 7 * dir);
+    else if (currentView === 'day') viewDate = addDays(viewDate, dir);
+    else viewDate = addDays(viewDate, 30 * dir);
+    render();
+  }
+
+  document.getElementById('cal-prev').addEventListener('click', () => navigate(-1));
+  document.getElementById('cal-next').addEventListener('click', () => navigate(1));
+  document.getElementById('cal-today').addEventListener('click', () => { viewDate = new Date(); render(); });
+  document.querySelectorAll('#cal-views button').forEach((b) => b.addEventListener('click', () => { currentView = b.dataset.v; render(); }));
+  document.getElementById('cal-refresh').addEventListener('click', () => loadData());
+  document.getElementById('cal-new').addEventListener('click', () => openDrawerNew(ymd(new Date())));
+
+  // Event delegation for the whole calendar body.
+  document.getElementById('cal-body').addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-id]');
+    if (chip) { openDrawerEdit(chip.dataset.id); return; }
+    const more = e.target.closest('[data-more]');
+    if (more) { currentView = 'day'; viewDate = new Date(more.dataset.more + 'T00:00'); render(); return; }
+    const goday = e.target.closest('[data-goday]');
+    if (goday) { currentView = 'day'; viewDate = new Date(goday.dataset.goday + 'T00:00'); render(); return; }
+    const cell = e.target.closest('[data-date]');
+    if (cell) openDrawerNew(cell.dataset.date);
+  });
+
+  // ---------- Drawer ----------
+  function fillSelect(id, options, current, keepFirst) {
+    const sel = document.getElementById(id);
+    const first = keepFirst ? sel.querySelector('option').outerHTML : '';
+    sel.innerHTML = first + options.map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`).join('');
+    sel.value = current || '';
+  }
+
+  function openDrawerNew(dateStr) {
+    drawerMode = 'new'; drawerTaskId = null;
+    const due = dateStr ? `${dateStr}T09:00` : '';
+    draft = { title: '', description: '', client: '', assignee: SESSION.email, due, category: 'meeting', priority: 'medium', meetingType: '', checklist: [], documents: [] };
+    document.getElementById('drawer-title').textContent = 'New Meeting';
+    populateDrawer();
+    openDrawer();
+    document.getElementById('d-title').focus();
+  }
+
+  function openDrawerEdit(id) {
+    const t = allTasks.find((x) => x.id === id);
+    if (!t) return;
+    drawerMode = 'edit'; drawerTaskId = id;
+    draft = {
+      title: t.title || '', description: t.description || '', client: t.client || '', assignee: t.assignee || '',
+      due: t.due || '', category: t.category || 'other', priority: t.priority || 'medium', meetingType: t.meetingType || '',
+      checklist: (Array.isArray(t.checklist) ? t.checklist : []).map((c) => ({ ...c })),
+      documents: (Array.isArray(t.documents) ? t.documents : []).map((d) => ({ ...d })),
+    };
+    document.getElementById('drawer-title').textContent = t.category === 'meeting' ? 'Meeting' : 'Task';
+    populateDrawer();
+    openDrawer();
+  }
+
+  function populateDrawer() {
+    document.getElementById('d-title').value = draft.title;
+    document.getElementById('d-description').value = draft.description;
+    fillSelect('d-type', Object.keys(MEETING_TEMPLATES).map((k) => ({ value: k, label: MEETING_TEMPLATES[k].label })), draft.meetingType, true);
+    fillSelect('d-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), draft.client, true);
+    fillSelect('d-assignee', adminList.map((a) => ({ value: a, label: staffLabel(a) })), draft.assignee, true);
+    document.getElementById('d-due').value = draft.due ? String(draft.due).slice(0, 16) : '';
+    document.getElementById('d-category').value = draft.category;
+    document.getElementById('d-priority').value = draft.priority;
+    document.getElementById('d-error').textContent = '';
+    document.getElementById('d-comment').value = '';
+    document.getElementById('d-template-apply').classList.toggle('hidden', !draft.meetingType);
+    renderChecklist(); renderDocuments(); renderRelated(); renderHistory();
+    document.getElementById('d-notes-section').classList.toggle('hidden', drawerMode !== 'edit');
+    document.getElementById('d-related-section').classList.toggle('hidden', drawerMode !== 'edit' || !draft.client);
+    document.getElementById('d-delete').classList.toggle('hidden', drawerMode !== 'edit');
+  }
+
+  // Generic list renderer for both prep checklist and documents.
+  function renderList(boxId, arr, key, progressId, persistFn) {
+    const box = document.getElementById(boxId);
+    box.innerHTML = arr.map((it, i) => `
+      <div class="checklist-item ${it[key] ? 'done' : ''}">
+        <input type="checkbox" data-i="${i}" ${it[key] ? 'checked' : ''} />
+        <span class="ci-text">${escapeHtml(it.text || it.name)}</span>
+        <button type="button" class="ci-remove" data-i="${i}" title="Remove">&times;</button>
+      </div>`).join('');
+    const pr = progress(arr, key);
+    document.getElementById(progressId).textContent = pr.total ? `${pr.done}/${pr.total}` : '';
+    box.querySelectorAll('input[type="checkbox"]').forEach((cb) =>
+      cb.addEventListener('change', () => { arr[cb.dataset.i][key] = cb.checked; renderList(boxId, arr, key, progressId, persistFn); persistFn(); }));
+    box.querySelectorAll('.ci-remove').forEach((b) =>
+      b.addEventListener('click', () => { arr.splice(Number(b.dataset.i), 1); renderList(boxId, arr, key, progressId, persistFn); persistFn(); }));
+  }
+  function renderChecklist() { renderList('d-checklist', draft.checklist, 'done', 'd-check-progress', () => persistField('checklist', draft.checklist)); }
+  function renderDocuments() { renderList('d-documents', draft.documents, 'ready', 'd-doc-progress', () => persistField('documents', draft.documents)); }
+
+  // In edit mode, checklist/document changes save immediately (like Operations).
+  async function persistField(field, value) {
+    if (drawerMode !== 'edit' || !drawerTaskId) return;
+    try {
+      const data = await api(`/api/admin/tasks/${encodeURIComponent(drawerTaskId)}`, { method: 'POST', body: JSON.stringify({ [field]: value }) });
+      const i = allTasks.findIndex((x) => x.id === drawerTaskId);
+      if (i >= 0) allTasks[i] = data.task;
+      render();
+    } catch (err) { setStatus(`Save failed: ${err.message}`); }
+  }
+
+  document.getElementById('d-check-add').addEventListener('click', () => addItem('d-check-new', draft.checklist, 'text', renderChecklist));
+  document.getElementById('d-check-new').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addItem('d-check-new', draft.checklist, 'text', renderChecklist); } });
+  document.getElementById('d-doc-add').addEventListener('click', () => addItem('d-doc-new', draft.documents, 'name', renderDocuments));
+  document.getElementById('d-doc-new').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addItem('d-doc-new', draft.documents, 'name', renderDocuments); } });
+  function addItem(inputId, arr, key, rerender) {
+    const input = document.getElementById(inputId);
+    const val = input.value.trim();
+    if (!val) return;
+    arr.push(key === 'text' ? { text: val, done: false } : { name: val, ready: false });
+    input.value = '';
+    rerender();
+    if (key === 'text') persistField('checklist', draft.checklist); else persistField('documents', draft.documents);
+    input.focus();
+  }
+
+  // Applying a template fills prep + documents (confirm before overwriting).
+  document.getElementById('d-type').addEventListener('change', (e) => {
+    draft.meetingType = e.target.value;
+    document.getElementById('d-template-apply').classList.toggle('hidden', !draft.meetingType);
+    // Auto-fill only when both lists are empty, so we never clobber real work.
+    if (draft.meetingType && !draft.checklist.length && !draft.documents.length) applyTemplate(false);
+  });
+  document.getElementById('d-apply-template').addEventListener('click', () => applyTemplate(true));
+  function applyTemplate(confirmOverwrite) {
+    const tpl = MEETING_TEMPLATES[draft.meetingType];
+    if (!tpl) return;
+    if (confirmOverwrite && (draft.checklist.length || draft.documents.length)
+      && !confirm('Replace the current prep checklist and documents with this template?')) return;
+    draft.checklist = tpl.checklist.map((text) => ({ text, done: false }));
+    draft.documents = tpl.documents.map((name) => ({ name, ready: false }));
+    if (!draft.title.trim()) { draft.title = tpl.label; document.getElementById('d-title').value = tpl.label; }
+    renderChecklist(); renderDocuments();
+    if (drawerMode === 'edit') { persistField('checklist', draft.checklist); persistField('documents', draft.documents); }
+  }
+
+  function renderRelated() {
+    const box = document.getElementById('d-related');
+    if (!draft.client) { box.innerHTML = ''; return; }
+    const related = allTasks.filter((t) => t.client === draft.client && t.id !== drawerTaskId && t.status === 'open');
+    box.innerHTML = related.length
+      ? related.map((t) => `<span class="related-item" data-open="${escapeHtml(t.id)}">${escapeHtml(t.title)}${t.due ? ` · ${escapeHtml(timeLabel(t) === 'All day' || !hasTime(t) ? new Date(t.due).toLocaleDateString() : new Date(t.due).toLocaleString())}` : ''}</span>`).join('')
+      : '<p class="cell-missing" style="font-size:0.84rem;">No other open tasks for this client.</p>';
+    box.querySelectorAll('.related-item').forEach((el) => el.addEventListener('click', () => openDrawerEdit(el.dataset.open)));
+  }
+
+  const HIST_LABELS = { created: 'Task created', completed: 'Marked complete', reopened: 'Reopened', updated: 'Edited' };
+  function historyLine(h) {
+    if (h.type === 'assigned') return `Assigned to ${escapeHtml(h.detail && h.detail.to ? staffLabel(h.detail.to) : 'Unassigned')}`;
+    if (h.type === 'comment') return escapeHtml((h.detail && h.detail.text) || '');
+    return escapeHtml(HIST_LABELS[h.type] || h.type);
+  }
+  function renderHistory() {
+    const box = document.getElementById('d-history');
+    const t = drawerTaskId ? allTasks.find((x) => x.id === drawerTaskId) : null;
+    const hist = (t && Array.isArray(t.history)) ? t.history.slice().reverse() : [];
+    box.innerHTML = hist.length ? hist.map((h) => `
+      <div class="hist-item ${h.type === 'comment' ? 'hist-comment' : ''}">
+        <span class="hist-dot"></span>
+        <div><div>${historyLine(h)}</div><div class="hist-when">${escapeHtml(staffLabel(h.actor))} · ${escapeHtml(relTime(h.ts))}</div></div>
+      </div>`).join('') : '<p class="cell-missing" style="font-size:0.84rem;">No history yet.</p>';
+  }
+
+  document.getElementById('d-comment-add').addEventListener('click', async () => {
+    const box = document.getElementById('d-comment');
+    const text = box.value.trim();
+    if (!text || drawerMode !== 'edit' || !drawerTaskId) return;
+    try {
+      const data = await api(`/api/admin/tasks/${encodeURIComponent(drawerTaskId)}`, { method: 'POST', body: JSON.stringify({ comment: text }) });
+      const i = allTasks.findIndex((x) => x.id === drawerTaskId);
+      if (i >= 0) allTasks[i] = data.task;
+      box.value = '';
+      renderHistory();
+    } catch (err) { document.getElementById('d-error').textContent = err.message; }
+  });
+
+  document.getElementById('d-save').addEventListener('click', async () => {
+    draft.title = document.getElementById('d-title').value;
+    draft.description = document.getElementById('d-description').value;
+    draft.meetingType = document.getElementById('d-type').value;
+    draft.client = document.getElementById('d-client').value;
+    draft.assignee = document.getElementById('d-assignee').value;
+    draft.due = document.getElementById('d-due').value;
+    draft.category = document.getElementById('d-category').value;
+    draft.priority = document.getElementById('d-priority').value;
+    const errEl = document.getElementById('d-error');
+    if (!draft.title.trim()) { errEl.textContent = 'Title is required.'; return; }
+    const payload = {
+      title: draft.title, description: draft.description, client: draft.client, assignee: draft.assignee,
+      due: draft.due, category: draft.category, priority: draft.priority, meetingType: draft.meetingType,
+      checklist: draft.checklist, documents: draft.documents,
+    };
+    try {
+      if (drawerMode === 'edit') {
+        const data = await api(`/api/admin/tasks/${encodeURIComponent(drawerTaskId)}`, { method: 'POST', body: JSON.stringify(payload) });
+        const i = allTasks.findIndex((x) => x.id === drawerTaskId);
+        if (i >= 0) allTasks[i] = data.task;
+      } else {
+        const data = await api('/api/admin/tasks', { method: 'POST', body: JSON.stringify(payload) });
+        allTasks.unshift(data.task);
+      }
+      closeDrawer();
+      render();
+    } catch (err) { errEl.textContent = err.message; }
+  });
+
+  document.getElementById('d-delete').addEventListener('click', async () => {
+    if (drawerMode !== 'edit' || !drawerTaskId) return;
+    const t = allTasks.find((x) => x.id === drawerTaskId);
+    if (!confirm(`Delete "${t ? t.title : ''}"? This cannot be undone.`)) return;
+    try {
+      await api(`/api/admin/tasks/${encodeURIComponent(drawerTaskId)}`, { method: 'DELETE' });
+      allTasks = allTasks.filter((x) => x.id !== drawerTaskId);
+      closeDrawer();
+      render();
+    } catch (err) { document.getElementById('d-error').textContent = err.message; }
+  });
+
+  function openDrawer() {
+    document.getElementById('drawer-backdrop').classList.remove('hidden');
+    requestAnimationFrame(() => { document.getElementById('drawer-backdrop').classList.add('open'); document.getElementById('drawer').classList.add('open'); });
+    document.getElementById('drawer').setAttribute('aria-hidden', 'false');
+  }
+  function closeDrawer() {
+    drawerMode = null; drawerTaskId = null; draft = null;
+    const bd = document.getElementById('drawer-backdrop');
+    document.getElementById('drawer').classList.remove('open');
+    bd.classList.remove('open');
+    document.getElementById('drawer').setAttribute('aria-hidden', 'true');
+    setTimeout(() => bd.classList.add('hidden'), 200);
+  }
+  document.getElementById('drawer-close').addEventListener('click', closeDrawer);
+  document.getElementById('d-cancel').addEventListener('click', closeDrawer);
+  document.getElementById('drawer-backdrop').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawerMode) closeDrawer(); });
+
+  function setStatus(msg) { document.getElementById('cal-status').textContent = msg || ''; }
+
+  // ---------- Boot ----------
+  async function loadData() {
+    if (drawerMode) return; // don't refresh under an open panel
+    try {
+      const [taskData, contactData] = await Promise.all([api('/api/admin/tasks'), api('/api/admin/contacts')]);
+      allTasks = taskData.tasks || [];
+      allContacts = (contactData.contacts || []).filter((c) => !c.archived)
+        .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
+      adminList = contactData.admins || [];
+      setStatus('');
+      render();
+    } catch (err) { setStatus(`Failed to load: ${err.message}`); }
+  }
+
+  (function applyUrlParams() {
+    const p = new URLSearchParams(location.search);
+    const v = p.get('view');
+    if (['month', 'week', 'day', 'agenda'].includes(v)) currentView = v;
+    const d = p.get('date');
+    if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) viewDate = new Date(d + 'T00:00');
+    const open = p.get('task');
+    if (open) setTimeout(() => openDrawerEdit(open), 400); // open a specific meeting after load
+  })();
+
+  setInterval(loadData, POLL_INTERVAL_MS);
+  loadData();
+</script>
+</body>
+</html>
