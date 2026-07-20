@@ -1760,6 +1760,7 @@ async function handleAdminContacts(request, env, cors) {
       email: rec.email,
       name: rec.name || '',
       status: rec.status || 'prospect',
+      archived: !!rec.archived,
       household: rec.household || '',
       advisor: rec.advisor || '',
       phone: rec.phone || '',
@@ -1784,6 +1785,7 @@ async function handleAdminContacts(request, env, cors) {
       email,
       name: '',
       status: 'active', // an account holder you never categorized is a live client
+      archived: false,
       household: '',
       advisor: '',
       phone: '',
@@ -1830,6 +1832,32 @@ async function handleAdminUpsertContact(request, env, cors, targetEmail) {
   const record = { ...existing, ...fields, email, updatedAt: new Date().toISOString() };
   await env.PORTAL_KV.put(`contact:${email}`, await encryptJSON(env, record));
   await logAudit(env, adminEmail, 'update-contact', { client: email });
+  return json({ contact: record }, 200, cors);
+}
+
+// Archive (soft-delete) or restore a contact. Nothing is erased — an archived
+// contact is just hidden from the working views; their tasks/notes/timeline are
+// untouched. Creates a contact: record if the client only had a portal account.
+async function handleAdminArchiveContact(request, env, cors, targetEmail, archived) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const email = String(targetEmail).trim().toLowerCase();
+  if (!isValidEmail(email)) return json({ error: 'Invalid contact email' }, 400, cors);
+  const existing = (await decryptToObject(env, await env.PORTAL_KV.get(`contact:${email}`))) || {
+    email,
+    status: 'prospect',
+    createdAt: new Date().toISOString(),
+  };
+  const record = {
+    ...existing,
+    email,
+    archived,
+    archivedAt: archived ? new Date().toISOString() : null,
+    archivedBy: archived ? adminEmail : null,
+    updatedAt: new Date().toISOString(),
+  };
+  await env.PORTAL_KV.put(`contact:${email}`, await encryptJSON(env, record));
+  await logAudit(env, adminEmail, archived ? 'archive-contact' : 'unarchive-contact', { client: email });
   return json({ contact: record }, 200, cors);
 }
 
@@ -2347,6 +2375,12 @@ export default {
       }
       if (url.pathname === '/api/admin/contacts' && request.method === 'GET') {
         return await handleAdminContacts(request, env, cors);
+      }
+      // Archive/unarchive must be matched before the generic upsert route below,
+      // whose `(.+)` would otherwise swallow the "/archive" suffix into the email.
+      const archiveMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/(archive|unarchive)$/);
+      if (archiveMatch && request.method === 'POST') {
+        return await handleAdminArchiveContact(request, env, cors, decodeURIComponent(archiveMatch[1]), archiveMatch[2] === 'archive');
       }
       const contactMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)$/);
       if (contactMatch && request.method === 'POST') {

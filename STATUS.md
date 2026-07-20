@@ -236,9 +236,16 @@ untouched and keeps its own look.
   portal accounts (prospects). `GET /api/admin/contacts` = one merged boot
   payload (contact records + `user:` accounts with modules/assignments;
   account-only entries default to `active`); `POST /api/admin/contacts/:email`
-  upserts (partial), audit-logged as `update-contact`. UI: filter pills with
-  counts, search, New/Edit Contact modal, tabbed profile (Overview, Assessments
-  incl. assignment editor, Tasks, Notes, Timeline, Documents = signed
+  upserts (partial), audit-logged as `update-contact`. **Archive** (soft-delete):
+  `POST /api/admin/contacts/:email/{archive,unarchive}` sets `archived` +
+  `archivedAt`/`archivedBy` (audit `archive-contact`/`unarchive-contact`); nothing
+  is erased — tasks/notes/timeline stay intact. Archived contacts are hidden from
+  the contacts working list (own **Archived** filter tab), the dashboard
+  counts/alerts/queues, and global search; the profile has an Archive/Unarchive
+  button. Route matched **before** the greedy upsert route so the `/archive`
+  suffix isn't swallowed; upsert preserves the `archived` flag. UI: filter pills
+  with counts, search, New/Edit Contact modal, tabbed profile (Overview,
+  Assessments incl. assignment editor, Tasks, Notes, Timeline, Documents = signed
   agreements from linked onboardings, Activity Log = audit entries for this
   contact).
 - **Tasks** (`task:<invTs>-<rand>` KV, **encrypted**): title, description,

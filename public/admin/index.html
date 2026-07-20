@@ -129,7 +129,8 @@
         api('/api/admin/onboarding').catch(() => ({ records: [] })),
         api('/api/admin/admins').catch(() => ({ admins: [] })),
       ]);
-      const contacts = contactData.contacts || [];
+      // Archived contacts are hidden from every dashboard count, alert, and queue.
+      const contacts = (contactData.contacts || []).filter((c) => !c.archived);
       const tasks = (taskData.tasks || []).filter((t) => t.status === 'open');
       const activity = actData.entries || [];
       const onbs = (onbData.records || []).filter((r) => !r.deleted);

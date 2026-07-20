@@ -251,7 +251,8 @@ async function loadPaletteData() {
     api('/api/admin/onboarding').catch(() => ({ records: [] })),
   ]);
   const entries = [];
-  (contacts.contacts || []).forEach((c) => entries.push({
+  // Archived contacts stay out of global search (find them via the Archived tab).
+  (contacts.contacts || []).filter((c) => !c.archived).forEach((c) => entries.push({
     group: 'Contacts',
     title: c.name || c.email,
     sub: [c.email, c.household, (c.tags || []).join(', ')].filter(Boolean).join(' · '),

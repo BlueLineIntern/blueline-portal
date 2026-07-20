@@ -795,6 +795,7 @@ while ($listener.IsListening) {
             foreach ($rec in $contacts.Values) {
                 $merged[$rec.email] = [ordered]@{
                     email = $rec.email; name = $rec.name; status = $rec.status
+                    archived = [bool]$rec.archived
                     household = $rec.household; advisor = $rec.advisor; phone = $rec.phone
                     tags = @($rec.tags); importantDates = @($rec.importantDates)
                     createdAt = $rec.createdAt; updatedAt = $rec.updatedAt
@@ -806,6 +807,7 @@ while ($listener.IsListening) {
                 if (-not $entry) {
                     $entry = [ordered]@{
                         email = $u.email; name = ''; status = 'active'
+                        archived = $false
                         household = ''; advisor = ''; phone = ''
                         tags = @(); importantDates = @()
                         createdAt = $null; updatedAt = $null
@@ -819,6 +821,25 @@ while ($listener.IsListening) {
                 $merged[$u.email] = $entry
             }
             Send-Json $ctx 200 @{ contacts = @($merged.Values); admins = @($adminPasswords.Keys) }
+        }
+        elseif ($path -match '^/api/admin/contacts/(.+)/(archive|unarchive)$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            $archived = ($Matches[2] -eq 'archive')
+            if ($target -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$') { Send-Json $ctx 400 @{ error = 'Invalid contact email' }; continue }
+            $rec = $contacts[$target]
+            if (-not $rec) {
+                $rec = [ordered]@{ email = $target; name = ''; status = 'prospect'; household = ''; advisor = ''; phone = ''
+                    tags = @(); importantDates = @(); createdAt = (Get-Date).ToString('o'); updatedAt = $null }
+            }
+            $rec.archived = $archived
+            $rec.archivedAt = if ($archived) { (Get-Date).ToString('o') } else { $null }
+            $rec.archivedBy = if ($archived) { $adminEmail } else { $null }
+            $rec.updatedAt = (Get-Date).ToString('o')
+            $contacts[$target] = $rec
+            Write-Audit $adminEmail $(if ($archived) { 'archive-contact' } else { 'unarchive-contact' }) @{ client = $target }
+            Send-Json $ctx 200 @{ contact = $rec }
         }
         elseif ($path -match '^/api/admin/contacts/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
