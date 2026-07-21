@@ -365,6 +365,9 @@ body .topbar, body .footer { display: none; }
   .detail-section > h2 { break-before: page; page-break-before: always; }
   #detail-body .detail-section:first-of-type > h2,
   .detail-section .module-grid .module-card:first-child { break-before: auto; page-break-before: auto; }
+  /* Lead card starts on page 1 under the header and may flow across pages, so a
+     tall first module isn't bumped to page 2 (leaving page 1 empty). */
+  .module-card.print-lead { break-before: auto; page-break-before: auto; break-inside: auto; page-break-inside: auto; }
   .detail-flags, .detail-subsection, .onb-link-row { break-inside: avoid; page-break-inside: avoid; }
   .onb-link-row .btn { display: none !important; }
   /* Onboarding document: strip the card chrome and keep each section whole so it
