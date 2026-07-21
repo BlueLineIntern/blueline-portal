@@ -361,14 +361,14 @@ body .topbar, body .footer { display: none; }
   .print-header-logo img { height: 60px; width: auto; display: block; }
   .print-header-title h1 { margin: 0 0 4px; font-size: 1.5rem; }
   .print-header-title p { margin: 2px 0; color: var(--muted); font-size: 0.9rem; }
-  .module-card { box-shadow: none; border: none; margin-bottom: 0; break-before: page; page-break-before: always; break-inside: avoid; page-break-inside: avoid; }
-  .detail-section > h2 { break-before: page; page-break-before: always; }
-  #detail-body .detail-section:first-of-type > h2,
-  .detail-section .module-grid .module-card:first-child { break-before: auto; page-break-before: auto; }
-  /* Lead card starts on page 1 under the header and may flow across pages, so a
-     tall first module isn't bumped to page 2 (leaving page 1 empty). */
-  .module-card.print-lead { break-before: auto; page-break-before: auto; break-inside: auto; page-break-inside: auto; }
-  .detail-flags, .detail-subsection, .onb-link-row { break-inside: avoid; page-break-inside: avoid; }
+  /* Assessment report flows naturally: modules stack full-width, several per
+     page, and a card is kept whole (never split) unless it's taller than a page.
+     No forced one-per-page breaks — those produced blank / half-empty pages. */
+  .module-grid { display: block !important; }
+  .module-card { box-shadow: none; border: 1px solid var(--border); border-radius: 8px; margin: 0 0 14px; break-inside: avoid; page-break-inside: avoid; }
+  .detail-section > h2 { break-after: avoid; page-break-after: avoid; margin-top: 6px; }
+  .detail-subsection { break-after: avoid; page-break-after: avoid; }
+  .detail-flags, .onb-link-row { break-inside: avoid; page-break-inside: avoid; }
   .onb-link-row .btn { display: none !important; }
   /* Onboarding document: strip the card chrome and keep each section whole so it
      never splits across a page boundary. */
