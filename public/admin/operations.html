@@ -38,6 +38,7 @@
   .kanban-card.dragging { opacity: 0.45; }
   .kanban-card.card-done .kc-title { text-decoration: line-through; color: var(--muted); }
   .kc-top { display: flex; align-items: flex-start; gap: 8px; }
+  .kc-done-toggle { width: 16px; height: 16px; margin-top: 1px; accent-color: var(--green); cursor: pointer; flex-shrink: 0; }
   .kc-prio { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
   .kc-prio.high { background: var(--red); }
   .kc-prio.medium { background: var(--amber); }
@@ -424,6 +425,7 @@
     if (t.createdBy === 'auto') metaBits.push('<span class="badge badge-navy kc-auto">auto</span>');
     return `<div class="kanban-card ${t.status === 'done' ? 'card-done' : ''}" draggable="true" data-id="${escapeHtml(t.id)}">
       <div class="kc-top">
+        <input type="checkbox" class="kc-done-toggle" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen task' : 'Mark complete'}" />
         <span class="kc-prio ${escapeHtml(t.priority || 'medium')}" title="${escapeHtml(t.priority || 'medium')} priority"></span>
         <span class="kc-title">${escapeHtml(t.title)}</span>
       </div>
@@ -484,6 +486,12 @@
 
   function wireBoardEvents() {
     const board = document.getElementById('board');
+    // Checkbox: complete/reopen without opening the drawer. Stop propagation so
+    // the card's click (edit) and drag don't fire.
+    board.querySelectorAll('.kc-done-toggle').forEach((cb) => {
+      cb.addEventListener('click', (e) => e.stopPropagation());
+      cb.addEventListener('change', (e) => { e.stopPropagation(); toggleDone(cb.dataset.id, cb.checked); });
+    });
     board.querySelectorAll('.kanban-card').forEach((card) => {
       card.addEventListener('click', () => openDrawerEdit(card.dataset.id));
       card.addEventListener('dragstart', (e) => {
@@ -511,6 +519,27 @@
     board.querySelectorAll('.add-card-btn').forEach((b) =>
       b.addEventListener('click', () => openDrawerNew(b.dataset.col))
     );
+  }
+
+  // Checking a card off completes it (it moves to Completed and leaves its
+  // column); unchecking reopens it (back to its assignee/list column).
+  async function toggleDone(id, done) {
+    const t = allTasks.find((x) => x.id === id);
+    if (!t) return;
+    const snapshot = { ...t };
+    t.status = done ? 'done' : 'open';
+    t.completedAt = done ? (t.completedAt || new Date().toISOString()) : null;
+    render();
+    try {
+      const data = await api(`/api/admin/tasks/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify({ status: t.status }) });
+      const i = allTasks.findIndex((x) => x.id === id);
+      if (i >= 0) allTasks[i] = data.task;
+      render();
+    } catch (err) {
+      Object.assign(t, snapshot);
+      render();
+      setStatus(`Update failed: ${err.message}`);
+    }
   }
 
   // Dragging a card = the primary reassignment/completion gesture.
