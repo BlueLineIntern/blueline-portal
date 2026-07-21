@@ -366,6 +366,9 @@ body .topbar, body .footer { display: none; }
      No forced one-per-page breaks — those produced blank / half-empty pages. */
   .module-grid { display: block !important; }
   .module-card { box-shadow: none; border: 1px solid var(--border); border-radius: 8px; margin: 0 0 14px; break-inside: avoid; page-break-inside: avoid; }
+  /* First card may split across the page 1/2 boundary (between its whole
+     sub-blocks) so it fills page 1 rather than being bumped off it. */
+  .module-card.print-lead { break-inside: auto; page-break-inside: auto; }
   .detail-section > h2 { break-after: avoid; page-break-after: avoid; margin-top: 6px; }
   .detail-subsection { break-after: avoid; page-break-after: avoid; }
   .detail-flags, .onb-link-row { break-inside: avoid; page-break-inside: avoid; }

@@ -610,6 +610,11 @@
     const m = c.modules || {};
     detailBody.innerHTML =
       clientFlagsHtml(m) + CATEGORIES.map((cat) => categorySectionHtml(cat, m, c)).join('');
+    // Let the first module card flow onto page 1 under the header (it may be
+    // taller than the space left below the section headings; without this a
+    // chart-heavy first card gets bumped whole to page 2, leaving page 1 blank).
+    const leadCard = detailBody.querySelector('.module-card');
+    if (leadCard) leadCard.classList.add('print-lead');
     // Rebuild the assignment editor only when the selected client changes so a
     // polling refresh can't wipe unsaved checkbox edits.
     if (assignmentEditorEmail !== selectedEmail) {
