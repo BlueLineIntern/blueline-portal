@@ -366,6 +366,15 @@ body .topbar, body .footer { display: none; }
   .detail-section .module-grid .module-card:first-child { break-before: auto; page-break-before: auto; }
   .detail-flags, .detail-subsection, .onb-link-row { break-inside: avoid; page-break-inside: avoid; }
   .onb-link-row .btn { display: none !important; }
+  /* Onboarding document: strip the card chrome and keep each section whole so it
+     never splits across a page boundary. */
+  #onb-detail-view .detail-header { display: none !important; }
+  .onb-section {
+    border: none; box-shadow: none; padding: 0; margin: 0 0 20px;
+    break-inside: avoid; page-break-inside: avoid;
+  }
+  .onb-section h2 { border-bottom: 1px solid var(--border-strong); padding-bottom: 5px; margin-bottom: 10px; }
+  #onb-detail-content .stat-row { break-inside: avoid; page-break-inside: avoid; }
   .module-card-header, .chart-donut, .chart-gauge, .chart-projection,
   .chart-balance, .stat-rows, .stat-bar, .result-flag { break-inside: avoid; }
   .legend-swatch, .stat-bar-fill, .stack-seg, .stack-track,

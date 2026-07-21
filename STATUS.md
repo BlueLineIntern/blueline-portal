@@ -103,7 +103,11 @@ labeled as a POC. Progress persists in localStorage AND syncs to the server:
 These endpoints are UNauthenticated by design (POC users have no accounts) —
 anyone can create test records; do not put real client data through it.
 Admin page shows an "Onboarding Submissions" table (`GET /api/admin/onboarding`,
-admin-session-gated) with per-record Details + print view. Client-side exports on
+admin-session-gated) with per-record Details + **Print / Save PDF** view. The
+print stylesheet (`@media print` in shared.css) paginates the onboarding document
+cleanly: each `.onb-section` uses `break-inside: avoid` so sections never split
+across a page, the sidebar/actions/detail-header are hidden, and the branded
+print-header carries the client + record id + date. Client-side exports on
 the confirmation page: contacts.csv, notes.csv, onboarding_summary.html,
 audit_record.json.
 
