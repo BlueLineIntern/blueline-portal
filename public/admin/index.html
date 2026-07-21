@@ -183,12 +183,10 @@
         const cObj = contacts.find((x) => x.email === m.client);
         const who = m.client ? escapeHtml((cObj && cObj.name) || m.client) : 'Internal';
         const cl = Array.isArray(m.checklist) ? m.checklist : [];
-        const docs = Array.isArray(m.documents) ? m.documents : [];
-        const missing = docs.filter((x) => !x.ready).length;
+        const done = cl.filter((c) => c.done).length;
         const openForClient = m.client ? tasks.filter((t) => t.client === m.client && t.id !== m.id && t.status === 'open').length : 0;
         const bits = [];
-        if (cl.length) bits.push(`${cl.filter((c) => c.done).length}/${cl.length} prep`);
-        if (docs.length) bits.push(missing ? `<span class="badge badge-red">${missing} doc${missing > 1 ? 's' : ''} missing</span>` : '<span class="badge badge-green">docs ready</span>');
+        if (cl.length) bits.push(done === cl.length ? '<span class="badge badge-green">prep ready</span>' : `<span class="badge badge-red">${done}/${cl.length} prep</span>`);
         if (openForClient) bits.push(`${openForClient} open task${openForClient > 1 ? 's' : ''}`);
         return `<a class="row-item" style="text-decoration:none;color:inherit" href="/admin/calendar.html?task=${encodeURIComponent(m.id)}&view=day&date=${escapeHtml(String(m.due).slice(0, 10))}">
           <div class="row-main">

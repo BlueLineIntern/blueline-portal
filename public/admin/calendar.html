@@ -32,8 +32,15 @@
   /* Event chips */
   .cal-chip { font-size: 0.72rem; padding: 2px 6px; border-radius: 5px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--border); background: var(--panel); display: flex; align-items: center; gap: 5px; }
   .cal-chip:hover { border-color: var(--sky); }
-  .cal-chip .cal-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-  .cal-chip.meeting { background: var(--sky-bg); border-color: var(--sky); color: var(--navy); font-weight: 600; }
+  .cal-chip .cal-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--border-strong); }
+  .cal-chip.is-meeting { font-weight: 600; color: var(--navy); }
+  /* Prep-readiness colour: blue = no prep, red = outstanding, green = all done */
+  .cal-chip.prep-none { background: var(--sky-bg); border-color: var(--sky); }
+  .cal-chip.prep-none .cal-dot { background: var(--sky); }
+  .cal-chip.prep-todo { background: #fdeaea; border-color: var(--red); }
+  .cal-chip.prep-todo .cal-dot { background: var(--red); }
+  .cal-chip.prep-done { background: #e7f6ec; border-color: var(--green); }
+  .cal-chip.prep-done .cal-dot { background: var(--green); }
   .cal-chip.done { opacity: 0.55; text-decoration: line-through; }
   .cal-chip .cal-time { color: var(--muted); font-variant-numeric: tabular-nums; }
 
@@ -57,7 +64,7 @@
   .agenda-title { font-weight: 600; font-size: 0.88rem; flex: 1; }
   .cal-empty { color: var(--muted); font-size: 0.86rem; padding: 8px 0; }
 
-  /* Drawer internals (prep checklist, documents, history) */
+  /* Drawer internals (prep checklist, history) */
   .checklist-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
   .checklist-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--sky); flex-shrink: 0; }
   .checklist-item .ci-text { flex: 1; font-size: 0.88rem; }
@@ -173,25 +180,12 @@
       <label for="d-description">Notes</label>
       <textarea id="d-description" rows="3"></textarea>
     </div>
-    <div id="d-template-apply" class="hidden" style="margin-top:-4px;">
-      <button type="button" class="btn btn-ghost btn-small" id="d-apply-template">↧ Fill prep &amp; documents from template</button>
-    </div>
-
     <div class="drawer-section">
       <h3>Preparation checklist <span class="sec-count" id="d-check-progress"></span></h3>
       <div id="d-checklist"></div>
       <div class="checklist-add">
         <input type="text" class="input" id="d-check-new" placeholder="Add a prep item…" />
         <button type="button" class="btn btn-ghost btn-small" id="d-check-add">Add</button>
-      </div>
-    </div>
-
-    <div class="drawer-section">
-      <h3>Required documents <span class="sec-count" id="d-doc-progress"></span></h3>
-      <div id="d-documents"></div>
-      <div class="checklist-add">
-        <input type="text" class="input" id="d-doc-new" placeholder="Add a required document…" />
-        <button type="button" class="btn btn-ghost btn-small" id="d-doc-add">Add</button>
       </div>
     </div>
 
@@ -232,38 +226,32 @@
   let drawerMode = null, drawerTaskId = null, draft = null;
   const POLL_INTERVAL_MS = 45000;
 
-  // Templates seed a prep checklist + required-document list for common meetings.
+  // Meeting types — a label you can tag a meeting with. They no longer auto-fill
+  // the checklist or the title; you build your own prep list.
   const MEETING_TEMPLATES = {
-    'initial-consultation': {
-      label: 'Initial Consultation',
-      checklist: ['Confirm meeting & send agenda', 'Review intake form', 'Prepare firm overview', 'Draft discovery questions'],
-      documents: ['Signed advisory agreement', 'Government ID', 'Recent account statements', 'Most recent tax return'],
-    },
-    'annual-review': {
-      label: 'Annual Review',
-      checklist: ['Pull performance report', 'Review goals & life changes', 'Prepare rebalance recommendations', 'Build review deck'],
-      documents: ['Portfolio performance report', 'Updated net-worth statement', 'Beneficiary confirmations'],
-    },
-    'investment-review': {
-      label: 'Investment Review',
-      checklist: ['Review allocation vs target', 'Flag drift & tax-loss opportunities', 'Prepare trade proposals'],
-      documents: ['Current holdings report', 'Risk tolerance questionnaire', 'Investment policy statement'],
-    },
-    'retirement-planning': {
-      label: 'Retirement Planning',
-      checklist: ['Update retirement projection', 'Review Social Security strategy', 'Model withdrawal scenarios', 'Check contribution limits'],
-      documents: ['Latest retirement account statements', 'Social Security estimate', 'Pension / annuity details', 'Budget / expense worksheet'],
-    },
-    'tax-planning': {
-      label: 'Tax Planning',
-      checklist: ['Review YTD realized gains/losses', 'Identify tax-loss harvesting', 'Check Roth conversion window', 'Coordinate with CPA'],
-      documents: ['Most recent tax return', 'YTD gain/loss report', 'W-2 / 1099 forms', 'Estimated tax payment records'],
-    },
+    'initial-consultation': 'Initial Consultation',
+    'annual-review': 'Annual Review',
+    'investment-review': 'Investment Review',
+    'retirement-planning': 'Retirement Planning',
+    'tax-planning': 'Tax Planning',
   };
-  const CATEGORY_DOT = {
-    meeting: 'var(--sky)', 'follow-up': 'var(--amber)', review: 'var(--navy)',
-    onboarding: 'var(--sky-dark)', compliance: 'var(--red)', other: 'var(--border-strong)',
-  };
+
+  // Calendar colour reflects prep readiness: no prep items = blue, some
+  // outstanding = red, all done = green.
+  function prepStatus(t) {
+    const cl = Array.isArray(t.checklist) ? t.checklist : [];
+    if (!cl.length) return 'none';
+    return cl.every((c) => c.done) ? 'done' : 'todo';
+  }
+  function prepColorVar(t) {
+    const s = prepStatus(t);
+    return s === 'done' ? 'var(--green)' : s === 'todo' ? 'var(--red)' : 'var(--sky)';
+  }
+  function prepTitle(t) {
+    const cl = Array.isArray(t.checklist) ? t.checklist : [];
+    if (!cl.length) return `${t.title} — no prep items`;
+    return `${t.title} — prep ${cl.filter((c) => c.done).length}/${cl.length}`;
+  }
 
   // ---------- Date helpers (all local time) ----------
   const MS_DAY = 86400e3;
@@ -299,11 +287,10 @@
 
   // ---------- Rendering ----------
   function chipHtml(t) {
-    const cat = t.category || 'other';
-    const isMeeting = cat === 'meeting';
+    const isMeeting = (t.category || 'other') === 'meeting';
     const tl = timeLabel(t);
-    return `<div class="cal-chip ${isMeeting ? 'meeting' : ''} ${t.status === 'done' ? 'done' : ''}" data-id="${escapeHtml(t.id)}" title="${escapeHtml(t.title)}">
-      <span class="cal-dot" style="background:${CATEGORY_DOT[cat] || CATEGORY_DOT.other}"></span>
+    return `<div class="cal-chip prep-${prepStatus(t)} ${isMeeting ? 'is-meeting' : ''} ${t.status === 'done' ? 'done' : ''}" data-id="${escapeHtml(t.id)}" title="${escapeHtml(prepTitle(t))}">
+      <span class="cal-dot"></span>
       ${hasTime(t) ? `<span class="cal-time">${escapeHtml(tl)}</span>` : ''}
       <span class="cal-chip-title">${escapeHtml(t.title)}</span>
     </div>`;
@@ -381,7 +368,7 @@
       out += `<div><div class="agenda-day-label ${sameDay(d, today) ? 'is-today' : ''}">${d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
         ${items.map((t) => `<div class="agenda-row" data-id="${escapeHtml(t.id)}">
           <span class="agenda-time">${escapeHtml(timeLabel(t) || '—')}</span>
-          <span class="cal-dot" style="width:8px;height:8px;border-radius:50%;background:${CATEGORY_DOT[t.category] || CATEGORY_DOT.other}"></span>
+          <span class="cal-dot" style="width:8px;height:8px;border-radius:50%;background:${prepColorVar(t)}"></span>
           <span class="agenda-title ${t.status === 'done' ? 'done' : ''}">${escapeHtml(t.title)}</span>
           <span class="cell-sub">${t.client ? escapeHtml(contactName(t.client)) : (t.category === 'meeting' ? 'Internal' : '')}</span>
         </div>`).join('')}</div>`;
@@ -428,7 +415,7 @@
   function openDrawerNew(dateStr) {
     drawerMode = 'new'; drawerTaskId = null;
     const due = dateStr ? `${dateStr}T09:00` : '';
-    draft = { title: '', description: '', client: '', assignee: SESSION.email, due, category: 'meeting', priority: 'medium', meetingType: '', checklist: [], documents: [] };
+    draft = { title: '', description: '', client: '', assignee: SESSION.email, due, category: 'meeting', priority: 'medium', meetingType: '', checklist: [] };
     document.getElementById('drawer-title').textContent = 'New Meeting';
     populateDrawer();
     openDrawer();
@@ -443,7 +430,6 @@
       title: t.title || '', description: t.description || '', client: t.client || '', assignee: t.assignee || '',
       due: t.due || '', category: t.category || 'other', priority: t.priority || 'medium', meetingType: t.meetingType || '',
       checklist: (Array.isArray(t.checklist) ? t.checklist : []).map((c) => ({ ...c })),
-      documents: (Array.isArray(t.documents) ? t.documents : []).map((d) => ({ ...d })),
     };
     document.getElementById('drawer-title').textContent = t.category === 'meeting' ? 'Meeting' : 'Task';
     populateDrawer();
@@ -453,7 +439,7 @@
   function populateDrawer() {
     document.getElementById('d-title').value = draft.title;
     document.getElementById('d-description').value = draft.description;
-    fillSelect('d-type', Object.keys(MEETING_TEMPLATES).map((k) => ({ value: k, label: MEETING_TEMPLATES[k].label })), draft.meetingType, true);
+    fillSelect('d-type', Object.keys(MEETING_TEMPLATES).map((k) => ({ value: k, label: MEETING_TEMPLATES[k] })), draft.meetingType, true);
     fillSelect('d-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), draft.client, true);
     fillSelect('d-assignee', adminList.map((a) => ({ value: a, label: staffLabel(a) })), draft.assignee, true);
     document.getElementById('d-due').value = draft.due ? String(draft.due).slice(0, 16) : '';
@@ -461,14 +447,13 @@
     document.getElementById('d-priority').value = draft.priority;
     document.getElementById('d-error').textContent = '';
     document.getElementById('d-comment').value = '';
-    document.getElementById('d-template-apply').classList.toggle('hidden', !draft.meetingType);
-    renderChecklist(); renderDocuments(); renderRelated(); renderHistory();
+    renderChecklist(); renderRelated(); renderHistory();
     document.getElementById('d-notes-section').classList.toggle('hidden', drawerMode !== 'edit');
     document.getElementById('d-related-section').classList.toggle('hidden', drawerMode !== 'edit' || !draft.client);
     document.getElementById('d-delete').classList.toggle('hidden', drawerMode !== 'edit');
   }
 
-  // Generic list renderer for both prep checklist and documents.
+  // List renderer for the prep checklist.
   function renderList(boxId, arr, key, progressId, persistFn) {
     const box = document.getElementById(boxId);
     box.innerHTML = arr.map((it, i) => `
@@ -485,9 +470,8 @@
       b.addEventListener('click', () => { arr.splice(Number(b.dataset.i), 1); renderList(boxId, arr, key, progressId, persistFn); persistFn(); }));
   }
   function renderChecklist() { renderList('d-checklist', draft.checklist, 'done', 'd-check-progress', () => persistField('checklist', draft.checklist)); }
-  function renderDocuments() { renderList('d-documents', draft.documents, 'ready', 'd-doc-progress', () => persistField('documents', draft.documents)); }
 
-  // In edit mode, checklist/document changes save immediately (like Operations).
+  // In edit mode, checklist changes save immediately (like Operations).
   async function persistField(field, value) {
     if (drawerMode !== 'edit' || !drawerTaskId) return;
     try {
@@ -498,39 +482,17 @@
     } catch (err) { setStatus(`Save failed: ${err.message}`); }
   }
 
-  document.getElementById('d-check-add').addEventListener('click', () => addItem('d-check-new', draft.checklist, 'text', renderChecklist));
-  document.getElementById('d-check-new').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addItem('d-check-new', draft.checklist, 'text', renderChecklist); } });
-  document.getElementById('d-doc-add').addEventListener('click', () => addItem('d-doc-new', draft.documents, 'name', renderDocuments));
-  document.getElementById('d-doc-new').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addItem('d-doc-new', draft.documents, 'name', renderDocuments); } });
-  function addItem(inputId, arr, key, rerender) {
-    const input = document.getElementById(inputId);
+  document.getElementById('d-check-add').addEventListener('click', addChecklistItem);
+  document.getElementById('d-check-new').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addChecklistItem(); } });
+  function addChecklistItem() {
+    const input = document.getElementById('d-check-new');
     const val = input.value.trim();
     if (!val) return;
-    arr.push(key === 'text' ? { text: val, done: false } : { name: val, ready: false });
+    draft.checklist.push({ text: val, done: false });
     input.value = '';
-    rerender();
-    if (key === 'text') persistField('checklist', draft.checklist); else persistField('documents', draft.documents);
+    renderChecklist();
+    persistField('checklist', draft.checklist);
     input.focus();
-  }
-
-  // Applying a template fills prep + documents (confirm before overwriting).
-  document.getElementById('d-type').addEventListener('change', (e) => {
-    draft.meetingType = e.target.value;
-    document.getElementById('d-template-apply').classList.toggle('hidden', !draft.meetingType);
-    // Auto-fill only when both lists are empty, so we never clobber real work.
-    if (draft.meetingType && !draft.checklist.length && !draft.documents.length) applyTemplate(false);
-  });
-  document.getElementById('d-apply-template').addEventListener('click', () => applyTemplate(true));
-  function applyTemplate(confirmOverwrite) {
-    const tpl = MEETING_TEMPLATES[draft.meetingType];
-    if (!tpl) return;
-    if (confirmOverwrite && (draft.checklist.length || draft.documents.length)
-      && !confirm('Replace the current prep checklist and documents with this template?')) return;
-    draft.checklist = tpl.checklist.map((text) => ({ text, done: false }));
-    draft.documents = tpl.documents.map((name) => ({ name, ready: false }));
-    if (!draft.title.trim()) { draft.title = tpl.label; document.getElementById('d-title').value = tpl.label; }
-    renderChecklist(); renderDocuments();
-    if (drawerMode === 'edit') { persistField('checklist', draft.checklist); persistField('documents', draft.documents); }
   }
 
   function renderRelated() {
@@ -587,7 +549,7 @@
     const payload = {
       title: draft.title, description: draft.description, client: draft.client, assignee: draft.assignee,
       due: draft.due, category: draft.category, priority: draft.priority, meetingType: draft.meetingType,
-      checklist: draft.checklist, documents: draft.documents,
+      checklist: draft.checklist,
     };
     try {
       if (drawerMode === 'edit') {

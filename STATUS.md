@@ -254,9 +254,9 @@ untouched and keeps its own look.
   (follow-up/review/meeting/onboarding/compliance/other), status (open/done),
   createdBy, completedAt, plus **`checklist`** ([{id,text,done}]) and per-task
   **`history`** ([{ts,actor,type,detail}] — created/assigned/completed/reopened/
-  comment), plus meeting fields **`meetingType`** (template id) and
-  **`documents`** ([{id,name,ready}] — a required-docs checklist; no file storage
-  yet, R2 is a later phase). CRUD under `/api/admin/tasks[/:id]`. The update endpoint appends
+  comment), plus **`meetingType`** (a meeting-type label). (A `documents` field
+  also exists in the schema but is currently unused by the UI — the calendar's
+  "required documents" section was removed in favour of a single prep checklist.) CRUD under `/api/admin/tasks[/:id]`. The update endpoint appends
   history automatically on assignee/status changes and accepts a `comment` field
   (a note, appended as a `comment` history entry — not a task column). Completing
   a task also writes a `task-completed` (or `meeting-held`) client-timeline event.
@@ -354,16 +354,17 @@ untouched and keeps its own look.
   meetings are tasks with `category: 'meeting'`. **Month/Week/Day/Agenda** views
   (Week/Day are day-column lists, not an hour grid). Click a day → create;
   clicking an item opens the meeting **slide-out panel** (client, advisor,
-  date/time, meeting type, notes, related tasks for the client, prep checklist
-  = `checklist`, required documents = `documents`, notes/history = comments) —
-  all editing the existing task, no duplicate records. **Meeting templates**
-  (Initial Consultation / Annual Review / Investment Review / Retirement /
-  Tax Planning) are frontend constants that seed the checklist + document list.
+  date/time, meeting type, notes, related tasks for the client, a single
+  **preparation checklist** = `checklist`, notes/history = comments) — all
+  editing the existing task, no duplicate records. **Meeting type** is a plain
+  label (Initial Consultation / Annual Review / Investment Review / Retirement /
+  Tax Planning); it does NOT auto-fill the checklist or title — you build your
+  own prep list. Calendar items are **colour-coded by prep readiness**: no prep
+  items = blue, some outstanding = red, all done = green (`prepStatus()`).
   Deep links: `?view=`, `?date=YYYY-MM-DD`, `?task=<id>` (auto-opens the panel).
-  The dashboard **Upcoming Meetings** widget now shows client, time, prep
-  progress, missing-document count, and the client's open-task count, linking to
-  the meeting in the calendar. (No hour-grid, recurring meetings, calendar sync,
-  or real document upload yet — those need their own phases.)
+  The dashboard **Upcoming Meetings** widget shows client, time, prep readiness,
+  and the client's open-task count, linking to the meeting in the calendar.
+  (No hour-grid, recurring meetings, calendar sync, or document upload yet.)
 - `contacts.html` honors `?c=<email>&tab=<tab>`. `operations.html` honors
   `?view=<board|list>`, `?filter=<today|week|overdue|mine>` (board pill), and
   `?f=<quick filter>&cat=<category>&q=<search>` (list; presence of any implies
