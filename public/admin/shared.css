@@ -349,7 +349,8 @@ body .topbar, body .footer { display: none; }
 .print-header { display: none; }
 @media print {
   body { background: #fff; }
-  .sidebar, .page-head, .tabs, .page-actions, .filter-row, .detail-header-actions { display: none !important; }
+  .sidebar, .page-head, .tabs, .page-actions, .filter-row,
+  .detail-header, .detail-header-actions, #assignment-card { display: none !important; }
   .content { padding: 0; max-width: none; }
   .panel { border: none; box-shadow: none; padding: 0; }
   .print-header {
@@ -368,7 +369,6 @@ body .topbar, body .footer { display: none; }
   .onb-link-row .btn { display: none !important; }
   /* Onboarding document: strip the card chrome and keep each section whole so it
      never splits across a page boundary. */
-  #onb-detail-view .detail-header { display: none !important; }
   .onb-section {
     border: none; box-shadow: none; padding: 0; margin: 0 0 20px;
     break-inside: avoid; page-break-inside: avoid;
