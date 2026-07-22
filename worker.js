@@ -1737,8 +1737,10 @@ async function syncSharePointContacts(env) {
         email,
         name: String(fields.Name || '').trim().slice(0, 200),
         preferredName: String(fields.PreferredName || '').trim().slice(0, 200),
-        status: ['prospect', 'onboarding', 'active', 'inactive'].includes(fields.Status)
-          ? fields.Status
+        status: ['prospect', 'onboarding', 'active', 'inactive'].includes(
+          String(fields.Status || '').trim().toLowerCase()
+        )
+          ? String(fields.Status).trim().toLowerCase()
           : 'prospect',
         household: String(fields.Household || '').trim().slice(0, 200),
         advisor: String(fields.Advisor || '').trim().toLowerCase(),
