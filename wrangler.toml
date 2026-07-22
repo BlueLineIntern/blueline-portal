@@ -11,3 +11,6 @@ id = "dadc7f3c3d66491bbc97ded5efa59bc4"
 [assets]
 directory = "./public"
 binding = "ASSETS"
+
+[[triggers.crons]]
+cron = "*/15 * * * *"

@@ -151,18 +151,30 @@
 <div class="modal-backdrop hidden" id="contact-modal-backdrop">
   <div class="modal">
     <h2 id="contact-modal-title">New Contact</h2>
+    <p class="field-note" id="cm-sharepoint-note">
+      Contact details (name, status, advisor, phone, work email/phone, address, gender, household, tags)
+      are managed in SharePoint and sync in automatically every 15 minutes. Fields below are shown for
+      reference only — edit them in the SharePoint Contacts list, not here. Only Important Dates can be
+      edited in this app.
+    </p>
     <div class="field">
       <label for="cm-email">Email</label>
       <input type="email" id="cm-email" required />
     </div>
-    <div class="field">
-      <label for="cm-name">Name</label>
-      <input type="text" id="cm-name" />
+    <div class="field-row">
+      <div class="field">
+        <label for="cm-name">Name</label>
+        <input type="text" id="cm-name" disabled />
+      </div>
+      <div class="field">
+        <label for="cm-preferredName">Preferred name</label>
+        <input type="text" id="cm-preferredName" disabled />
+      </div>
     </div>
     <div class="field-row">
       <div class="field">
         <label for="cm-status">Status</label>
-        <select id="cm-status">
+        <select id="cm-status" disabled>
           <option value="prospect">Prospect</option>
           <option value="onboarding">Onboarding</option>
           <option value="active">Active</option>
@@ -171,22 +183,40 @@
       </div>
       <div class="field">
         <label for="cm-advisor">Primary advisor</label>
-        <select id="cm-advisor"><option value="">— none —</option></select>
+        <select id="cm-advisor" disabled><option value="">— none —</option></select>
       </div>
     </div>
     <div class="field-row">
       <div class="field">
-        <label for="cm-household">Household</label>
-        <input type="text" id="cm-household" placeholder="e.g. Example Family" />
+        <label for="cm-phone">Phone</label>
+        <input type="text" id="cm-phone" disabled />
       </div>
       <div class="field">
-        <label for="cm-phone">Phone</label>
-        <input type="text" id="cm-phone" />
+        <label for="cm-workPhone">Work phone</label>
+        <input type="text" id="cm-workPhone" disabled />
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="cm-workEmail">Work email</label>
+        <input type="email" id="cm-workEmail" disabled />
+      </div>
+      <div class="field">
+        <label for="cm-gender">Gender</label>
+        <input type="text" id="cm-gender" disabled />
       </div>
     </div>
     <div class="field">
+      <label for="cm-address">Address</label>
+      <input type="text" id="cm-address" placeholder="e.g. 123 Main St, Springfield" disabled />
+    </div>
+    <div class="field">
+      <label for="cm-household">Household</label>
+      <input type="text" id="cm-household" placeholder="e.g. Example Family" disabled />
+    </div>
+    <div class="field">
       <label for="cm-tags">Tags (comma-separated)</label>
-      <input type="text" id="cm-tags" placeholder="Business Owner, Estate Planning" />
+      <input type="text" id="cm-tags" placeholder="Business Owner, Estate Planning" disabled />
     </div>
     <div class="field">
       <label for="cm-dates">Important dates (one per line, "Label: date")</label>
@@ -343,9 +373,14 @@
     document.getElementById('cm-email').value = contact ? contact.email : '';
     document.getElementById('cm-email').disabled = !!contact;
     document.getElementById('cm-name').value = contact ? contact.name || '' : '';
+    document.getElementById('cm-preferredName').value = contact ? contact.preferredName || '' : '';
     document.getElementById('cm-status').value = contact ? contact.status || 'prospect' : 'prospect';
     document.getElementById('cm-household').value = contact ? contact.household || '' : '';
     document.getElementById('cm-phone').value = contact ? contact.phone || '' : '';
+    document.getElementById('cm-workEmail').value = contact ? contact.workEmail || '' : '';
+    document.getElementById('cm-workPhone').value = contact ? contact.workPhone || '' : '';
+    document.getElementById('cm-address').value = contact ? contact.address || '' : '';
+    document.getElementById('cm-gender').value = contact ? contact.gender || '' : '';
     document.getElementById('cm-tags').value = contact ? (contact.tags || []).join(', ') : '';
     document.getElementById('cm-dates').value = contact
       ? (contact.importantDates || []).map((d) => `${d.label}: ${d.date}`).join('\n')
@@ -386,15 +421,11 @@
           ? { label: line.slice(0, i).trim(), date: line.slice(i + 1).trim() }
           : { label: line, date: '' };
       });
-    const payload = {
-      name: document.getElementById('cm-name').value,
-      status: document.getElementById('cm-status').value,
-      household: document.getElementById('cm-household').value,
-      advisor: document.getElementById('cm-advisor').value,
-      phone: document.getElementById('cm-phone').value,
-      tags: document.getElementById('cm-tags').value.split(',').map((t) => t.trim()).filter(Boolean),
-      importantDates,
-    };
+    // Name, status, advisor, phone, work email/phone, address, gender, household, and tags are
+    // owned by SharePoint and overwritten by the sync every 15 minutes — sending edits to them
+    // from here would just be silently discarded on the next sync, so only send what this app
+    // actually owns.
+    const payload = { importantDates };
     try {
       await api(`/api/admin/contacts/${encodeURIComponent(email)}`, {
         method: 'POST',
@@ -483,10 +514,16 @@
     document.getElementById('tab-overview').innerHTML = `
       <div class="overview-grid">
         <div class="panel">
-          <div class="panel-head"><h2>Contact Information</h2></div>
+          <div class="panel-head"><h2>Contact Information</h2><span class="cell-missing" style="font-size:12px;">Synced from SharePoint</span></div>
           <div class="kv-rows">
+            ${kvRow('Name', c.name ? escapeHtml(c.name) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Preferred name', c.preferredName ? escapeHtml(c.preferredName) : '<span class="cell-missing">—</span>')}
             ${kvRow('Email', escapeHtml(c.email))}
             ${kvRow('Phone', c.phone ? escapeHtml(c.phone) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Work email', c.workEmail ? escapeHtml(c.workEmail) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Work phone', c.workPhone ? escapeHtml(c.workPhone) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Address', c.address ? escapeHtml(c.address) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Gender', c.gender ? escapeHtml(c.gender) : '<span class="cell-missing">—</span>')}
             ${kvRow('Household', c.household ? escapeHtml(c.household) : '<span class="cell-missing">—</span>')}
             ${kvRow('Primary advisor', c.advisor ? escapeHtml(c.advisor) : '<span class="cell-missing">—</span>')}
             ${kvRow('Status', statusBadge(c.status))}

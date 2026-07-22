@@ -1692,6 +1692,79 @@ async function handleAdminAudit(request, env, cors) {
   );
 }
 
+// ---------- SharePoint Contacts sync ----------
+// Fetch contacts from the BlueLineCRM SharePoint list and upsert them into KV.
+// Pull-only: SharePoint is a read source, app edits are the source of truth.
+
+async function getGraphToken(env) {
+  const body = new URLSearchParams({
+    client_id: env.OUTLOOK_CLIENT_ID,
+    client_secret: env.OUTLOOK_CLIENT_SECRET,
+    scope: 'https://graph.microsoft.com/.default',
+    grant_type: 'client_credentials',
+  });
+  const response = await fetch('https://login.microsoftonline.com/' + env.OUTLOOK_TENANT_ID + '/oauth2/v2.0/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!response.ok) throw new Error('Failed to get Graph token: ' + response.statusText);
+  const data = await response.json();
+  return data.access_token;
+}
+
+async function syncSharePointContacts(env) {
+  const token = await getGraphToken(env);
+  const siteId = env.SHAREPOINT_SITE_ID;
+  const listId = env.SHAREPOINT_LIST_ID;
+
+  // Fetch all items from the Contacts list.
+  const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?expand=fields`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error('Failed to fetch SharePoint items: ' + response.statusText);
+  const data = await response.json();
+
+  let synced = 0;
+  if (data.value && Array.isArray(data.value)) {
+    for (const item of data.value) {
+      const fields = item.fields || {};
+      const email = fields.Email && String(fields.Email).trim().toLowerCase();
+      if (!email) continue; // Skip items without an email
+
+      const contact = {
+        email,
+        name: String(fields.Name || '').trim().slice(0, 200),
+        preferredName: String(fields.PreferredName || '').trim().slice(0, 200),
+        status: ['prospect', 'onboarding', 'active', 'inactive'].includes(fields.Status)
+          ? fields.Status
+          : 'prospect',
+        household: String(fields.Household || '').trim().slice(0, 200),
+        advisor: String(fields.Advisor || '').trim().toLowerCase(),
+        phone: String(fields.Phone || '').trim().slice(0, 50),
+        workEmail: String(fields.WorkEmail || '').trim().toLowerCase().slice(0, 200),
+        workPhone: String(fields.WorkPhone || '').trim().slice(0, 50),
+        address: String(fields.Address || '').trim().slice(0, 300),
+        gender: String(fields.Gender || '').trim().slice(0, 40),
+        tags: Array.isArray(fields.Tags)
+          ? fields.Tags.filter((t) => typeof t === 'string' && t.trim())
+              .map((t) => t.trim().slice(0, 40))
+              .slice(0, 20)
+          : [],
+        createdAt: fields.Created ? new Date(fields.Created).toISOString() : null,
+        updatedAt: fields.Modified ? new Date(fields.Modified).toISOString() : null,
+      };
+
+      // Upsert into KV encrypted under contact:<email>
+      await env.PORTAL_KV.put(`contact:${email}`, await encryptJSON(env, contact));
+      synced += 1;
+    }
+  }
+
+  return { synced, timestamp: new Date().toISOString() };
+}
+
 // ---------- Advisor CRM: contacts ----------
 // contact:<email> holds the CRM fields an advisor manages about a person
 // (status, household, advisor, tags, …), stored encrypted. It exists
@@ -1717,12 +1790,17 @@ async function listKeys(env, prefix) {
 function sanitizeContactFields(body) {
   const out = {};
   if (typeof body.name === 'string') out.name = body.name.trim().slice(0, 200);
+  if (typeof body.preferredName === 'string') out.preferredName = body.preferredName.trim().slice(0, 200);
   if (typeof body.status === 'string') {
     if (!CONTACT_STATUSES.includes(body.status)) return { error: 'Invalid status' };
     out.status = body.status;
   }
   if (typeof body.household === 'string') out.household = body.household.trim().slice(0, 200);
   if (typeof body.phone === 'string') out.phone = body.phone.trim().slice(0, 50);
+  if (typeof body.workEmail === 'string') out.workEmail = body.workEmail.trim().toLowerCase().slice(0, 200);
+  if (typeof body.workPhone === 'string') out.workPhone = body.workPhone.trim().slice(0, 50);
+  if (typeof body.address === 'string') out.address = body.address.trim().slice(0, 300);
+  if (typeof body.gender === 'string') out.gender = body.gender.trim().slice(0, 40);
   if (typeof body.advisor === 'string') {
     const adv = body.advisor.trim().toLowerCase();
     if (adv && !ADMIN_ACCOUNTS.some((a) => a.email === adv)) return { error: 'Advisor must be an admin account' };
@@ -1759,11 +1837,16 @@ async function handleAdminContacts(request, env, cors) {
     merged.set(rec.email, {
       email: rec.email,
       name: rec.name || '',
+      preferredName: rec.preferredName || '',
       status: rec.status || 'prospect',
       archived: !!rec.archived,
       household: rec.household || '',
       advisor: rec.advisor || '',
       phone: rec.phone || '',
+      workEmail: rec.workEmail || '',
+      workPhone: rec.workPhone || '',
+      address: rec.address || '',
+      gender: rec.gender || '',
       tags: rec.tags || [],
       importantDates: rec.importantDates || [],
       createdAt: rec.createdAt || null,
@@ -1784,11 +1867,16 @@ async function handleAdminContacts(request, env, cors) {
     const entry = merged.get(email) || {
       email,
       name: '',
+      preferredName: '',
       status: 'active', // an account holder you never categorized is a live client
       archived: false,
       household: '',
       advisor: '',
       phone: '',
+      workEmail: '',
+      workPhone: '',
+      address: '',
+      gender: '',
       tags: [],
       importantDates: [],
       createdAt: null,
@@ -2350,6 +2438,15 @@ async function handleAdminClients(request, env, cors) {
   return json({ clients }, 200, cors);
 }
 
+async function handleScheduled(env) {
+  try {
+    const result = await syncSharePointContacts(env);
+    console.log('Scheduled SharePoint sync completed:', result);
+  } catch (err) {
+    console.error('Scheduled SharePoint sync failed:', err);
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -2400,6 +2497,18 @@ export default {
       }
       if (url.pathname === '/api/admin/contacts' && request.method === 'GET') {
         return await handleAdminContacts(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/contacts/sync' && request.method === 'POST') {
+        const adminEmail = await getAdminEmail(request, env);
+        if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        try {
+          const result = await syncSharePointContacts(env);
+          await logAudit(env, adminEmail, 'sync-sharepoint-contacts', result);
+          return json(result, 200, cors);
+        } catch (err) {
+          console.error('SharePoint sync failed:', err);
+          return json({ error: 'Sync failed: ' + (err && err.message) }, 500, cors);
+        }
       }
       // Archive/unarchive must be matched before the generic upsert route below,
       // whose `(.+)` would otherwise swallow the "/archive" suffix into the email.
@@ -2502,5 +2611,8 @@ export default {
       console.error('Unhandled error', url.pathname, request.method, (err && err.stack) || err);
       return json({ error: 'Internal server error' }, 500, cors);
     }
+  },
+  async scheduled(event, env, ctx) {
+    await handleScheduled(env);
   },
 };
