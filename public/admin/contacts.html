@@ -183,7 +183,7 @@
       </div>
       <div class="field">
         <label for="cm-advisor">Primary advisor</label>
-        <select id="cm-advisor" disabled><option value="">— none —</option></select>
+        <input type="text" id="cm-advisor" disabled />
       </div>
     </div>
     <div class="field-row">
@@ -237,7 +237,6 @@
 
   let allContacts = [];
   let allOnboardings = [];
-  let adminList = [];
   let selectedEmail = '';
   let assignmentEditorEmail = '';
   let searchText = '';
@@ -292,7 +291,6 @@
         api('/api/admin/onboarding').catch(() => ({ records: [] })),
       ]);
       allContacts = contactsData.contacts || [];
-      adminList = contactsData.admins || [];
       allOnboardings = onbData.records || [];
       renderStatusFilters();
       renderContacts();
@@ -346,7 +344,7 @@
         return `<tr class="row-click contact-row" data-email="${escapeHtml(c.email)}">
           <td><strong>${escapeHtml(c.name || '—')}</strong><div class="cell-sub">${escapeHtml(c.household || c.email)}</div></td>
           <td>${statusBadge(c.status)}${c.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}</td>
-          <td>${c.advisor ? escapeHtml(c.advisor.split('@')[0]) : '<span class="cell-missing">—</span>'}</td>
+          <td>${c.advisor ? escapeHtml(c.advisor) : '<span class="cell-missing">—</span>'}</td>
           <td>${tags || '<span class="cell-missing">—</span>'}</td>
           <td>${c.hasAccount ? `${p.done} / ${p.total}` : '<span class="cell-missing">no portal account</span>'}</td>
           <td>${act ? escapeHtml(relTime(act)) : '<span class="cell-missing">—</span>'}</td>
@@ -385,9 +383,6 @@
     document.getElementById('cm-dates').value = contact
       ? (contact.importantDates || []).map((d) => `${d.label}: ${d.date}`).join('\n')
       : '';
-    document.getElementById('cm-advisor').innerHTML =
-      '<option value="">— none —</option>' +
-      adminList.map((a) => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
     document.getElementById('cm-advisor').value = contact ? contact.advisor || '' : '';
     document.getElementById('cm-error').textContent = '';
     document.getElementById('contact-modal-backdrop').classList.remove('hidden');

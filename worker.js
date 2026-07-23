@@ -1743,7 +1743,7 @@ async function syncSharePointContacts(env) {
           ? String(fields.Status).trim().toLowerCase()
           : 'prospect',
         household: String(fields.Household || '').trim().slice(0, 200),
-        advisor: String(fields.Advisor || '').trim().toLowerCase(),
+        advisor: String(fields.Advisor || '').trim().slice(0, 200),
         phone: String(fields.Phone || '').trim().slice(0, 50),
         workEmail: String(fields.WorkEmail || '').trim().toLowerCase().slice(0, 200),
         workPhone: String(fields.WorkPhone || '').trim().slice(0, 50),
@@ -1803,11 +1803,8 @@ function sanitizeContactFields(body) {
   if (typeof body.workPhone === 'string') out.workPhone = body.workPhone.trim().slice(0, 50);
   if (typeof body.address === 'string') out.address = body.address.trim().slice(0, 300);
   if (typeof body.gender === 'string') out.gender = body.gender.trim().slice(0, 40);
-  if (typeof body.advisor === 'string') {
-    const adv = body.advisor.trim().toLowerCase();
-    if (adv && !ADMIN_ACCOUNTS.some((a) => a.email === adv)) return { error: 'Advisor must be an admin account' };
-    out.advisor = adv;
-  }
+  // Free-text advisor name (e.g. "Fred Sabin"), not tied to an admin account email.
+  if (typeof body.advisor === 'string') out.advisor = body.advisor.trim().slice(0, 200);
   if (Array.isArray(body.tags)) {
     out.tags = body.tags
       .filter((t) => typeof t === 'string' && t.trim())
