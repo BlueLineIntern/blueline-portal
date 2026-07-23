@@ -1767,6 +1767,34 @@ async function syncSharePointContacts(env) {
   return { synced, timestamp: new Date().toISOString() };
 }
 
+// Push one note out to the SharePoint Notes list. The app is the source of
+// truth for notes (opposite of contacts), so a push failure must never break
+// note creation — log it and move on rather than throwing.
+async function pushNoteToSharePoint(env, note) {
+  try {
+    const token = await getGraphToken(env);
+    const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists/${env.SHAREPOINT_NOTES_LIST_ID}/items`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fields: {
+          ClientEmail: note.client,
+          Author: note.author,
+          Body: note.body,
+          Tags: (note.tags || []).join(', '),
+          Pinned: !!note.pinned,
+        },
+      }),
+    });
+    if (!response.ok) {
+      console.error('Failed to push note to SharePoint:', response.status, await response.text());
+    }
+  } catch (err) {
+    console.error('Error pushing note to SharePoint:', err);
+  }
+}
+
 // ---------- Advisor CRM: contacts ----------
 // contact:<email> holds the CRM fields an advisor manages about a person
 // (status, household, advisor, tags, …), stored encrypted. It exists
@@ -2313,6 +2341,7 @@ async function handleAdminCreateNote(request, env, cors) {
   };
   await env.PORTAL_KV.put(`note:${id}`, await encryptJSON(env, note));
   await logTimeline(env, client, 'note-added', adminEmail, null);
+  await pushNoteToSharePoint(env, note);
   return json({ note }, 200, cors);
 }
 
@@ -2507,6 +2536,25 @@ export default {
         } catch (err) {
           console.error('SharePoint sync failed:', err);
           return json({ error: 'Sync failed: ' + (err && err.message) }, 500, cors);
+        }
+      }
+      // One-off diagnostic: lists every SharePoint list in the configured site
+      // (name + id), so a new list's id can be found without re-pasting Azure
+      // credentials anywhere outside Cloudflare's own encrypted secrets.
+      if (url.pathname === '/api/admin/sharepoint/lists' && request.method === 'GET') {
+        const adminEmail = await getAdminEmail(request, env);
+        if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        try {
+          const token = await getGraphToken(env);
+          const resp = await fetch(`https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!resp.ok) throw new Error('Graph API error: ' + resp.status);
+          const data = await resp.json();
+          const lists = (data.value || []).map((l) => ({ name: l.displayName, id: l.id }));
+          return json({ lists }, 200, cors);
+        } catch (err) {
+          return json({ error: 'Failed to list SharePoint lists: ' + (err && err.message) }, 500, cors);
         }
       }
       // Archive/unarchive must be matched before the generic upsert route below,
