@@ -12,6 +12,11 @@ id = "dadc7f3c3d66491bbc97ded5efa59bc4"
 directory = "./public"
 binding = "ASSETS"
 
-# Cron schedule (every 15 min) is managed directly in the Cloudflare dashboard
-# (Settings -> Trigger events), not here -- declaring it in both places causes
-# the deploy's schedule-sync step to conflict and fail.
+[triggers]
+crons = ["*/1 * * * *"]
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
