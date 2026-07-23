@@ -1780,7 +1780,7 @@ async function pushNoteToSharePoint(env, note) {
       body: JSON.stringify({
         fields: {
           ClientEmail: note.client,
-          Author: note.author,
+          NoteAuthor: note.author,
           Body: note.body,
           Tags: (note.tags || []).join(', '),
           Pinned: !!note.pinned,
