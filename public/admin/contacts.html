@@ -243,7 +243,7 @@
   let selectedEmail = '';
   let assignmentEditorEmail = '';
   let searchText = '';
-  let statusFilter = 'all';
+  let showArchived = false;
   let activeTab = 'overview';
   let modalEmail = null; // null = creating; email = editing that contact
   const POLL_INTERVAL_MS = 20000;
@@ -313,21 +313,22 @@
 
   // ---------- Contact list ----------
 
+  // The per-status pills (Prospect/Onboarding/Active/Inactive) were noise at
+  // this roster size, so the list just shows every contact. Archived is not a
+  // status though — it's the only route back to a contact someone archived, so
+  // a single toggle stands in for it, and renders nothing at all while there's
+  // nothing archived to look at.
   function renderStatusFilters() {
-    // Status counts cover the working (non-archived) set; Archived is its own tab.
-    const activeContacts = allContacts.filter((c) => !c.archived);
-    const counts = { all: activeContacts.length, archived: allContacts.filter((c) => c.archived).length };
-    activeContacts.forEach((c) => { counts[c.status] = (counts[c.status] || 0) + 1; });
-    const label = (s) => s === 'all' ? 'All' : s === 'archived' ? 'Archived' : STATUS_LABEL[s];
-    const pills = ['all', 'prospect', 'onboarding', 'active', 'inactive', 'archived']
-      .map((s) => `<button type="button" class="filter-pill ${statusFilter === s ? 'active' : ''}" data-status="${s}">
-        ${escapeHtml(label(s))} (${counts[s] || 0})</button>`)
-      .join('');
+    const archivedCount = allContacts.filter((c) => c.archived).length;
     const wrap = document.getElementById('status-filters');
-    wrap.innerHTML = pills;
-    wrap.querySelectorAll('.filter-pill').forEach((b) =>
-      b.addEventListener('click', () => { statusFilter = b.dataset.status; renderStatusFilters(); renderContacts(); })
-    );
+    if (!archivedCount && !showArchived) { wrap.innerHTML = ''; return; }
+    wrap.innerHTML = `<button type="button" class="filter-pill ${showArchived ? 'active' : ''}" id="toggle-archived">
+      ${showArchived ? 'Viewing archived' : 'Show archived'} (${archivedCount})</button>`;
+    document.getElementById('toggle-archived').addEventListener('click', () => {
+      showArchived = !showArchived;
+      renderStatusFilters();
+      renderContacts();
+    });
   }
 
   function contactMatches(c, q) {
@@ -340,12 +341,8 @@
     const rows = allContacts
       .slice()
       .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)))
-      .filter((c) => {
-        // Archived is its own tab; every other filter shows only the working set.
-        const matchArchive = statusFilter === 'archived' ? c.archived : !c.archived;
-        const matchStatus = statusFilter === 'all' || statusFilter === 'archived' || c.status === statusFilter;
-        return matchArchive && matchStatus && (!q || contactMatches(c, q));
-      })
+      // Archived contacts are hidden unless explicitly toggled into view.
+      .filter((c) => (showArchived ? c.archived : !c.archived) && (!q || contactMatches(c, q)))
       .map((c) => {
         const p = clientProgress(c);
         const act = lastActivity(c);
@@ -702,6 +699,26 @@
 
   const PRIORITY_BADGE = { high: 'badge-red', medium: 'badge-amber', low: 'badge-gray' };
 
+  // Recurrence options, matching TASK_REPEATS in worker.js. A repeating task
+  // spawns its next occurrence when this one is marked done.
+  const REPEAT_LABELS = {
+    '': "Doesn't repeat",
+    daily: 'Daily',
+    weekly: 'Weekly',
+    biweekly: 'Every 2 weeks',
+    monthly: 'Monthly',
+    quarterly: 'Quarterly',
+    yearly: 'Yearly',
+  };
+  const repeatOptions = (selected) =>
+    Object.entries(REPEAT_LABELS)
+      .map(([k, label]) => `<option value="${escapeHtml(k)}"${k === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`)
+      .join('');
+  const priorityOptions = (selected) =>
+    ['low', 'medium', 'high']
+      .map((p) => `<option value="${p}"${p === selected ? ' selected' : ''}>${p.charAt(0).toUpperCase() + p.slice(1)} priority</option>`)
+      .join('');
+
   async function renderTasksTab() {
     const wrap = document.getElementById('tab-tasks');
     const email = selectedEmail;
@@ -711,6 +728,9 @@
     const draft = {
       title: document.getElementById('quick-task-title')?.value || '',
       due: document.getElementById('quick-task-due')?.value || '',
+      repeat: document.getElementById('quick-task-repeat')?.value || '',
+      priority: document.getElementById('quick-task-priority')?.value || 'medium',
+      description: document.getElementById('quick-task-description')?.value || '',
     };
     wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
     try {
@@ -735,7 +755,7 @@
         <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
         <div class="row-main">
           <div class="row-title" ${t.status === 'done' ? 'style="text-decoration:line-through;color:var(--muted)"' : ''}>${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
-          <div class="row-sub">${t.due ? escapeHtml(new Date(t.due).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : 'no due date'}</div>
+          <div class="row-sub">${t.due ? escapeHtml(new Date(t.due).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : 'no due date'}${t.repeat ? ` · ↻ ${escapeHtml(REPEAT_LABELS[t.repeat] || t.repeat)}` : ''}${t.description ? `<br>${escapeHtml(t.description)}` : ''}</div>
         </div>
         <div class="row-side" style="display:flex; align-items:center; gap:8px;">
           <select class="task-assignee" data-id="${escapeHtml(t.id)}" title="Assign to" style="max-width:150px;">${assigneeOptions(t.assignee || '')}</select>
@@ -747,11 +767,16 @@
           <div class="panel-head"><h2>Open Tasks (${open.length})</h2>
             <a class="panel-link" href="/admin/tasks.html">Full task manager →</a></div>
           <div class="row-list">${open.length ? open.map(row).join('') : '<p class="empty">No open tasks for this contact.</p>'}</div>
-          <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
-            <input type="text" class="input" id="quick-task-title" placeholder="Quick task for this contact…" style="flex:1; min-width:220px;" />
-            <input type="date" class="input" id="quick-task-due" />
-            <select id="quick-task-assignee" title="Assign to">${assigneeOptions(SESSION.email)}</select>
-            <button type="button" class="btn btn-primary btn-small" id="quick-task-add">Add Task</button>
+          <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px;">
+            <input type="text" class="input" id="quick-task-title" placeholder="Task name…" />
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <input type="date" class="input" id="quick-task-due" title="Due date" style="flex:1; min-width:150px;" />
+              <select id="quick-task-repeat" title="Repeats" style="flex:1; min-width:150px;">${repeatOptions(draft.repeat)}</select>
+              <select id="quick-task-assignee" title="Assigned to" style="flex:1; min-width:150px;">${assigneeOptions(SESSION.email)}</select>
+              <select id="quick-task-priority" title="Priority" style="flex:1; min-width:150px;">${priorityOptions(draft.priority)}</select>
+            </div>
+            <textarea class="input" id="quick-task-description" rows="2" placeholder="Description (optional)"></textarea>
+            <div><button type="button" class="btn btn-primary btn-small" id="quick-task-add">Add Task</button></div>
           </div>
           <p class="form-error" id="quick-task-error"></p>
         </div>
@@ -759,6 +784,7 @@
           <div class="row-list">${done.map(row).join('')}</div></div>` : ''}`;
       document.getElementById('quick-task-title').value = draft.title;
       document.getElementById('quick-task-due').value = draft.due;
+      document.getElementById('quick-task-description').value = draft.description;
       wrap.querySelectorAll('.task-check').forEach((cb) =>
         cb.addEventListener('change', async () => {
           try {
@@ -789,7 +815,12 @@
         const title = document.getElementById('quick-task-title').value.trim();
         const errEl = document.getElementById('quick-task-error');
         errEl.textContent = '';
-        if (!title) { errEl.textContent = 'Enter a task title.'; return; }
+        if (!title) { errEl.textContent = 'Enter a task name.'; return; }
+        const repeat = document.getElementById('quick-task-repeat').value;
+        const due = document.getElementById('quick-task-due').value;
+        // A repeat has nothing to advance from without a due date, so it would
+        // silently never recur — say so instead of accepting it quietly.
+        if (repeat && !due) { errEl.textContent = 'A repeating task needs a due date.'; return; }
         try {
           await api('/api/admin/tasks', {
             method: 'POST',
@@ -797,15 +828,19 @@
               title,
               client: email,
               assignee: document.getElementById('quick-task-assignee').value,
-              due: document.getElementById('quick-task-due').value,
+              due,
+              repeat,
+              description: document.getElementById('quick-task-description').value,
               category: 'follow-up',
-              priority: 'medium',
+              priority: document.getElementById('quick-task-priority').value,
             }),
           });
           // Clear before re-rendering: the draft snapshot would otherwise
-          // restore the title we just turned into a task.
+          // restore what we just turned into a task.
           document.getElementById('quick-task-title').value = '';
           document.getElementById('quick-task-due').value = '';
+          document.getElementById('quick-task-description').value = '';
+          document.getElementById('quick-task-repeat').value = '';
           renderTasksTab();
         } catch (err) {
           errEl.textContent = err.message;

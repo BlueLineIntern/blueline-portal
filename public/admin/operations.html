@@ -205,6 +205,21 @@
     </div>
     <div class="field-row">
       <div class="field">
+        <label for="d-repeat">Repeats</label>
+        <select id="d-repeat">
+          <option value="">Doesn't repeat</option>
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="biweekly">Every 2 weeks</option>
+          <option value="monthly">Monthly</option>
+          <option value="quarterly">Quarterly</option>
+          <option value="yearly">Yearly</option>
+        </select>
+      </div>
+      <div class="field"></div>
+    </div>
+    <div class="field-row">
+      <div class="field">
         <label for="d-category">Category</label>
         <select id="d-category">
           <option value="follow-up">Follow-up</option>
@@ -422,6 +437,7 @@
     if (t.client) metaBits.push(`<span class="kc-client">◗ ${escapeHtml(contactName(t.client))}</span>`);
     if (cp) metaBits.push(`<span class="kc-check" title="${cp.done}/${cp.total} checklist items">
       <span class="kc-bar"><span style="width:${cp.pct}%"></span></span>${cp.done}/${cp.total}</span>`);
+    if (t.repeat) metaBits.push(`<span class="kc-repeat" title="Repeats ${escapeHtml(t.repeat)}">↻</span>`);
     if (t.createdBy === 'auto') metaBits.push('<span class="badge badge-navy kc-auto">auto</span>');
     return `<div class="kanban-card ${t.status === 'done' ? 'card-done' : ''}" draggable="true" data-id="${escapeHtml(t.id)}">
       <div class="kc-top">
@@ -547,6 +563,9 @@
       const data = await api(`/api/admin/tasks/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify({ status: t.status }) });
       const i = allTasks.findIndex((x) => x.id === id);
       if (i >= 0) allTasks[i] = data.task;
+      // Completing a repeating task creates its next occurrence server-side;
+      // show it now rather than leaving it invisible until the next poll.
+      if (data.spawned) allTasks.push(data.spawned);
       render();
     } catch (err) {
       Object.assign(t, snapshot);
@@ -624,7 +643,7 @@
     let presetAssignee = '', presetList = '';
     const col = boardLists.find((l) => l.id === colKey);
     if (col) { if (col.type === 'person') presetAssignee = col.account; else presetList = col.id; }
-    draft = { title: '', description: '', assignee: presetAssignee, list: presetList, client: '', due: '', priority: 'medium', category: 'other', checklist: [] };
+    draft = { title: '', description: '', assignee: presetAssignee, list: presetList, client: '', due: '', repeat: '', priority: 'medium', category: 'other', checklist: [] };
     document.getElementById('drawer-title').textContent = 'New Task';
     populateDrawer();
     openDrawer();
@@ -638,7 +657,8 @@
     drawerTaskId = id;
     draft = {
       title: t.title || '', description: t.description || '', assignee: t.assignee || '',
-      list: t.list || '', client: t.client || '', due: t.due || '', priority: t.priority || 'medium',
+      list: t.list || '', client: t.client || '', due: t.due || '', repeat: t.repeat || '',
+      priority: t.priority || 'medium',
       category: t.category || 'other', checklist: (Array.isArray(t.checklist) ? t.checklist : []).map((c) => ({ ...c })),
     };
     document.getElementById('drawer-title').textContent = 'Edit Task';
@@ -652,6 +672,7 @@
     refreshDrawerSelects(draft);
     document.getElementById('d-due').value = draft.due ? String(draft.due).slice(0, 16) : '';
     document.getElementById('d-priority').value = draft.priority;
+    document.getElementById('d-repeat').value = draft.repeat || '';
     document.getElementById('d-category').value = draft.category;
     document.getElementById('d-error').textContent = '';
     document.getElementById('d-comment').value = '';
@@ -753,6 +774,7 @@
     draft.list = document.getElementById('d-list').value;
     draft.due = document.getElementById('d-due').value;
     draft.priority = document.getElementById('d-priority').value;
+    draft.repeat = document.getElementById('d-repeat').value;
     draft.category = document.getElementById('d-category').value;
   }
 
@@ -761,10 +783,13 @@
     const errEl = document.getElementById('d-error');
     errEl.textContent = '';
     if (!draft.title.trim()) { errEl.textContent = 'Title is required.'; return; }
+    // A repeat has nothing to advance from without a due date, so it would
+    // silently never recur — say so rather than accepting it quietly.
+    if (draft.repeat && !draft.due) { errEl.textContent = 'A repeating task needs a due date.'; return; }
     const payload = {
       title: draft.title, description: draft.description, assignee: draft.assignee,
       list: draft.list, client: draft.client, due: draft.due, priority: draft.priority,
-      category: draft.category, checklist: draft.checklist,
+      repeat: draft.repeat, category: draft.category, checklist: draft.checklist,
     };
     try {
       if (drawerMode === 'edit') {
@@ -988,11 +1013,12 @@
           const autoBit = t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : '';
           const cp = checklistProgress(t);
           const checkBit = cp ? ` · ✓ ${cp.done}/${cp.total}` : '';
+          const repeatBit = t.repeat ? ` · ↻ ${escapeHtml(t.repeat)}` : '';
           return `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
             <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark complete'}" />
             <div class="row-main">
               <div class="row-title">${escapeHtml(t.title)}${autoBit}</div>
-              <div class="row-sub"><span class="${dueCls}">${escapeHtml(d.text || 'no due date')}</span>${clientBit} · ${assigneeBit}${checkBit}${t.description ? `<br>${escapeHtml(t.description)}` : ''}</div>
+              <div class="row-sub"><span class="${dueCls}">${escapeHtml(d.text || 'no due date')}</span>${clientBit} · ${assigneeBit}${checkBit}${repeatBit}${t.description ? `<br>${escapeHtml(t.description)}` : ''}</div>
             </div>
             <div class="row-side">
               <span class="badge ${CATEGORY_BADGE[t.category] || 'badge-gray'}">${escapeHtml(t.category)}</span>
@@ -1022,6 +1048,7 @@
       });
       const i = allTasks.findIndex((t) => t.id === id);
       if (i >= 0) allTasks[i] = data.task;
+      if (data.spawned) allTasks.push(data.spawned); // next occurrence of a repeating task
       render();
     } catch (err) { setStatus(`Update failed: ${err.message}`); }
   }

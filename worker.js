@@ -2070,6 +2070,39 @@ async function handleAdminArchiveContact(request, env, cors, targetEmail, archiv
 // first-class records. All payloads are encrypted at rest like assessment data.
 
 const TASK_PRIORITIES = ['low', 'medium', 'high'];
+// Recurrence. '' means one-off. A repeating task spawns its next instance when
+// it's marked done (rather than a cron pre-generating them), so ignoring a
+// recurring task can never pile up a backlog of identical overdue copies.
+const TASK_REPEATS = ['', 'daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'yearly'];
+
+// Advance a due value by one repeat interval, preserving whether it carried a
+// time ("2026-07-27" vs "2026-07-27T14:00"). Returns '' if there's nothing to
+// advance from, which callers treat as "don't spawn a next instance".
+function advanceDue(due, repeat) {
+  if (!due || !repeat) return '';
+  const hasTime = String(due).includes('T');
+  const d = new Date(hasTime ? due : `${due}T00:00`);
+  if (isNaN(d.getTime())) return '';
+  const addMonths = (n) => {
+    const day = d.getDate();
+    d.setMonth(d.getMonth() + n);
+    // JS rolls Jan 31 + 1 month into early March; clamp back to the last day
+    // of the month we actually meant.
+    if (d.getDate() !== day) d.setDate(0);
+  };
+  switch (repeat) {
+    case 'daily': d.setDate(d.getDate() + 1); break;
+    case 'weekly': d.setDate(d.getDate() + 7); break;
+    case 'biweekly': d.setDate(d.getDate() + 14); break;
+    case 'monthly': addMonths(1); break;
+    case 'quarterly': addMonths(3); break;
+    case 'yearly': d.setFullYear(d.getFullYear() + 1); break;
+    default: return '';
+  }
+  const p = (n) => String(n).padStart(2, '0');
+  const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return hasTime ? `${date}T${p(d.getHours())}:${p(d.getMinutes())}` : date;
+}
 const TASK_CATEGORIES = ['follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other'];
 const TASK_CHECKLIST_MAX = 50;
 const TASK_DOCUMENTS_MAX = 50;
@@ -2151,6 +2184,7 @@ async function createTask(env, fields) {
     assignee: fields.assignee || '',
     list: fields.list || '',
     due: fields.due || '',
+    repeat: TASK_REPEATS.includes(fields.repeat) ? fields.repeat : '',
     priority: TASK_PRIORITIES.includes(fields.priority) ? fields.priority : 'medium',
     category: TASK_CATEGORIES.includes(fields.category) ? fields.category : 'other',
     status: 'open',
@@ -2233,6 +2267,11 @@ function sanitizeTaskFields(body, allowedAssignees) {
   // id just means the task lands in Unassigned on the board.
   if (body.list !== undefined) out.list = String(body.list || '').trim().slice(0, 40);
   if (body.due !== undefined) out.due = String(body.due || '').trim().slice(0, 40);
+  if (body.repeat !== undefined) {
+    const r = String(body.repeat || '').trim();
+    if (!TASK_REPEATS.includes(r)) return { error: 'Invalid repeat interval' };
+    out.repeat = r;
+  }
   if (body.priority !== undefined) {
     if (!TASK_PRIORITIES.includes(body.priority)) return { error: 'Invalid priority' };
     out.priority = body.priority;
@@ -2287,12 +2326,34 @@ async function handleAdminUpdateTask(request, env, cors, id) {
   if ('assignee' in fields && (fields.assignee || '') !== prevAssignee) {
     logHistory('assigned', { from: prevAssignee || null, to: fields.assignee || null });
   }
+  let spawned = null;
   if (wasOpen && task.status === 'done') {
     task.completedAt = new Date().toISOString();
     logHistory('completed', null);
     if (task.client) {
       await logTimeline(env, task.client, task.category === 'meeting' ? 'meeting-held' : 'task-completed',
         adminEmail, { title: task.title });
+    }
+    // Recurring task: completing this one schedules the next. Needs a due date
+    // to advance from — a repeating task with no date has nothing to compute.
+    const nextDue = advanceDue(task.due, task.repeat);
+    if (nextDue) {
+      spawned = await createTask(env, {
+        title: task.title,
+        description: task.description,
+        client: task.client,
+        assignee: task.assignee,
+        list: task.list,
+        due: nextDue,
+        repeat: task.repeat,
+        priority: task.priority,
+        category: task.category,
+        meetingType: task.meetingType,
+        // Carry the prep items forward but unticked — it's a fresh occurrence.
+        checklist: (task.checklist || []).map((c) => ({ ...c, done: false })),
+        createdBy: adminEmail,
+      });
+      logHistory('repeat-spawned', { nextId: spawned.id, due: nextDue });
     }
   }
   if (!wasOpen && task.status === 'open') {
@@ -2306,7 +2367,7 @@ async function handleAdminUpdateTask(request, env, cors, id) {
   if (task.history.length > TASK_HISTORY_MAX) task.history = task.history.slice(-TASK_HISTORY_MAX);
 
   await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
-  return json({ task }, 200, cors);
+  return json({ task, spawned }, 200, cors);
 }
 
 async function handleAdminDeleteTask(request, env, cors, id) {
