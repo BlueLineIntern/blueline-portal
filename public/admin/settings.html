@@ -31,6 +31,14 @@
           <tbody id="admins-body"></tbody>
         </table>
       </div>
+      <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; align-items:flex-start;">
+        <input type="email" class="input" id="new-admin-email" placeholder="new-admin@blueline-advisors.com" style="flex:1; min-width:220px;" />
+        <input type="text" class="input" id="new-admin-password" placeholder="Temporary password (10+ characters)" style="flex:1; min-width:220px;" />
+        <button type="button" class="btn btn-primary btn-small" id="new-admin-add">Add Admin</button>
+      </div>
+      <p class="hint" style="margin-top:8px;">Tell them this password directly — there's no email invite. They'll be
+      asked to set up an authenticator app (two-factor) the first time they sign in, same as everyone else.</p>
+      <p class="form-error" id="new-admin-error"></p>
     </div>
 
     <div class="panel" id="audit-card">
@@ -88,6 +96,24 @@
       document.getElementById('admins-status').textContent = `Failed to load: ${err.message}`;
     }
   }
+
+  document.getElementById('new-admin-add').addEventListener('click', async () => {
+    const errEl = document.getElementById('new-admin-error');
+    errEl.textContent = '';
+    const email = document.getElementById('new-admin-email').value.trim();
+    const password = document.getElementById('new-admin-password').value;
+    if (!email) { errEl.textContent = 'Enter an email address.'; return; }
+    if (password.length < 10) { errEl.textContent = 'Password must be at least 10 characters.'; return; }
+    try {
+      await api('/api/admin/admins', { method: 'POST', body: JSON.stringify({ email, password }) });
+      document.getElementById('new-admin-email').value = '';
+      document.getElementById('new-admin-password').value = '';
+      document.getElementById('admins-status').textContent = `Added ${email}. Give them the password directly — they'll set up two-factor on first sign-in.`;
+      loadAdmins();
+    } catch (err) {
+      errEl.textContent = err.message;
+    }
+  });
 
   document.getElementById('admins-body').addEventListener('click', async (e) => {
     const btn = e.target.closest('.reset-mfa-btn');

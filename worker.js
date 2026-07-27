@@ -62,6 +62,74 @@ const ADMIN_ACCOUNTS = [
   { email: 'intern@blueline-advisors.com', secret: 'ADMIN_PASSWORD_INTERN' },
 ];
 const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 12; // 12 hours
+const ADMIN_PASSWORD_MIN_LENGTH = 10; // a step above the client minimum (8) — elevated privilege
+
+// ---------- Admin accounts added through the app ----------
+// The ADMIN_ACCOUNTS list above is the original, hardcoded roster: each entry's
+// password lives in its own Cloudflare secret, so adding one always needs a
+// code change + redeploy. Admins added later live in KV instead — salted
+// PBKDF2 hash, same mechanism client accounts already use (admin_account:<email>)
+// — so a signed-in admin can add a new one from Settings with no code, no
+// secrets, no deploy. MFA is unaffected either way: it's still mandatory,
+// looked up by email, independent of where the password itself lives.
+
+async function verifyAdminPassword(env, normalizedEmail, password) {
+  const legacy = ADMIN_ACCOUNTS.find((a) => a.email === normalizedEmail);
+  if (legacy) {
+    // Trim both sides so a stray trailing newline in a secret (a very common
+    // result of how secrets get pasted/piped in) doesn't cause a silent
+    // length mismatch. Falls back to the old shared ADMIN_PASSWORD secret
+    // while individual ones are still being rolled out.
+    const expected = ((env[legacy.secret] || env.ADMIN_PASSWORD) || '').trim();
+    return !!expected && timingSafeEqual(String(password).trim(), expected);
+  }
+  const raw = await env.PORTAL_KV.get(`admin_account:${normalizedEmail}`);
+  if (!raw) return false;
+  const account = JSON.parse(raw);
+  const attemptedHash = await hashPassword(password, account.salt, account.iterations);
+  return timingSafeEqual(attemptedHash, account.hash);
+}
+
+// Legacy roster + everyone added through the app, deduplicated. This is the
+// single source of truth for "who is an admin" everywhere else in the file.
+async function allAdminEmails(env) {
+  const legacy = ADMIN_ACCOUNTS.map((a) => a.email);
+  const added = (await listKeys(env, 'admin_account:')).map((k) => k.slice('admin_account:'.length));
+  return [...new Set([...legacy, ...added])];
+}
+
+async function isAdminAccount(env, email) {
+  return (await allAdminEmails(env)).includes(email);
+}
+
+// Create a new KV-backed admin. Rejects an email already in use by either the
+// legacy roster or another KV admin, so the two lists never collide.
+async function handleAdminCreateAdmin(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const email = String(body.email || '').trim().toLowerCase();
+  if (!isValidEmail(email)) return json({ error: 'Enter a valid email address' }, 400, cors);
+  const password = String(body.password || '');
+  if (password.length < ADMIN_PASSWORD_MIN_LENGTH) {
+    return json({ error: `Password must be at least ${ADMIN_PASSWORD_MIN_LENGTH} characters` }, 400, cors);
+  }
+  if (await isAdminAccount(env, email)) {
+    return json({ error: 'An admin with this email already exists' }, 409, cors);
+  }
+
+  const salt = randomHex(16);
+  const hash = await hashPassword(password, salt, PBKDF2_ITERATIONS);
+  await env.PORTAL_KV.put(
+    `admin_account:${email}`,
+    JSON.stringify({ email, salt, hash, iterations: PBKDF2_ITERATIONS, createdAt: new Date().toISOString(), createdBy: adminEmail })
+  );
+  await logAudit(env, adminEmail, 'create-admin', { email });
+  // No MFA record yet — same as any admin's first login, they'll be walked
+  // through enrollment (handleAdminMfaEnroll) the first time they sign in.
+  return json({ email }, 201, cors);
+}
 const AUDIT_TTL_SECONDS = 60 * 60 * 24 * 400; // audit entries retained ~13 months
 
 // Fixed-window rate limits: [max requests, window in seconds].
@@ -330,16 +398,8 @@ async function handleAdminLogin(request, env, cors) {
   }
 
   const normalizedEmail = String(email).trim().toLowerCase();
-  // Each admin has their own password secret; fall back to the legacy shared
-  // ADMIN_PASSWORD while individual secrets are being rolled out. Trim both
-  // sides so a stray trailing newline in a secret (a very common result of how
-  // secrets get pasted/piped in) doesn't cause a silent length mismatch.
-  const account = ADMIN_ACCOUNTS.find((a) => a.email === normalizedEmail);
-  const expectedPassword = account
-    ? ((env[account.secret] || env.ADMIN_PASSWORD) || '').trim()
-    : '';
-  const passOk = !!expectedPassword && timingSafeEqual(String(password).trim(), expectedPassword);
-  if (!account || !passOk) {
+  const passOk = await verifyAdminPassword(env, normalizedEmail, password);
+  if (!passOk) {
     return json({ error: 'Invalid email or password' }, 401, cors);
   }
 
@@ -577,9 +637,9 @@ async function handleAdminListAdmins(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const admins = [];
-  for (const a of ADMIN_ACCOUNTS) {
-    const mfa = await getAdminMfa(env, a.email); // throws on decrypt fail -> 500 (fail closed)
-    admins.push({ email: a.email, mfaEnabled: !!(mfa && mfa.confirmed) });
+  for (const email of await allAdminEmails(env)) {
+    const mfa = await getAdminMfa(env, email); // throws on decrypt fail -> 500 (fail closed)
+    admins.push({ email, mfaEnabled: !!(mfa && mfa.confirmed) });
   }
   return json({ admins, you: adminEmail }, 200, cors);
 }
@@ -593,7 +653,7 @@ async function handleAdminResetMfa(request, env, cors, targetEmail) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const normalized = String(targetEmail).trim().toLowerCase();
-  if (!ADMIN_ACCOUNTS.some((a) => a.email === normalized)) {
+  if (!(await isAdminAccount(env, normalized))) {
     return json({ error: 'Not an admin account' }, 404, cors);
   }
   await env.PORTAL_KV.delete(`admin_mfa:${normalized}`);
@@ -1855,7 +1915,7 @@ async function handleAdminContacts(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   return json(
-    { contacts: await buildContactList(env), admins: ADMIN_ACCOUNTS.map((a) => a.email) },
+    { contacts: await buildContactList(env), admins: await allAdminEmails(env) },
     200,
     cors
   );
@@ -2260,13 +2320,9 @@ async function getBoardLists(env) {
   return [];
 }
 
-function isAdminAccount(email) {
-  return ADMIN_ACCOUNTS.some((a) => a.email === email);
-}
-
 // Assignees are admin accounts only (lists are a separate grouping dimension).
 async function allowedAssigneeSet(env) {
-  return new Set(ADMIN_ACCOUNTS.map((a) => a.email));
+  return new Set(await allAdminEmails(env));
 }
 
 async function handleAdminListLists(request, env, cors) {
@@ -2286,7 +2342,7 @@ async function handleAdminCreateList(request, env, cors) {
   let list;
   if (type === 'person') {
     const account = String((body && body.account) || '').trim().toLowerCase();
-    if (!isAdminAccount(account)) return json({ error: 'Pick an existing admin account' }, 400, cors);
+    if (!(await isAdminAccount(env, account))) return json({ error: 'Pick an existing admin account' }, 400, cors);
     if (lists.some((l) => l.type === 'person' && l.account === account)) {
       return json({ error: 'That person already has a list' }, 400, cors);
     }
@@ -2545,8 +2601,9 @@ function isOverdue(task) {
 
 // Build the tool set, closed over env + the signed-in advisor so every tool
 // reads and writes as that person (and write actions land in the audit log
-// attributed to them, not to "system").
-function assistantTools(env, adminEmail, betaTool, writeLog) {
+// attributed to them, not to "system"). adminEmails is precomputed by the
+// caller (it needs a KV read) rather than looked up per-tool-definition.
+function assistantTools(env, adminEmail, adminEmails, betaTool, writeLog) {
   const allTasks = async () => (await readAllEncrypted(env, 'task:')).items;
 
   return [
@@ -2718,7 +2775,7 @@ function assistantTools(env, adminEmail, betaTool, writeLog) {
         properties: {
           title: { type: 'string', description: 'Short description of the work.' },
           client: { type: 'string', description: "Client email this task is about, if any. Look the client up first — never guess an address." },
-          assignee: { type: 'string', description: `Admin email to assign to. One of: ${ADMIN_ACCOUNTS.map((a) => a.email).join(', ')}. Defaults to the advisor you are talking to.` },
+          assignee: { type: 'string', description: `Admin email to assign to. One of: ${adminEmails.join(', ')}. Defaults to the advisor you are talking to.` },
           due: { type: 'string', description: 'Due date as YYYY-MM-DD, or date and time as YYYY-MM-DDTHH:MM.' },
           priority: { type: 'string', enum: TASK_PRIORITIES },
           category: { type: 'string', enum: TASK_CATEGORIES.filter((c) => c !== 'meeting') },
@@ -2755,7 +2812,7 @@ function assistantTools(env, adminEmail, betaTool, writeLog) {
           title: { type: 'string', description: 'What the meeting is for.' },
           client: { type: 'string', description: "Client email. Look the client up first — never guess an address." },
           when: { type: 'string', description: 'Date and time as YYYY-MM-DDTHH:MM.' },
-          assignee: { type: 'string', description: `Advisor email attending. One of: ${ADMIN_ACCOUNTS.map((a) => a.email).join(', ')}. Defaults to the advisor you are talking to.` },
+          assignee: { type: 'string', description: `Advisor email attending. One of: ${adminEmails.join(', ')}. Defaults to the advisor you are talking to.` },
           meetingType: {
             type: 'string',
             enum: ['initial-consultation', 'annual-review', 'investment-review', 'retirement-planning', 'tax-planning'],
@@ -2855,6 +2912,7 @@ async function handleAdminAssistant(request, env, cors) {
   // Tools append here as they run, so the reply can show the advisor exactly
   // what was created rather than relying on the model to report it accurately.
   const writeLog = [];
+  const adminEmails = await allAdminEmails(env);
 
   try {
     const final = await client.beta.messages.toolRunner({
@@ -2862,7 +2920,7 @@ async function handleAdminAssistant(request, env, cors) {
       max_tokens: 16000,
       output_config: { effort: ASSISTANT_EFFORT },
       system: assistantSystemPrompt(adminEmail),
-      tools: assistantTools(env, adminEmail, betaTool, writeLog),
+      tools: assistantTools(env, adminEmail, adminEmails, betaTool, writeLog),
       messages: [...assistantHistory(body.history), { role: 'user', content: message.slice(0, 10000) }],
       max_iterations: ASSISTANT_MAX_ITERATIONS,
     });
@@ -2951,6 +3009,9 @@ export default {
       }
       if (url.pathname === '/api/admin/admins' && request.method === 'GET') {
         return await handleAdminListAdmins(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/admins' && request.method === 'POST') {
+        return await handleAdminCreateAdmin(request, env, cors);
       }
       if (url.pathname === '/api/admin/contacts' && request.method === 'GET') {
         return await handleAdminContacts(request, env, cors);
