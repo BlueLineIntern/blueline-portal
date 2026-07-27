@@ -116,6 +116,7 @@
         <button type="button" class="tab active" data-tab="overview">Overview</button>
         <button type="button" class="tab" data-tab="assessments">Assessments</button>
         <button type="button" class="tab" data-tab="tasks">Tasks</button>
+        <button type="button" class="tab" data-tab="meetings">Meetings</button>
         <button type="button" class="tab" data-tab="notes">Notes</button>
         <button type="button" class="tab" data-tab="timeline">Timeline</button>
         <button type="button" class="tab" data-tab="documents">Documents</button>
@@ -124,6 +125,7 @@
 
       <div id="tab-overview"></div>
       <div class="hidden" id="tab-tasks"></div>
+      <div class="hidden" id="tab-meetings"></div>
       <div class="hidden" id="tab-notes"></div>
       <div class="hidden" id="tab-timeline"></div>
 
@@ -247,7 +249,7 @@
   const POLL_INTERVAL_MS = 20000;
   // Tabs a background poll must not re-render: they hold either unsaved input
   // or accumulated state (paged history, scroll) that a rebuild would destroy.
-  const POLL_SKIP_TABS = new Set(['notes', 'tasks', 'timeline', 'activity']);
+  const POLL_SKIP_TABS = new Set(['notes', 'tasks', 'meetings', 'timeline', 'activity']);
 
   const ALL_MODULE_KEYS = [...MODULES.map((mod) => mod.key), ...CATEGORY_MODULES.map((mod) => mod.key)];
   const CATEGORY_MODULE_MAP = Object.fromEntries(CATEGORY_MODULES.map((mod) => [mod.key, mod]));
@@ -470,12 +472,13 @@
     document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
       b.classList.toggle('active', b.dataset.tab === tab)
     );
-    ['overview', 'assessments', 'tasks', 'notes', 'timeline', 'documents', 'activity'].forEach((t) =>
+    ['overview', 'assessments', 'tasks', 'meetings', 'notes', 'timeline', 'documents', 'activity'].forEach((t) =>
       document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab)
     );
     // These fetch on demand so opening a profile stays cheap.
     if (tab === 'activity') renderActivityTab();
     if (tab === 'tasks') renderTasksTab();
+    if (tab === 'meetings') renderMeetingsTab();
     if (tab === 'notes') renderNotesTab();
     if (tab === 'timeline') renderTimelineTab();
   }
@@ -710,7 +713,9 @@
     try {
       const data = await api('/api/admin/tasks');
       if (selectedEmail !== email) return; // profile changed while loading
-      const mine = (data.tasks || []).filter((t) => t.client === email);
+      // Meetings are tasks too, but they have their own tab now — listing them
+      // here as well would show one record in two places, tickable from either.
+      const mine = (data.tasks || []).filter((t) => t.client === email && t.category !== 'meeting');
       const open = mine.filter((t) => t.status === 'open');
       const done = mine.filter((t) => t.status === 'done');
       // Assignee picker: admin accounts only (what the API accepts), plus an
@@ -799,6 +804,151 @@
           document.getElementById('quick-task-title').value = '';
           document.getElementById('quick-task-due').value = '';
           renderTasksTab();
+        } catch (err) {
+          errEl.textContent = err.message;
+        }
+      });
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Meetings tab ----------
+  // A meeting is a task with category 'meeting' and a due datetime — the same
+  // records the Calendar and Operations pages show. No separate store, so
+  // anything scheduled here appears on the calendar immediately (and marking one
+  // held logs a 'meeting-held' timeline event server-side). Deep editing (prep
+  // checklist, notes/history) lives in the calendar drawer, linked per row.
+  const MEETING_TYPES = {
+    'initial-consultation': 'Initial Consultation',
+    'annual-review': 'Annual Review',
+    'investment-review': 'Investment Review',
+    'retirement-planning': 'Retirement Planning',
+    'tax-planning': 'Tax Planning',
+  };
+
+  function meetingWhen(due) {
+    if (!due) return 'no date set';
+    const d = new Date(due);
+    if (isNaN(d)) return escapeHtml(due);
+    return d.toLocaleString([], {
+      weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    });
+  }
+
+  async function renderMeetingsTab() {
+    const wrap = document.getElementById('tab-meetings');
+    const email = selectedEmail;
+    // Same draft-preservation rule as Tasks: marking a meeting held re-renders
+    // this tab, which must not discard a meeting the advisor was mid-way
+    // through scheduling.
+    const draft = {
+      title: document.getElementById('meeting-title')?.value || '',
+      when: document.getElementById('meeting-when')?.value || '',
+      type: document.getElementById('meeting-type')?.value || '',
+    };
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const data = await api('/api/admin/tasks');
+      if (selectedEmail !== email) return; // profile changed while loading
+      const meetings = (data.tasks || []).filter((t) => t.client === email && t.category === 'meeting');
+      const now = Date.now();
+      const dueMs = (t) => (t.due ? new Date(t.due).getTime() : NaN);
+      // Undated meetings are still real work, so surface them with upcoming
+      // rather than hiding them in a date-sorted past list.
+      const upcoming = meetings
+        .filter((t) => t.status !== 'done' && (isNaN(dueMs(t)) || dueMs(t) >= now))
+        .sort((a, b) => (dueMs(a) || Infinity) - (dueMs(b) || Infinity));
+      const past = meetings
+        .filter((t) => !(t.status !== 'done' && (isNaN(dueMs(t)) || dueMs(t) >= now)))
+        .sort((a, b) => (dueMs(b) || 0) - (dueMs(a) || 0));
+
+      const assigneeOptions = (selected) =>
+        `<option value=""${!selected ? ' selected' : ''}>— unassigned —</option>` +
+        adminList
+          .map((a) => `<option value="${escapeHtml(a)}"${a === selected ? ' selected' : ''}>${escapeHtml(a.split('@')[0])}</option>`)
+          .join('');
+      const typeOptions = (selected) =>
+        `<option value=""${!selected ? ' selected' : ''}>— general —</option>` +
+        Object.entries(MEETING_TYPES)
+          .map(([k, label]) => `<option value="${escapeHtml(k)}"${k === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`)
+          .join('');
+
+      const row = (t) => {
+        const cl = Array.isArray(t.checklist) ? t.checklist : [];
+        const prep = cl.length ? `${cl.filter((c) => c.done).length}/${cl.length} prep` : '';
+        return `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
+          <input type="checkbox" class="meeting-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark as held'}" style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
+          <div class="row-main">
+            <div class="row-title" ${t.status === 'done' ? 'style="text-decoration:line-through;color:var(--muted)"' : ''}>${escapeHtml(t.title)}${t.meetingType ? ` <span class="badge badge-navy">${escapeHtml(MEETING_TYPES[t.meetingType] || t.meetingType)}</span>` : ''}</div>
+            <div class="row-sub">${meetingWhen(t.due)}${t.assignee ? ` · ${escapeHtml(t.assignee.split('@')[0])}` : ' · unassigned'}${prep ? ` · ${prep}` : ''}</div>
+          </div>
+          <div class="row-side">
+            <a class="panel-link" href="/admin/calendar.html?task=${encodeURIComponent(t.id)}">Details →</a>
+          </div>
+        </div>`;
+      };
+
+      wrap.innerHTML = `
+        <div class="panel">
+          <div class="panel-head"><h2>Upcoming Meetings (${upcoming.length})</h2>
+            <a class="panel-link" href="/admin/calendar.html">Full calendar →</a></div>
+          <div class="row-list">${upcoming.length ? upcoming.map(row).join('') : '<p class="empty">No meetings scheduled for this contact.</p>'}</div>
+          <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+            <input type="text" class="input" id="meeting-title" placeholder="Meeting title…" style="flex:1; min-width:200px;" />
+            <input type="datetime-local" class="input" id="meeting-when" />
+            <select id="meeting-type" title="Meeting type">${typeOptions(draft.type)}</select>
+            <select id="meeting-assignee" title="Advisor">${assigneeOptions(SESSION.email)}</select>
+            <button type="button" class="btn btn-primary btn-small" id="meeting-add">Schedule</button>
+          </div>
+          <p class="form-error" id="meeting-error"></p>
+        </div>
+        ${past.length ? `<div class="panel"><div class="panel-head"><h2>Past &amp; Held (${past.length})</h2></div>
+          <div class="row-list">${past.map(row).join('')}</div></div>` : ''}`;
+      document.getElementById('meeting-title').value = draft.title;
+      document.getElementById('meeting-when').value = draft.when;
+
+      wrap.querySelectorAll('.meeting-check').forEach((cb) =>
+        cb.addEventListener('change', async () => {
+          const errEl = document.getElementById('meeting-error');
+          errEl.textContent = '';
+          try {
+            await api(`/api/admin/tasks/${encodeURIComponent(cb.dataset.id)}`, {
+              method: 'POST', body: JSON.stringify({ status: cb.checked ? 'done' : 'open' }),
+            });
+            renderMeetingsTab();
+          } catch (err) {
+            cb.checked = !cb.checked;
+            errEl.textContent = err.message;
+          }
+        })
+      );
+
+      document.getElementById('meeting-add').addEventListener('click', async () => {
+        const errEl = document.getElementById('meeting-error');
+        errEl.textContent = '';
+        const title = document.getElementById('meeting-title').value.trim();
+        const when = document.getElementById('meeting-when').value;
+        if (!title) { errEl.textContent = 'Enter a meeting title.'; return; }
+        if (!when) { errEl.textContent = 'Pick a date and time.'; return; }
+        try {
+          await api('/api/admin/tasks', {
+            method: 'POST',
+            body: JSON.stringify({
+              title,
+              client: email,
+              assignee: document.getElementById('meeting-assignee').value,
+              due: when,
+              category: 'meeting',
+              meetingType: document.getElementById('meeting-type').value,
+              priority: 'medium',
+            }),
+          });
+          // Clear before the re-render, or the draft snapshot restores what we
+          // just scheduled.
+          document.getElementById('meeting-title').value = '';
+          document.getElementById('meeting-when').value = '';
+          renderMeetingsTab();
         } catch (err) {
           errEl.textContent = err.message;
         }
