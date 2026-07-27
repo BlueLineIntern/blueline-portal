@@ -298,6 +298,9 @@
       ]);
       allContacts = contactsData.contacts || [];
       adminList = contactsData.admins || [];
+      // staffLabel() checks this before falling back to a capitalized email
+      // guess — populate it from names stored on admins added through Settings.
+      registerStaff(Object.entries(contactsData.adminNames || {}).map(([id, name]) => ({ id, name })));
       allOnboardings = onbData.records || [];
       renderStatusFilters();
       renderContacts();
@@ -725,7 +728,7 @@
         adminList
           .map(
             (a) =>
-              `<option value="${escapeHtml(a)}"${a === selected ? ' selected' : ''}>${escapeHtml(a.split('@')[0])}</option>`
+              `<option value="${escapeHtml(a)}"${a === selected ? ' selected' : ''}>${escapeHtml(staffLabel(a))}</option>`
           )
           .join('');
       const row = (t) => `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
@@ -866,7 +869,7 @@
       const assigneeOptions = (selected) =>
         `<option value=""${!selected ? ' selected' : ''}>— unassigned —</option>` +
         adminList
-          .map((a) => `<option value="${escapeHtml(a)}"${a === selected ? ' selected' : ''}>${escapeHtml(a.split('@')[0])}</option>`)
+          .map((a) => `<option value="${escapeHtml(a)}"${a === selected ? ' selected' : ''}>${escapeHtml(staffLabel(a))}</option>`)
           .join('');
       const typeOptions = (selected) =>
         `<option value=""${!selected ? ' selected' : ''}>— general —</option>` +
@@ -881,7 +884,7 @@
           <input type="checkbox" class="meeting-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark as held'}" style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
           <div class="row-main">
             <div class="row-title" ${t.status === 'done' ? 'style="text-decoration:line-through;color:var(--muted)"' : ''}>${escapeHtml(t.title)}${t.meetingType ? ` <span class="badge badge-navy">${escapeHtml(MEETING_TYPES[t.meetingType] || t.meetingType)}</span>` : ''}</div>
-            <div class="row-sub">${meetingWhen(t.due)}${t.assignee ? ` · ${escapeHtml(t.assignee.split('@')[0])}` : ' · unassigned'}${prep ? ` · ${prep}` : ''}</div>
+            <div class="row-sub">${meetingWhen(t.due)}${t.assignee ? ` · ${escapeHtml(staffLabel(t.assignee))}` : ' · unassigned'}${prep ? ` · ${prep}` : ''}</div>
           </div>
           <div class="row-side">
             <a class="panel-link" href="/admin/calendar.html?task=${encodeURIComponent(t.id)}">Details →</a>
@@ -990,7 +993,7 @@
           ${notes.length ? notes.map((n) => `
             <div class="note-card ${n.pinned ? 'pinned' : ''}">
               <div class="note-head">
-                <span class="note-meta">${n.pinned ? '📌 ' : ''}${escapeHtml(n.author.split('@')[0])} · ${escapeHtml(fmtDateTime(n.createdAt))}${n.updatedAt ? ' (edited)' : ''}
+                <span class="note-meta">${n.pinned ? '📌 ' : ''}${escapeHtml(staffLabel(n.author))} · ${escapeHtml(fmtDateTime(n.createdAt))}${n.updatedAt ? ' (edited)' : ''}
                   ${(n.tags || []).map((t) => ` <span class="chip">${escapeHtml(t)}</span>`).join('')}</span>
                 <span style="display:flex;gap:6px;">
                   <button type="button" class="btn btn-ghost btn-small note-pin-btn" data-id="${escapeHtml(n.id)}" data-pinned="${n.pinned ? '1' : ''}">${n.pinned ? 'Unpin' : 'Pin'}</button>
@@ -1080,7 +1083,7 @@
     if (e.detail && e.detail.module) bits.push(e.detail.module);
     if (e.detail && e.detail.onboardingId) bits.push(e.detail.onboardingId);
     if (e.detail && e.detail.title) bits.push(e.detail.title);
-    const by = e.actor && e.actor !== 'client' && e.actor !== 'system' ? ` · by ${e.actor.split('@')[0]}` : '';
+    const by = e.actor && e.actor !== 'client' && e.actor !== 'system' ? ` · by ${staffLabel(e.actor)}` : '';
     return `<div class="tl-item">
       <div class="tl-rail"><div class="tl-dot"></div><div class="tl-line"></div></div>
       <div class="tl-body">

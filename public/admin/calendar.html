@@ -606,6 +606,7 @@
       allContacts = (contactData.contacts || []).filter((c) => !c.archived)
         .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
       adminList = contactData.admins || [];
+      registerStaff(Object.entries(contactData.adminNames || {}).map(([id, name]) => ({ id, name })));
       setStatus('');
       render();
     } catch (err) { setStatus(`Failed to load: ${err.message}`); }

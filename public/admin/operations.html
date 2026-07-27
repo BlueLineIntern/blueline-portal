@@ -1073,6 +1073,7 @@
       allTasks = taskData.tasks || [];
       allContacts = (contactData.contacts || []).sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
       adminList = contactData.admins || [];
+      registerStaff(Object.entries(contactData.adminNames || {}).map(([id, name]) => ({ id, name })));
       boardLists = listData.lists || [];
       // List-view filter selects (board uses its own pill row).
       fillSelect('filter-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), document.getElementById('filter-client').value, true);

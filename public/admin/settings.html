@@ -26,12 +26,13 @@
       <div class="table-scroll">
         <table class="data-table">
           <thead>
-            <tr><th>Admin</th><th>Two-factor</th><th></th></tr>
+            <tr><th>Name</th><th>Admin</th><th>Two-factor</th><th></th></tr>
           </thead>
           <tbody id="admins-body"></tbody>
         </table>
       </div>
       <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; align-items:flex-start;">
+        <input type="text" class="input" id="new-admin-name" placeholder="Name (e.g. Jane Doe)" style="flex:1; min-width:180px;" />
         <input type="email" class="input" id="new-admin-email" placeholder="new-admin@blueline-advisors.com" style="flex:1; min-width:220px;" />
         <input type="text" class="input" id="new-admin-password" placeholder="Temporary password (10+ characters)" style="flex:1; min-width:220px;" />
         <button type="button" class="btn btn-primary btn-small" id="new-admin-add">Add Admin</button>
@@ -83,7 +84,7 @@
         const action = a.mfaEnabled
           ? `<button type="button" class="btn btn-ghost btn-small reset-mfa-btn" data-email="${escapeHtml(a.email)}">Reset MFA</button>`
           : '<span class="cell-missing">—</span>';
-        return `<tr><td>${escapeHtml(a.email)}${isYou ? ' <span class="cell-missing">(you)</span>' : ''}</td><td>${status}</td><td>${action}</td></tr>`;
+        return `<tr><td>${escapeHtml(staffLabel(a.email))}</td><td>${escapeHtml(a.email)}${isYou ? ' <span class="cell-missing">(you)</span>' : ''}</td><td>${status}</td><td>${action}</td></tr>`;
       })
       .join('');
   }
@@ -91,6 +92,9 @@
   async function loadAdmins() {
     try {
       const data = await api('/api/admin/admins');
+      // staffLabel() checks this map before falling back to a capitalized
+      // email guess — populate it from each admin's stored name first.
+      registerStaff((data.admins || []).filter((a) => a.name).map((a) => ({ id: a.email, name: a.name })));
       renderAdmins(data.admins || [], data.you);
     } catch (err) {
       document.getElementById('admins-status').textContent = `Failed to load: ${err.message}`;
@@ -100,12 +104,15 @@
   document.getElementById('new-admin-add').addEventListener('click', async () => {
     const errEl = document.getElementById('new-admin-error');
     errEl.textContent = '';
+    const name = document.getElementById('new-admin-name').value.trim();
     const email = document.getElementById('new-admin-email').value.trim();
     const password = document.getElementById('new-admin-password').value;
+    if (!name) { errEl.textContent = "Enter the admin's name."; return; }
     if (!email) { errEl.textContent = 'Enter an email address.'; return; }
     if (password.length < 10) { errEl.textContent = 'Password must be at least 10 characters.'; return; }
     try {
-      await api('/api/admin/admins', { method: 'POST', body: JSON.stringify({ email, password }) });
+      await api('/api/admin/admins', { method: 'POST', body: JSON.stringify({ name, email, password }) });
+      document.getElementById('new-admin-name').value = '';
       document.getElementById('new-admin-email').value = '';
       document.getElementById('new-admin-password').value = '';
       document.getElementById('admins-status').textContent = `Added ${email}. Give them the password directly — they'll set up two-factor on first sign-in.`;

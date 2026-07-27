@@ -111,6 +111,8 @@ async function handleAdminCreateAdmin(request, env, cors) {
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const email = String(body.email || '').trim().toLowerCase();
   if (!isValidEmail(email)) return json({ error: 'Enter a valid email address' }, 400, cors);
+  const name = String(body.name || '').trim().slice(0, 200);
+  if (!name) return json({ error: "Enter the admin's name" }, 400, cors);
   const password = String(body.password || '');
   if (password.length < ADMIN_PASSWORD_MIN_LENGTH) {
     return json({ error: `Password must be at least ${ADMIN_PASSWORD_MIN_LENGTH} characters` }, 400, cors);
@@ -123,12 +125,27 @@ async function handleAdminCreateAdmin(request, env, cors) {
   const hash = await hashPassword(password, salt, PBKDF2_ITERATIONS);
   await env.PORTAL_KV.put(
     `admin_account:${email}`,
-    JSON.stringify({ email, salt, hash, iterations: PBKDF2_ITERATIONS, createdAt: new Date().toISOString(), createdBy: adminEmail })
+    JSON.stringify({ email, name, salt, hash, iterations: PBKDF2_ITERATIONS, createdAt: new Date().toISOString(), createdBy: adminEmail })
   );
-  await logAudit(env, adminEmail, 'create-admin', { email });
+  await logAudit(env, adminEmail, 'create-admin', { email, name });
   // No MFA record yet — same as any admin's first login, they'll be walked
   // through enrollment (handleAdminMfaEnroll) the first time they sign in.
-  return json({ email }, 201, cors);
+  return json({ email, name }, 201, cors);
+}
+
+// {email: name} for KV-added admins only — the legacy roster's names are a
+// hardcoded client-side lookup (STAFF_LABELS) and don't need duplicating here.
+async function addedAdminNames(env) {
+  const names = {};
+  for (const keyName of await listKeys(env, 'admin_account:')) {
+    const raw = await env.PORTAL_KV.get(keyName);
+    if (!raw) continue;
+    try {
+      const account = JSON.parse(raw);
+      if (account.name) names[account.email] = account.name;
+    } catch { /* skip a corrupt record rather than fail the whole list */ }
+  }
+  return names;
 }
 const AUDIT_TTL_SECONDS = 60 * 60 * 24 * 400; // audit entries retained ~13 months
 
@@ -636,10 +653,11 @@ async function handleAdminMfaVerify(request, env, cors) {
 async function handleAdminListAdmins(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const names = await addedAdminNames(env);
   const admins = [];
   for (const email of await allAdminEmails(env)) {
     const mfa = await getAdminMfa(env, email); // throws on decrypt fail -> 500 (fail closed)
-    admins.push({ email, mfaEnabled: !!(mfa && mfa.confirmed) });
+    admins.push({ email, name: names[email] || null, mfaEnabled: !!(mfa && mfa.confirmed) });
   }
   return json({ admins, you: adminEmail }, 200, cors);
 }
@@ -1915,7 +1933,7 @@ async function handleAdminContacts(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   return json(
-    { contacts: await buildContactList(env), admins: await allAdminEmails(env) },
+    { contacts: await buildContactList(env), admins: await allAdminEmails(env), adminNames: await addedAdminNames(env) },
     200,
     cors
   );
