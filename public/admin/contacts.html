@@ -237,6 +237,7 @@
 
   let allContacts = [];
   let allOnboardings = [];
+  let adminList = []; // admin account emails — the only valid task assignees
   let selectedEmail = '';
   let assignmentEditorEmail = '';
   let searchText = '';
@@ -291,6 +292,7 @@
         api('/api/admin/onboarding').catch(() => ({ records: [] })),
       ]);
       allContacts = contactsData.contacts || [];
+      adminList = contactsData.admins || [];
       allOnboardings = onbData.records || [];
       renderStatusFilters();
       renderContacts();
@@ -497,9 +499,10 @@
     renderOverviewTab(c, p);
     renderAssessmentsTab(c);
     renderDocumentsTab(c);
-    // A background poll must never blow away an in-progress note draft by
-    // regenerating the notes tab out from under the advisor's typing.
-    if (opts.background && activeTab === 'notes') return;
+    // A background poll must never blow away in-progress typing by regenerating
+    // a tab out from under the advisor. Notes and Tasks both hold text inputs
+    // (note draft, quick-task title), so skip re-rendering those on a poll.
+    if (opts.background && (activeTab === 'notes' || activeTab === 'tasks')) return;
     setTab(activeTab);
   }
 
@@ -699,13 +702,26 @@
       const mine = (data.tasks || []).filter((t) => t.client === email);
       const open = mine.filter((t) => t.status === 'open');
       const done = mine.filter((t) => t.status === 'done');
+      // Assignee picker: admin accounts only (what the API accepts), plus an
+      // explicit unassigned option so a task can be handed back to the pool.
+      const assigneeOptions = (selected) =>
+        `<option value=""${!selected ? ' selected' : ''}>— unassigned —</option>` +
+        adminList
+          .map(
+            (a) =>
+              `<option value="${escapeHtml(a)}"${a === selected ? ' selected' : ''}>${escapeHtml(a.split('@')[0])}</option>`
+          )
+          .join('');
       const row = (t) => `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
         <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
         <div class="row-main">
           <div class="row-title" ${t.status === 'done' ? 'style="text-decoration:line-through;color:var(--muted)"' : ''}>${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
-          <div class="row-sub">${t.due ? escapeHtml(new Date(t.due).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : 'no due date'} · ${t.assignee ? escapeHtml(t.assignee.split('@')[0]) : 'unassigned'}</div>
+          <div class="row-sub">${t.due ? escapeHtml(new Date(t.due).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : 'no due date'}</div>
         </div>
-        <div class="row-side"><span class="badge ${PRIORITY_BADGE[t.priority] || 'badge-gray'}">${escapeHtml(t.priority)}</span></div>
+        <div class="row-side" style="display:flex; align-items:center; gap:8px;">
+          <select class="task-assignee" data-id="${escapeHtml(t.id)}" title="Assign to" style="max-width:150px;">${assigneeOptions(t.assignee || '')}</select>
+          <span class="badge ${PRIORITY_BADGE[t.priority] || 'badge-gray'}">${escapeHtml(t.priority)}</span>
+        </div>
       </div>`;
       wrap.innerHTML = `
         <div class="panel">
@@ -715,6 +731,7 @@
           <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
             <input type="text" class="input" id="quick-task-title" placeholder="Quick task for this contact…" style="flex:1; min-width:220px;" />
             <input type="date" class="input" id="quick-task-due" />
+            <select id="quick-task-assignee" title="Assign to">${assigneeOptions(SESSION.email)}</select>
             <button type="button" class="btn btn-primary btn-small" id="quick-task-add">Add Task</button>
           </div>
           <p class="form-error" id="quick-task-error"></p>
@@ -733,6 +750,20 @@
           }
         })
       );
+      wrap.querySelectorAll('.task-assignee').forEach((sel) =>
+        sel.addEventListener('change', async () => {
+          const errEl = document.getElementById('quick-task-error');
+          errEl.textContent = '';
+          try {
+            await api(`/api/admin/tasks/${encodeURIComponent(sel.dataset.id)}`, {
+              method: 'POST', body: JSON.stringify({ assignee: sel.value }),
+            });
+            renderTasksTab();
+          } catch (err) {
+            errEl.textContent = err.message;
+          }
+        })
+      );
       document.getElementById('quick-task-add').addEventListener('click', async () => {
         const title = document.getElementById('quick-task-title').value.trim();
         const errEl = document.getElementById('quick-task-error');
@@ -744,7 +775,7 @@
             body: JSON.stringify({
               title,
               client: email,
-              assignee: SESSION.email,
+              assignee: document.getElementById('quick-task-assignee').value,
               due: document.getElementById('quick-task-due').value,
               category: 'follow-up',
               priority: 'medium',
