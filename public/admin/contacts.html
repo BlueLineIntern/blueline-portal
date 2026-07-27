@@ -282,7 +282,7 @@
     return newest;
   }
 
-  async function loadData({ showStatus = false } = {}) {
+  async function loadData({ showStatus = false, background = false } = {}) {
     const statusEl = document.getElementById('list-status');
     if (showStatus) statusEl.textContent = 'Refreshing…';
     try {
@@ -294,7 +294,7 @@
       allOnboardings = onbData.records || [];
       renderStatusFilters();
       renderContacts();
-      if (selectedEmail) renderProfile(); // refresh open profile in place
+      if (selectedEmail) renderProfile({ background }); // refresh open profile in place
       if (showStatus) statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
     } catch (err) {
       if (showStatus) statusEl.textContent = `Refresh failed: ${err.message}`;
@@ -479,7 +479,7 @@
     b.addEventListener('click', () => setTab(b.dataset.tab))
   );
 
-  function renderProfile() {
+  function renderProfile(opts = {}) {
     const c = currentContact();
     if (!c) { backToList(); return; }
     const p = clientProgress(c);
@@ -497,6 +497,9 @@
     renderOverviewTab(c, p);
     renderAssessmentsTab(c);
     renderDocumentsTab(c);
+    // A background poll must never blow away an in-progress note draft by
+    // regenerating the notes tab out from under the advisor's typing.
+    if (opts.background && activeTab === 'notes') return;
     setTab(activeTab);
   }
 
@@ -1055,7 +1058,7 @@
   });
 
   // Poll to keep the list + open profile fresh.
-  setInterval(() => loadData(), POLL_INTERVAL_MS);
+  setInterval(() => loadData({ background: true }), POLL_INTERVAL_MS);
 
   // Deep link: ?c=email opens that profile; ?tab=notes (etc.) lands on a tab.
   (async function init() {
