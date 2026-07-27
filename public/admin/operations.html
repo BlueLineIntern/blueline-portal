@@ -464,6 +464,13 @@
       });
     });
 
+    // Replacing the board wholesale resets every scroll offset, so a 30s poll
+    // would snap a scrolled-down column (and the board itself) back to the
+    // start under the reader. Capture offsets by column key and reapply them.
+    const scrollLeft = board.scrollLeft;
+    const colScroll = new Map();
+    board.querySelectorAll('.board-col-body').forEach((b) => colScroll.set(b.dataset.col, b.scrollTop));
+
     board.innerHTML = cols.map((c) => {
       const items = byCol[c.key] || [];
       const colCls = c.type === 'completed' ? 'col-completed' : c.type === 'unassigned' ? 'col-unassigned' : '';
@@ -480,6 +487,12 @@
         </div>
       </div>`;
     }).join('');
+
+    board.scrollLeft = scrollLeft;
+    board.querySelectorAll('.board-col-body').forEach((b) => {
+      const prev = colScroll.get(b.dataset.col);
+      if (prev) b.scrollTop = prev;
+    });
 
     wireBoardEvents();
   }
@@ -586,7 +599,14 @@
   function fillSelect(id, options, current, keepFirst) {
     const sel = document.getElementById(id);
     const first = keepFirst ? sel.querySelector('option').outerHTML : '';
-    sel.innerHTML = first + options.map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`).join('');
+    // If the current value is no longer among the options (client archived,
+    // admin removed, list deleted), keep it as an explicit option. Otherwise
+    // `sel.value = current` silently fails and the control resets — which on a
+    // filter quietly widens the view, and in the drawer misreports the task.
+    const opts = current && !options.some((o) => o.value === current)
+      ? [...options, { value: current, label: `${current} (unavailable)` }]
+      : options;
+    sel.innerHTML = first + opts.map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`).join('');
     sel.value = current || '';
   }
 

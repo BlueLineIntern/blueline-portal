@@ -34,6 +34,7 @@
         <p class="sub" id="dash-date"></p>
       </div>
       <div class="page-actions">
+        <span class="panel-status" id="dash-status"></span>
         <button type="button" class="btn btn-ghost btn-small" id="dash-refresh">↻ Refresh</button>
       </div>
     </div>
@@ -263,12 +264,21 @@
       // Complete-from-dashboard checkboxes
       document.querySelectorAll('.task-check').forEach((cb) =>
         cb.addEventListener('change', async () => {
+          document.getElementById('dash-status').textContent = '';
           try {
             await api(`/api/admin/tasks/${encodeURIComponent(cb.dataset.id)}`, {
               method: 'POST', body: JSON.stringify({ status: 'done' }),
             });
             load();
-          } catch { cb.checked = false; }
+          } catch (err) {
+            // The 30s poll may have replaced this row mid-request, leaving `cb`
+            // detached — unchecking it would then be invisible. Report the
+            // failure somewhere that survives a re-render, and reload so the
+            // list reflects real server state either way.
+            cb.checked = false;
+            document.getElementById('dash-status').textContent = `Could not complete task: ${err.message}`;
+            load();
+          }
         })
       );
     } catch (err) {

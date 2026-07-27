@@ -245,6 +245,9 @@
   let activeTab = 'overview';
   let modalEmail = null; // null = creating; email = editing that contact
   const POLL_INTERVAL_MS = 20000;
+  // Tabs a background poll must not re-render: they hold either unsaved input
+  // or accumulated state (paged history, scroll) that a rebuild would destroy.
+  const POLL_SKIP_TABS = new Set(['notes', 'tasks', 'timeline', 'activity']);
 
   const ALL_MODULE_KEYS = [...MODULES.map((mod) => mod.key), ...CATEGORY_MODULES.map((mod) => mod.key)];
   const CATEGORY_MODULE_MAP = Object.fromEntries(CATEGORY_MODULES.map((mod) => [mod.key, mod]));
@@ -499,10 +502,11 @@
     renderOverviewTab(c, p);
     renderAssessmentsTab(c);
     renderDocumentsTab(c);
-    // A background poll must never blow away in-progress typing by regenerating
-    // a tab out from under the advisor. Notes and Tasks both hold text inputs
-    // (note draft, quick-task title), so skip re-rendering those on a poll.
-    if (opts.background && (activeTab === 'notes' || activeTab === 'tasks')) return;
+    // A background poll must never yank a tab out from under the advisor.
+    // Notes/Tasks hold unsaved text (note draft, quick-task title); Timeline
+    // and Activity accumulate paged-in history and scroll position that a
+    // rebuild would silently discard. Those refresh on tab switch instead.
+    if (opts.background && POLL_SKIP_TABS.has(activeTab)) return;
     setTab(activeTab);
   }
 
@@ -695,6 +699,13 @@
   async function renderTasksTab() {
     const wrap = document.getElementById('tab-tasks');
     const email = selectedEmail;
+    // Ticking a checkbox or reassigning re-renders this whole tab, which would
+    // otherwise discard a quick-task the advisor had already started typing.
+    // Snapshot the draft before the rebuild and put it back afterwards.
+    const draft = {
+      title: document.getElementById('quick-task-title')?.value || '',
+      due: document.getElementById('quick-task-due')?.value || '',
+    };
     wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
     try {
       const data = await api('/api/admin/tasks');
@@ -738,6 +749,8 @@
         </div>
         ${done.length ? `<div class="panel"><div class="panel-head"><h2>Completed (${done.length})</h2></div>
           <div class="row-list">${done.map(row).join('')}</div></div>` : ''}`;
+      document.getElementById('quick-task-title').value = draft.title;
+      document.getElementById('quick-task-due').value = draft.due;
       wrap.querySelectorAll('.task-check').forEach((cb) =>
         cb.addEventListener('change', async () => {
           try {
@@ -781,6 +794,10 @@
               priority: 'medium',
             }),
           });
+          // Clear before re-rendering: the draft snapshot would otherwise
+          // restore the title we just turned into a task.
+          document.getElementById('quick-task-title').value = '';
+          document.getElementById('quick-task-due').value = '';
           renderTasksTab();
         } catch (err) {
           errEl.textContent = err.message;
