@@ -914,9 +914,9 @@
     { id: 'done', label: 'Completed' },
   ];
 
-  function taskPassesQuickFilter(t) {
+  function taskPassesQuickFilter(t, filterId = listQuickFilter) {
     const d = dueInfo(t);
-    switch (listQuickFilter) {
+    switch (filterId) {
       case 'my-open': return t.status === 'open' && (t.assignee === SESSION.email || !t.assignee);
       case 'open': return t.status === 'open';
       case 'today': return t.status === 'open' && d.today;
@@ -927,12 +927,30 @@
     }
   }
 
+  // The Client/Assignee/Priority/Category dropdowns and the search box apply
+  // regardless of which quick-filter pill is selected. Quick-filter counts and
+  // the rendered list must both start from this same set, or a badge can show
+  // a nonzero count for a combination the visible list actually filters out to
+  // zero (e.g. "All Open (12)" while a client filter with no open tasks is set).
+  function listBaseFiltered() {
+    const q = listSearch.trim().toLowerCase();
+    const fClient = document.getElementById('filter-client').value;
+    const fAssignee = document.getElementById('filter-assignee').value;
+    const fPriority = document.getElementById('filter-priority').value;
+    const fCategory = document.getElementById('filter-category').value;
+    return allTasks
+      .filter((t) => !fClient || t.client === fClient)
+      .filter((t) => !fAssignee || t.assignee === fAssignee)
+      .filter((t) => !fPriority || t.priority === fPriority)
+      .filter((t) => !fCategory || t.category === fCategory)
+      .filter((t) => !q || `${t.title} ${t.description} ${t.client}`.toLowerCase().includes(q));
+  }
+
   function renderQuickFilters() {
+    const base = listBaseFiltered();
     const counts = {};
     QUICK_FILTERS.forEach((f) => {
-      const saved = listQuickFilter; listQuickFilter = f.id;
-      counts[f.id] = allTasks.filter(taskPassesQuickFilter).length;
-      listQuickFilter = saved;
+      counts[f.id] = base.filter((t) => taskPassesQuickFilter(t, f.id)).length;
     });
     const wrap = document.getElementById('list-filters');
     wrap.innerHTML = QUICK_FILTERS
@@ -945,18 +963,7 @@
 
   function renderTasks() {
     const list = document.getElementById('task-list');
-    const q = listSearch.trim().toLowerCase();
-    const fClient = document.getElementById('filter-client').value;
-    const fAssignee = document.getElementById('filter-assignee').value;
-    const fPriority = document.getElementById('filter-priority').value;
-    const fCategory = document.getElementById('filter-category').value;
-
-    let items = allTasks.filter(taskPassesQuickFilter)
-      .filter((t) => !fClient || t.client === fClient)
-      .filter((t) => !fAssignee || t.assignee === fAssignee)
-      .filter((t) => !fPriority || t.priority === fPriority)
-      .filter((t) => !fCategory || t.category === fCategory)
-      .filter((t) => !q || `${t.title} ${t.description} ${t.client}`.toLowerCase().includes(q));
+    let items = listBaseFiltered().filter((t) => taskPassesQuickFilter(t));
 
     if (listQuickFilter === 'done') {
       items.sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
