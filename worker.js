@@ -1783,7 +1783,7 @@ async function pushNoteToSharePoint(env, note) {
           NoteAuthor: note.author,
           Body: note.body,
           Tags: (note.tags || []).join(', '),
-          Pinned: !!note.pinned,
+          Pinned: note.pinned ? 'Yes' : 'No',
         },
       }),
     });
