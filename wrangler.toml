@@ -1,9 +1,9 @@
 name = "blueline-portal"
 main = "worker.js"
+# Left at the date the (since-removed) assistant's SDK required. Nothing needs
+# it specifically now, but the deployed Worker already runs on these semantics,
+# so there's no reason to move it back and change runtime behavior.
 compatibility_date = "2024-09-23"
-# The Anthropic SDK (advisor assistant) needs Node built-ins. The compatibility
-# date above is the minimum at which nodejs_compat provides them natively.
-compatibility_flags = ["nodejs_compat"]
 
 # Create with: wrangler kv namespace create PORTAL_KV
 # Then replace the id below with the id it prints.
