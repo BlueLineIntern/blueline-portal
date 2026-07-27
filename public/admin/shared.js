@@ -37,7 +37,15 @@ async function api(path, opts = {}) {
     throw new Error('Session expired');
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) {
+    // Carry the parsed body on the error: some endpoints report partial work
+    // alongside a failure (e.g. the assistant's completed writes), which is
+    // lost if callers only see the message.
+    const err = new Error(data.error || 'Request failed');
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -75,6 +83,7 @@ function relTime(iso) {
 const NAV_ITEMS = [
   { id: 'dashboard', href: '/admin/', icon: '⌂', label: 'Dashboard' },
   { id: 'contacts', href: '/admin/contacts.html', icon: '☰', label: 'Contacts' },
+  { id: 'assistant', href: '/admin/assistant.html', icon: '✦', label: 'Assistant' },
   { id: 'operations', href: '/admin/operations.html', icon: '▦', label: 'Operations' },
   { id: 'calendar', href: '/admin/calendar.html', icon: '▤', label: 'Calendar' },
   { id: 'onboarding', href: '/admin/onboarding.html', icon: '➔', label: 'Onboarding' },

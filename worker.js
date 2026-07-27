@@ -1854,7 +1854,16 @@ function sanitizeContactFields(body) {
 async function handleAdminContacts(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  return json(
+    { contacts: await buildContactList(env), admins: ADMIN_ACCOUNTS.map((a) => a.email) },
+    200,
+    cors
+  );
+}
 
+// The merge itself, without the HTTP wrapper — the assistant's tools read the
+// same shape the CRM UI does rather than re-deriving it from KV.
+async function buildContactList(env) {
   const merged = new Map(); // email -> entry
 
   // CRM contact records first (decrypt failure fails closed like elsewhere).
@@ -1923,7 +1932,7 @@ async function handleAdminContacts(request, env, cors) {
     merged.set(email, entry);
   }
 
-  return json({ contacts: [...merged.values()], admins: ADMIN_ACCOUNTS.map((a) => a.email) }, 200, cors);
+  return [...merged.values()];
 }
 
 // Create/update the CRM fields for one contact. Partial update: only the
@@ -2466,6 +2475,426 @@ async function handleAdminClients(request, env, cors) {
   return json({ clients }, 200, cors);
 }
 
+// ---------- Advisor AI assistant ----------
+// An internal, advisor-only assistant over data this app already holds. It runs
+// as a tool-use loop: Claude picks from the read/write tools below, the SDK's
+// tool runner executes them here in the Worker, and the loop ends when Claude
+// answers in prose. Nothing is sent to Anthropic except the conversation and
+// whatever a tool returns, so scope each tool's output to what the question
+// needs rather than dumping whole records.
+//
+// Requires the ANTHROPIC_API_KEY secret. Absent it, the endpoint 503s rather
+// than failing mid-conversation.
+
+const ASSISTANT_MODEL = 'claude-opus-5';
+// CRM lookups aren't intelligence-sensitive; medium keeps latency and cost down
+// without hurting tool selection. Raise toward high/xhigh if answers get shallow.
+const ASSISTANT_EFFORT = 'medium';
+const ASSISTANT_MAX_ITERATIONS = 12;
+const ASSISTANT_MAX_HISTORY = 20; // turns kept from the client-supplied history
+
+function assistantSystemPrompt(adminEmail) {
+  return `You are the internal assistant for BlueLine Advisors, a registered investment advisory firm. You are talking to ${adminEmail}, one of the firm's advisors. You are never talking to a client.
+
+Answer questions about the firm's clients, tasks, meetings, and notes by calling the tools provided. The tools are the only source of truth — never guess at a client's status, a task's due date, or whether an assessment was completed. If a tool returns nothing, say so plainly rather than filling the gap.
+
+When the advisor says "me", "my", or "mine", they mean ${adminEmail}.
+
+Keep answers short and factual. Lead with the answer, then supporting detail only if it changes what the advisor would do next. For lists, give the items — not a preamble about how you looked them up. Don't restate the question back.
+
+You can create tasks, schedule meetings, and add notes. Before doing any of those, make sure you have what you need: creating a task needs a title, scheduling a meeting needs a date and time. If the advisor's request is missing something required, ask for it instead of inventing a value. Never invent a client email address — look the client up first to get it. After a write, state plainly what you created.
+
+You are not a compliance or legal authority, and you do not give investment advice. If asked for either, say that it needs a person.`;
+}
+
+// Trim a record down to the fields an advisor would actually ask about. Keeps
+// the model's context (and the data leaving this Worker) to the minimum.
+function assistantContactSummary(c) {
+  return {
+    email: c.email,
+    name: c.name || null,
+    preferredName: c.preferredName || null,
+    status: c.status,
+    archived: !!c.archived,
+    household: c.household || null,
+    advisor: c.advisor || null,
+    phone: c.phone || null,
+    hasPortalAccount: !!c.hasAccount,
+    tags: c.tags || [],
+  };
+}
+
+function assistantTaskSummary(t) {
+  return {
+    id: t.id,
+    title: t.title,
+    status: t.status,
+    priority: t.priority,
+    category: t.category,
+    due: t.due || null,
+    client: t.client || null,
+    assignee: t.assignee || null,
+  };
+}
+
+function isOverdue(task) {
+  if (task.status !== 'open' || !task.due) return false;
+  const due = new Date(task.due).getTime();
+  return !isNaN(due) && due < Date.now();
+}
+
+// Build the tool set, closed over env + the signed-in advisor so every tool
+// reads and writes as that person (and write actions land in the audit log
+// attributed to them, not to "system").
+function assistantTools(env, adminEmail, betaTool, writeLog) {
+  const allTasks = async () => (await readAllEncrypted(env, 'task:')).items;
+
+  return [
+    betaTool({
+      name: 'list_contacts',
+      description:
+        'List the firm\'s contacts, newest data first. Use for questions like "who are my active clients" or "which prospects are unassigned". Returns summaries only — call get_contact for one person\'s full detail.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            enum: CONTACT_STATUSES,
+            description: 'Only contacts with this status.',
+          },
+          advisor: { type: 'string', description: 'Only contacts whose primary advisor matches this name.' },
+          search: { type: 'string', description: 'Case-insensitive match against name, email, household, or tag.' },
+          includeArchived: { type: 'boolean', description: 'Include archived contacts. Defaults to false.' },
+        },
+      },
+      run: async (input) => {
+        const q = String(input.search || '').trim().toLowerCase();
+        const list = (await buildContactList(env))
+          .filter((c) => (input.includeArchived ? true : !c.archived))
+          .filter((c) => !input.status || c.status === input.status)
+          .filter((c) =>
+            !input.advisor || String(c.advisor || '').toLowerCase().includes(String(input.advisor).toLowerCase())
+          )
+          .filter((c) =>
+            !q || `${c.name} ${c.email} ${c.household} ${(c.tags || []).join(' ')}`.toLowerCase().includes(q)
+          );
+        return JSON.stringify({ count: list.length, contacts: list.map(assistantContactSummary) });
+      },
+    }),
+
+    betaTool({
+      name: 'get_contact',
+      description:
+        "Full detail for one contact, including which assessment modules they have and have not completed. Use for \"how many modules does X still need\" or \"what's the status on X\".",
+      inputSchema: {
+        type: 'object',
+        properties: { email: { type: 'string', description: "The contact's email address." } },
+        required: ['email'],
+      },
+      run: async (input) => {
+        const email = String(input.email || '').trim().toLowerCase();
+        const c = (await buildContactList(env)).find((x) => x.email === email);
+        if (!c) return JSON.stringify({ found: false, email });
+        const assignable = c.assignments && c.assignments.length
+          ? c.assignments.filter((k) => k !== ONBOARDING_WIZARD_KEY)
+          : Object.keys(MODULE_VALIDATORS);
+        const completed = assignable.filter((k) => c.modules && c.modules[k]);
+        return JSON.stringify({
+          found: true,
+          ...assistantContactSummary(c),
+          address: c.address || null,
+          workEmail: c.workEmail || null,
+          importantDates: c.importantDates || [],
+          assessments: {
+            assignedCount: assignable.length,
+            completedCount: completed.length,
+            remainingCount: assignable.length - completed.length,
+            completed,
+            remaining: assignable.filter((k) => !(c.modules && c.modules[k])),
+            // A decrypt failure means we genuinely don't know — say so rather
+            // than reporting a falsely low completion count.
+            unreadable: !!c.modulesError,
+          },
+        });
+      },
+    }),
+
+    betaTool({
+      name: 'list_tasks',
+      description:
+        'List tasks. Use for "what\'s overdue", "my open tasks", or "what\'s outstanding for client X". Meetings are excluded — use list_meetings for those.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', enum: ['open', 'done'], description: 'Defaults to open.' },
+          assignee: { type: 'string', description: 'Admin email the task is assigned to.' },
+          client: { type: 'string', description: 'Client email the task belongs to.' },
+          overdueOnly: { type: 'boolean', description: 'Only open tasks past their due date.' },
+        },
+      },
+      run: async (input) => {
+        const status = input.status || 'open';
+        const list = (await allTasks())
+          .filter((t) => t.category !== 'meeting')
+          .filter((t) => t.status === status)
+          .filter((t) => !input.assignee || t.assignee === String(input.assignee).trim().toLowerCase())
+          .filter((t) => !input.client || t.client === String(input.client).trim().toLowerCase())
+          .filter((t) => !input.overdueOnly || isOverdue(t));
+        return JSON.stringify({ count: list.length, tasks: list.map(assistantTaskSummary) });
+      },
+    }),
+
+    betaTool({
+      name: 'list_meetings',
+      description:
+        'List meetings, which are tasks in the "meeting" category with a date and time. Use for "what meetings do I have this week" or "when did we last meet with X".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: 'Client email to filter by.' },
+          assignee: { type: 'string', description: 'Advisor email to filter by.' },
+          when: {
+            type: 'string',
+            enum: ['upcoming', 'past', 'all'],
+            description: 'Defaults to upcoming. "past" includes meetings already marked held.',
+          },
+        },
+      },
+      run: async (input) => {
+        const when = input.when || 'upcoming';
+        const now = Date.now();
+        const list = (await allTasks())
+          .filter((t) => t.category === 'meeting')
+          .filter((t) => !input.client || t.client === String(input.client).trim().toLowerCase())
+          .filter((t) => !input.assignee || t.assignee === String(input.assignee).trim().toLowerCase())
+          .filter((t) => {
+            if (when === 'all') return true;
+            const due = t.due ? new Date(t.due).getTime() : NaN;
+            const upcoming = t.status !== 'done' && (isNaN(due) || due >= now);
+            return when === 'upcoming' ? upcoming : !upcoming;
+          });
+        return JSON.stringify({
+          count: list.length,
+          meetings: list.map((t) => ({ ...assistantTaskSummary(t), meetingType: t.meetingType || null, held: t.status === 'done' })),
+        });
+      },
+    }),
+
+    betaTool({
+      name: 'list_notes',
+      description:
+        'Advisor-written notes for one client, newest first. Use to summarize what has been discussed with a client.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: "The client's email address." },
+          limit: { type: 'integer', description: 'Maximum notes to return. Defaults to 20.' },
+        },
+        required: ['client'],
+      },
+      run: async (input) => {
+        const client = String(input.client || '').trim().toLowerCase();
+        const { items } = await readAllEncrypted(env, `note:${client}:`);
+        const limit = Math.min(Math.max(Number(input.limit) || 20, 1), 50);
+        return JSON.stringify({
+          count: items.length,
+          notes: items.slice(0, limit).map((n) => ({
+            body: n.body,
+            author: n.author,
+            tags: n.tags || [],
+            pinned: !!n.pinned,
+            createdAt: n.createdAt,
+          })),
+        });
+      },
+    }),
+
+    betaTool({
+      name: 'create_task',
+      description:
+        'Create a task. Only call this when the advisor has asked for a task to be created. Requires a title.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short description of the work.' },
+          client: { type: 'string', description: "Client email this task is about, if any. Look the client up first — never guess an address." },
+          assignee: { type: 'string', description: `Admin email to assign to. One of: ${ADMIN_ACCOUNTS.map((a) => a.email).join(', ')}. Defaults to the advisor you are talking to.` },
+          due: { type: 'string', description: 'Due date as YYYY-MM-DD, or date and time as YYYY-MM-DDTHH:MM.' },
+          priority: { type: 'string', enum: TASK_PRIORITIES },
+          category: { type: 'string', enum: TASK_CATEGORIES.filter((c) => c !== 'meeting') },
+          description: { type: 'string', description: 'Longer detail, if the advisor gave any.' },
+        },
+        required: ['title'],
+      },
+      run: async (input) => {
+        if (!String(input.title || '').trim()) return JSON.stringify({ created: false, error: 'A title is required.' });
+        const task = await createTask(env, {
+          title: input.title,
+          description: input.description || '',
+          client: String(input.client || '').trim().toLowerCase(),
+          assignee: String(input.assignee || adminEmail).trim().toLowerCase(),
+          due: input.due || '',
+          priority: input.priority || 'medium',
+          category: input.category || 'follow-up',
+          createdBy: adminEmail,
+        });
+        writeLog.push({ action: 'create_task', id: task.id, title: task.title });
+        await logAudit(env, adminEmail, 'assistant-create-task', { id: task.id, title: task.title });
+        if (task.client) await logTimeline(env, task.client, 'task-created', adminEmail, { title: task.title });
+        return JSON.stringify({ created: true, task: assistantTaskSummary(task) });
+      },
+    }),
+
+    betaTool({
+      name: 'schedule_meeting',
+      description:
+        'Schedule a meeting with a client. Requires a title, the client, and a date and time. Ask the advisor for a time rather than assuming one.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'What the meeting is for.' },
+          client: { type: 'string', description: "Client email. Look the client up first — never guess an address." },
+          when: { type: 'string', description: 'Date and time as YYYY-MM-DDTHH:MM.' },
+          assignee: { type: 'string', description: `Advisor email attending. One of: ${ADMIN_ACCOUNTS.map((a) => a.email).join(', ')}. Defaults to the advisor you are talking to.` },
+          meetingType: {
+            type: 'string',
+            enum: ['initial-consultation', 'annual-review', 'investment-review', 'retirement-planning', 'tax-planning'],
+          },
+        },
+        required: ['title', 'client', 'when'],
+      },
+      run: async (input) => {
+        const client = String(input.client || '').trim().toLowerCase();
+        if (!isValidEmail(client)) return JSON.stringify({ created: false, error: 'A valid client email is required.' });
+        if (!String(input.when || '').trim()) return JSON.stringify({ created: false, error: 'A date and time is required.' });
+        const task = await createTask(env, {
+          title: input.title,
+          client,
+          assignee: String(input.assignee || adminEmail).trim().toLowerCase(),
+          due: input.when,
+          category: 'meeting',
+          meetingType: input.meetingType || '',
+          priority: 'medium',
+          createdBy: adminEmail,
+        });
+        writeLog.push({ action: 'schedule_meeting', id: task.id, title: task.title, when: task.due });
+        await logAudit(env, adminEmail, 'assistant-schedule-meeting', { id: task.id, client, when: task.due });
+        await logTimeline(env, client, 'meeting-scheduled', adminEmail, { title: task.title, when: task.due });
+        return JSON.stringify({ created: true, meeting: { ...assistantTaskSummary(task), meetingType: task.meetingType || null } });
+      },
+    }),
+
+    betaTool({
+      name: 'create_note',
+      description:
+        'Add a note to a client\'s record. Use when the advisor dictates something to file. Write the note in their voice, not as a summary of the conversation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: "Client email. Look the client up first — never guess an address." },
+          body: { type: 'string', description: 'The note text.' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags, e.g. "meeting".' },
+        },
+        required: ['client', 'body'],
+      },
+      run: async (input) => {
+        const client = String(input.client || '').trim().toLowerCase();
+        const text = String(input.body || '').trim();
+        if (!isValidEmail(client)) return JSON.stringify({ created: false, error: 'A valid client email is required.' });
+        if (!text) return JSON.stringify({ created: false, error: 'Note text is required.' });
+        const id = `${client}:${invTs()}-${randomHex(4)}`;
+        const note = {
+          id,
+          client,
+          author: adminEmail,
+          body: text.slice(0, 10000),
+          tags: Array.isArray(input.tags)
+            ? input.tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim().slice(0, 40)).slice(0, 20)
+            : [],
+          pinned: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: null,
+        };
+        await env.PORTAL_KV.put(`note:${id}`, await encryptJSON(env, note));
+        await logTimeline(env, client, 'note-added', adminEmail, null);
+        await pushNoteToSharePoint(env, note);
+        writeLog.push({ action: 'create_note', client });
+        await logAudit(env, adminEmail, 'assistant-create-note', { client });
+        return JSON.stringify({ created: true });
+      },
+    }),
+  ];
+}
+
+// Normalize the client-supplied history into Messages API turns. Only text is
+// accepted — a client can't smuggle in tool_use/tool_result blocks and fake a
+// tool having run.
+function assistantHistory(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .slice(-ASSISTANT_MAX_HISTORY)
+    .map((m) => ({ role: m.role, content: m.content.slice(0, 10000) }));
+}
+
+async function handleAdminAssistant(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!env.ANTHROPIC_API_KEY) {
+    return json({ error: 'The assistant is not configured: ANTHROPIC_API_KEY is not set.' }, 503, cors);
+  }
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const message = String(body.message || '').trim();
+  if (!message) return json({ error: 'A message is required' }, 400, cors);
+
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const { betaTool } = await import('@anthropic-ai/sdk/helpers/beta/json-schema');
+  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+
+  // Tools append here as they run, so the reply can show the advisor exactly
+  // what was created rather than relying on the model to report it accurately.
+  const writeLog = [];
+
+  try {
+    const final = await client.beta.messages.toolRunner({
+      model: ASSISTANT_MODEL,
+      max_tokens: 16000,
+      output_config: { effort: ASSISTANT_EFFORT },
+      system: assistantSystemPrompt(adminEmail),
+      tools: assistantTools(env, adminEmail, betaTool, writeLog),
+      messages: [...assistantHistory(body.history), { role: 'user', content: message.slice(0, 10000) }],
+      max_iterations: ASSISTANT_MAX_ITERATIONS,
+    });
+
+    if (final.stop_reason === 'refusal') {
+      return json({ reply: "I can't help with that one.", writes: writeLog, refused: true }, 200, cors);
+    }
+    const reply = final.content
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('')
+      .trim();
+    await logAudit(env, adminEmail, 'assistant-query', { writes: writeLog.length });
+    return json(
+      {
+        reply: reply || 'I could not put together an answer for that.',
+        writes: writeLog,
+        // Surfaced so a silently-capped run is visible instead of looking like a
+        // complete answer that just stopped short.
+        truncated: final.stop_reason === 'max_tokens' || final.stop_reason === 'tool_use',
+      },
+      200,
+      cors
+    );
+  } catch (err) {
+    console.error('Assistant failed:', (err && err.stack) || err);
+    // Writes are not transactional — a tool may have already created something
+    // before the loop failed, so report what landed rather than implying none did.
+    return json({ error: 'The assistant failed: ' + (err && err.message), writes: writeLog }, 500, cors);
+  }
+}
+
 async function handleScheduled(env) {
   try {
     const result = await syncSharePointContacts(env);
@@ -2525,6 +2954,9 @@ export default {
       }
       if (url.pathname === '/api/admin/contacts' && request.method === 'GET') {
         return await handleAdminContacts(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/assistant' && request.method === 'POST') {
+        return await handleAdminAssistant(request, env, cors);
       }
       if (url.pathname === '/api/admin/contacts/sync' && request.method === 'POST') {
         const adminEmail = await getAdminEmail(request, env);
