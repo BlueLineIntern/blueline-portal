@@ -495,6 +495,95 @@ body .topbar, body .footer { display: none; }
 .module-card h2, .detail-section > h2, .detail-subsection { font-family: var(--font-sans); }
 
 /* ---------- Responsive ---------- */
+/* ---------- Home: activity workspace + right rail ---------- */
+
+.home-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: var(--sp-5);
+  align-items: start;
+}
+.rail { display: flex; flex-direction: column; gap: var(--sp-5); }
+.rail .panel { padding: 0; }
+.rail .panel-head { padding: var(--sp-3) var(--sp-4); margin: 0; border-bottom: 1px solid var(--border); }
+.rail .panel-head h2 { font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.rail-body { padding: var(--sp-2) var(--sp-4) var(--sp-3); }
+.rail-body .empty { padding: var(--sp-5) 0; text-align: center; }
+
+/* Note composer. The advisor names the client with an @mention, so a note can
+   be filed from Home without first navigating into the profile. */
+.composer { margin-bottom: var(--sp-5); position: relative; }
+.composer textarea {
+  width: 100%; resize: vertical; min-height: 46px;
+  font-family: var(--font-sans); font-size: var(--fs-base); line-height: var(--lh-base);
+  padding: var(--sp-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+}
+.composer textarea:focus { outline: none; border-color: var(--sky); box-shadow: var(--ring); }
+.composer-actions { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-2); }
+.composer-hint { font-size: var(--fs-xs); color: var(--muted); flex: 1; min-width: 0; }
+.composer-hint.err { color: var(--red); font-weight: var(--fw-semibold); }
+
+/* @mention autocomplete. Absolutely positioned so it overlays the feed rather
+   than reflowing it on every keystroke. */
+.mention-menu {
+  position: absolute; z-index: 40; left: var(--sp-3); right: var(--sp-3);
+  background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-md);
+  max-height: 232px; overflow-y: auto;
+}
+.mention-menu button {
+  display: block; width: 100%; text-align: left; border: none; background: none;
+  padding: var(--sp-2) var(--sp-3); font-family: var(--font-sans);
+  font-size: var(--fs-sm); color: var(--text); cursor: pointer;
+}
+.mention-menu button:hover, .mention-menu button.sel { background: var(--sky-bg); }
+.mention-menu .mm-sub { display: block; font-size: var(--fs-xs); color: var(--muted); }
+
+/* Feed. The icon tile encodes event KIND using the nominal hues — it must not
+   borrow the due-date traffic light, which means time. The one exception is
+   green for task-completed, where "resolved" is the same thing green already
+   means on an on-track due date. Nothing here uses amber or red. */
+.feed-item { display: flex; gap: var(--sp-3); padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); }
+.feed-item:last-child { border-bottom: none; }
+.feed-icon {
+  width: 26px; height: 26px; border-radius: var(--radius-sm); flex-shrink: 0;
+  display: grid; place-items: center; color: #fff; font-size: var(--fs-xs); line-height: 1;
+}
+.fi-task { background: var(--violet); }
+.fi-done { background: var(--green); }
+.fi-meeting { background: var(--teal); }
+.fi-note { background: var(--sky); }
+.fi-client { background: var(--slate); }
+.fi-milestone { background: var(--navy); }
+.feed-main { flex: 1; min-width: 0; }
+.feed-text { font-size: var(--fs-sm); line-height: var(--lh-base); }
+.feed-text .fq { color: var(--muted); }
+.feed-meta { font-size: var(--fs-xs); color: var(--muted); margin-top: 2px; }
+.feed-time { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+.feed-more { width: 100%; margin-top: var(--sp-4); }
+
+/* Rail rows: tasks, events, special dates. Denser than .row-item — the rail is
+   320px and these are glanceable, not workable. */
+.rail-row { display: flex; gap: var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
+.rail-row:last-child { border-bottom: none; }
+.rail-row .rr-main { flex: 1; min-width: 0; }
+.rail-row .rr-sub { font-size: var(--fs-xs); color: var(--muted); margin-top: 1px; }
+.rail-group { font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: 0.06em; text-transform: uppercase; color: var(--red); padding: var(--sp-3) 0 var(--sp-1); }
+.rail-group.soon { color: var(--amber); }
+.sd-when { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
+
+/* Sidebar recently-viewed */
+.sidebar-recent { padding: var(--sp-3) var(--sp-4) 0; }
+.sidebar-recent .sr-head { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em; color: rgba(255,255,255,0.45); margin-bottom: var(--sp-2); }
+.sidebar-recent a { display: block; color: rgba(255,255,255,0.72); font-size: var(--fs-sm); padding: var(--sp-1) 0; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-recent a:hover { color: #fff; }
+
+@media (max-width: 1100px) {
+  /* The rail's value is glanceability; below this it would be too narrow to
+     read, so it drops under the feed at full width instead. */
+  .home-cols { grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (max-width: 900px) {
   .shell { flex-direction: column; }
   .sidebar {
@@ -531,11 +620,19 @@ body .topbar, body .footer { display: none; }
   /* The signed-in address wraps to two lines at this width and isn't worth the
      space on a phone — the account is already implied by being signed in. */
   .sidebar-foot .who { display: none; }
+  /* Recently Viewed is a vertical list; in the collapsed horizontal bar it
+     would push the nav off-screen for the sake of a shortcut. Search covers it. */
+  .sidebar-recent { display: none; }
   .sidebar-foot button { width: auto; }
 
   .content { padding: var(--sp-5) var(--sp-4) 48px; }
   .field-row { grid-template-columns: 1fr; }
   .page-head { margin-bottom: var(--sp-5); }
+  /* auto-fit's 168px floor leaves room for only one column on a phone, so the
+     five tiles became five full-width rows of chrome above the feed. Two up. */
+  .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
+  .stat-tile { padding: var(--sp-3); }
+  .stat-tile .num { font-size: var(--fs-2xl); }
   .quick-add-row > * { min-width: 0; flex: 1 1 140px; }
 
   /* A row's inline controls sit beside its text on desktop. At this width the

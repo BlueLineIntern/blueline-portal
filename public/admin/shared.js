@@ -23,6 +23,9 @@ if (!SESSION) {
 
 function logoutLocal() {
   localStorage.removeItem(ADMIN_SESSION_KEY);
+  // Recently-viewed holds client names. On a shared machine those must not
+  // outlive the session, so they go with the token rather than lingering.
+  localStorage.removeItem('blueline_recent_contacts');
   location.replace('/admin.html');
 }
 
@@ -240,14 +243,87 @@ function duePill(task) {
   return `<span class="due ${d.pillClass}">${escapeHtml(d.text)}</span>`;
 }
 
+// `id` is the activePage key each page passes to initShell() — it is NOT the
+// display label, so the two renames below (Dashboard -> Home, Operations ->
+// Tasks) change only what the advisor reads. Ids and hrefs stay put so no page
+// loses its active state and no existing bookmark breaks.
 const NAV_ITEMS = [
-  { id: 'dashboard', href: '/admin/', icon: '⌂', label: 'Dashboard' },
+  { id: 'dashboard', href: '/admin/', icon: '⌂', label: 'Home' },
   { id: 'contacts', href: '/admin/contacts.html', icon: '☰', label: 'Contacts' },
-  { id: 'operations', href: '/admin/operations.html', icon: '▦', label: 'Operations' },
+  { id: 'operations', href: '/admin/operations.html', icon: '▦', label: 'Tasks' },
   { id: 'calendar', href: '/admin/calendar.html', icon: '▤', label: 'Calendar' },
   { id: 'onboarding', href: '/admin/onboarding.html', icon: '➔', label: 'Onboarding' },
   { id: 'settings', href: '/admin/settings.html', icon: '⚙', label: 'Settings' },
 ];
+
+// ---------- Recently viewed contacts ----------
+// The sidebar's "Recently Viewed" list. Stored per browser rather than per
+// account on the server: it's a navigation convenience, not shared state.
+// logoutLocal() clears it so it can't leak the client list on a shared machine.
+const RECENT_KEY = 'blueline_recent_contacts';
+const RECENT_MAX = 6;
+
+function getRecentContacts() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+    return Array.isArray(raw) ? raw.filter((r) => r && r.email) : [];
+  } catch {
+    return []; // corrupt entry shouldn't break the shell
+  }
+}
+
+function recordRecentContact(email, name) {
+  if (!email) return;
+  try {
+    const list = getRecentContacts().filter((r) => r.email !== email);
+    list.unshift({ email, name: name || email });
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX)));
+  } catch { /* private mode / quota — the rail just stays empty */ }
+}
+
+// ---------- Activity feed presentation ----------
+// The tile colour and glyph encode the KIND of event (task, meeting, note,
+// client milestone). This is deliberately a separate vocabulary from the
+// due-date traffic light, which means time — see the palette note in
+// tokens.css. Nothing here reuses green/amber/red for urgency.
+const ACTIVITY_KIND = {
+  'task-added': { icon: '✓', cls: 'fi-task' },
+  'task-completed': { icon: '✓', cls: 'fi-done' },
+  'meeting-added': { icon: '▤', cls: 'fi-meeting' },
+  'meeting-held': { icon: '▤', cls: 'fi-meeting' },
+  'note-added': { icon: '✎', cls: 'fi-note' },
+  'account-created': { icon: '☺', cls: 'fi-client' },
+  'login': { icon: '→', cls: 'fi-client' },
+  'assessment-completed': { icon: '◆', cls: 'fi-client' },
+  'assessment-updated': { icon: '◆', cls: 'fi-client' },
+  'onboarding-completed': { icon: '★', cls: 'fi-milestone' },
+  'agreement-signed': { icon: '★', cls: 'fi-milestone' },
+  'assignments-changed': { icon: '⚙', cls: 'fi-client' },
+};
+function activityKind(type) {
+  return ACTIVITY_KIND[type] || { icon: '•', cls: 'fi-client' };
+}
+
+// Next annual recurrence of a stored important date, in days from today.
+// importantDates hold a full date ("1975-04-12"); birthdays and anniversaries
+// both recur yearly, so only month/day matter. Returns null for an unparseable
+// entry rather than throwing — these are free-typed by the advisor.
+function nextAnniversary(dateStr, from = new Date()) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateStr || '').trim());
+  if (!m) return null;
+  const month = Number(m[2]) - 1;
+  const day = Number(m[3]);
+  if (month < 0 || month > 11 || day < 1 || day > 31) return null;
+  const today = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  let next = new Date(today.getFullYear(), month, day);
+  // Feb 29 in a common year rolls into Mar 1; accept that rather than skipping.
+  if (next.getMonth() !== month) next = new Date(today.getFullYear(), month + 1, 0);
+  if (next < today) {
+    next = new Date(today.getFullYear() + 1, month, day);
+    if (next.getMonth() !== month) next = new Date(today.getFullYear() + 1, month + 1, 0);
+  }
+  return { date: next, days: Math.round((next - today) / 86400000), year: Number(m[1]) };
+}
 
 // Friendly display name for a staff/assignee email. Keeps board columns and
 // task chips readable ("Frank" not "fsabin@…"). Falls back to a capitalized
@@ -272,6 +348,23 @@ function staffLabel(id) {
   return local.charAt(0).toUpperCase() + local.slice(1);
 }
 
+// Renders nothing at all until the advisor has actually opened a profile —
+// an empty "Recently Viewed" heading is pure noise on a fresh install.
+function recentSidebarHtml() {
+  const recent = getRecentContacts();
+  if (!recent.length) return '';
+  return `
+    <div class="sidebar-recent">
+      <div class="sr-head">Recently Viewed</div>
+      ${recent
+        .map(
+          (r) =>
+            `<a href="/admin/contacts.html?c=${encodeURIComponent(r.email)}" title="${escapeHtml(r.email)}">${escapeHtml(r.name || r.email)}</a>`
+        )
+        .join('')}
+    </div>`;
+}
+
 // Builds the sidebar into #sidebar-root and wires logout, the global search
 // palette (Ctrl/Cmd-K), and the notification bell. Call once per page.
 function initShell(activePage) {
@@ -289,6 +382,7 @@ function initShell(activePage) {
         `<a href="${n.href}" class="${n.id === activePage ? 'active' : ''}"><span class="nav-icon">${n.icon}</span>${n.label}</a>`
       ).join('')}
     </nav>
+    ${recentSidebarHtml()}
     <div class="sidebar-notif">
       <button type="button" id="shell-notif-btn"><span class="nav-icon">🔔</span>Notifications<span class="notif-badge hidden" id="notif-badge"></span></button>
     </div>

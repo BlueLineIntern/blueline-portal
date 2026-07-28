@@ -4,24 +4,23 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
-<title>Dashboard — BlueLine Admin</title>
+<title>Home — BlueLine Admin</title>
 <link rel="stylesheet" href="/admin/shared.css" />
 <style>
-  .queue-row { display: flex; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-5); }
+  .queue-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
   .queue-chip {
     display: inline-flex; align-items: center; gap: var(--sp-2); text-decoration: none;
-    padding: var(--sp-2) 14px; border-radius: var(--radius-pill); border: 1px solid var(--border);
-    background: var(--panel); color: var(--text); font-size: var(--fs-sm); font-weight: var(--fw-semibold);
-    box-shadow: var(--shadow);
+    padding: var(--sp-1) var(--sp-3); border-radius: var(--radius-pill); border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font-size: var(--fs-xs); font-weight: var(--fw-semibold);
   }
   .queue-chip:hover { border-color: var(--sky); text-decoration: none; }
-  .queue-chip .qc-count { background: var(--navy); color: #fff; border-radius: var(--radius-pill); padding: 1px var(--sp-2); font-size: var(--fs-xs); font-weight: var(--fw-bold); }
+  .queue-chip .qc-count { background: var(--navy); color: #fff; border-radius: var(--radius-pill); padding: 1px var(--sp-2); font-size: var(--fs-2xs); font-weight: var(--fw-bold); }
   .queue-chip.zero { opacity: 0.55; }
   .queue-chip.zero .qc-count { background: var(--gray-bg); color: var(--muted); }
-  .task-check { width: 18px; height: 18px; accent-color: var(--sky); cursor: pointer; margin-top: 2px; flex-shrink: 0; }
-  .alert-item { display: flex; gap: var(--sp-3); padding: var(--sp-2) 2px; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); align-items: flex-start; }
+  .task-check { width: 16px; height: 16px; accent-color: var(--sky); cursor: pointer; margin-top: 2px; flex-shrink: 0; }
+  .alert-item { display: flex; gap: var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); align-items: flex-start; }
   .alert-item:last-child { border-bottom: none; }
-  .alert-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
+  .alert-dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -30,7 +29,7 @@
   <main class="content">
     <div class="page-head">
       <div>
-        <h1 id="dash-greeting">Dashboard</h1>
+        <h1 id="dash-greeting">Home</h1>
         <p class="sub" id="dash-date"></p>
       </div>
       <div class="page-actions">
@@ -40,36 +39,53 @@
     </div>
 
     <div class="stat-tiles" id="stat-tiles"></div>
-    <div class="queue-row" id="queue-row"></div>
 
-    <div class="widget-grid">
-      <div class="panel">
-        <div class="panel-head"><h2>Operations</h2><a class="panel-link" href="/admin/operations.html">Open board →</a></div>
-        <div class="row-list" id="w-ops"></div>
+    <div class="home-cols">
+      <!-- Left: compose a note, then the firm-wide activity stream -->
+      <div>
+        <div class="panel">
+          <div class="composer">
+            <textarea id="composer-text" rows="2" placeholder="@Mention a contact to add a note"></textarea>
+            <div class="mention-menu hidden" id="mention-menu"></div>
+            <div class="composer-actions">
+              <span class="composer-hint" id="composer-hint">Type @ to attach this note to a contact.</span>
+              <button type="button" class="btn btn-primary btn-small" id="composer-post">Post</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Workspace</h2>
+            <span class="panel-status" id="feed-status"></span>
+          </div>
+          <div id="feed"></div>
+          <button type="button" class="btn btn-ghost btn-small feed-more hidden" id="feed-more">Load older activity</button>
+        </div>
       </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Today's Tasks</h2><a class="panel-link" href="/admin/tasks.html?f=today">View →</a></div>
-        <div class="row-list" id="w-today"></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Overdue</h2><a class="panel-link" href="/admin/tasks.html?f=overdue">View →</a></div>
-        <div class="row-list" id="w-overdue"></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Upcoming Meetings</h2><a class="panel-link" href="/admin/calendar.html">Calendar →</a></div>
-        <div class="row-list" id="w-meetings"></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Waiting for Review</h2><a class="panel-link" href="/admin/tasks.html?cat=review">View →</a></div>
-        <div class="row-list" id="w-review"></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Recent Client Activity</h2><a class="panel-link" href="/admin/contacts.html">Contacts →</a></div>
-        <div class="row-list" id="w-activity"></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Compliance Alerts</h2><a class="panel-link" href="/admin/settings.html">Settings →</a></div>
-        <div id="w-alerts"></div>
+
+      <!-- Right rail: what needs attention, glanceable -->
+      <div class="rail">
+        <div class="panel">
+          <div class="panel-head"><h2>Events</h2><a class="panel-link" href="/admin/calendar.html">Calendar →</a></div>
+          <div class="rail-body" id="r-events"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Tasks</h2><a class="panel-link" href="/admin/operations.html">All tasks →</a></div>
+          <div class="rail-body" id="r-tasks"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Queues</h2></div>
+          <div class="rail-body"><div class="queue-row" id="r-queues"></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Special Dates</h2><span class="panel-status">next 30 days</span></div>
+          <div class="rail-body" id="r-dates"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Compliance</h2><a class="panel-link" href="/admin/settings.html">Settings →</a></div>
+          <div class="rail-body" id="r-alerts"></div>
+        </div>
       </div>
     </div>
   </main>
@@ -89,10 +105,13 @@
 
   const ALL_KEYS_HINT = 18; // 17 modules + wizard; used only for progress text
 
-  // isSameLocalDay / duePill / prioRailClass / categoryBadge all come from shared.js.
+  // isSameLocalDay / duePill / prioRailClass / categoryBadge / activityKind /
+  // nextAnniversary / staffLabel / TL_LABELS all come from shared.js.
 
-  // `danger` marks a problem count (overdue, stalled): the .alert class turns the
-  // figure red via shared.css rather than an inline colour.
+  let contactsCache = [];      // for the @mention picker and feed name lookups
+  let feedCursor = null;       // server cursor for the next older page
+  let feedExtra = [];          // entries pulled by "Load older activity"
+
   function tile(num, label, href, danger) {
     const cls = `stat-tile${danger ? ' alert' : ''}`;
     const inner = `<div class="num">${num}</div><div class="lbl">${escapeHtml(label)}</div>`;
@@ -103,24 +122,213 @@
     return `<a class="queue-chip ${count ? '' : 'zero'}" href="${href}"><span class="qc-count">${count}</span>${escapeHtml(label)}</a>`;
   }
 
-  function taskRow(t, contacts) {
-    const c = contacts.find((x) => x.email === t.client);
-    const clientBit = t.client
-      ? ` · <a href="/admin/contacts.html?c=${encodeURIComponent(t.client)}">${escapeHtml((c && c.name) || t.client)}</a>`
-      : '';
-    // Priority rides the leading rail; the due date carries the only hue in the row.
-    return `<div class="row-item ${prioRailClass(t.priority)}">
-      <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" title="Mark complete" />
-      <div class="row-main">
-        <div class="row-title">${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
-        <div class="row-sub">${duePill(t)}${t.category ? ' ' + categoryBadge(t.category) : ''}${t.priority ? ` <span class="prio-label">${escapeHtml(t.priority)}</span>` : ''}${clientBit} · ${t.assignee ? escapeHtml(t.assignee.split('@')[0]) : 'unassigned'}</div>
-      </div>
-    </div>`;
-  }
-
   function fill(id, html, emptyText) {
     document.getElementById(id).innerHTML = html || `<p class="empty">${emptyText}</p>`;
   }
+
+  function contactName(email) {
+    const c = contactsCache.find((x) => x.email === email);
+    return (c && c.name) || email || '';
+  }
+
+  function clientLink(email) {
+    if (!email) return '';
+    return `<a href="/admin/contacts.html?c=${encodeURIComponent(email)}">${escapeHtml(contactName(email))}</a>`;
+  }
+
+  // ---------- Activity feed ----------
+
+  // Phrased as a sentence about the record, matching how the timeline reads:
+  // "<what>, related to <client>, <verb> by <staff>".
+  function feedItem(e) {
+    const kind = activityKind(e.type);
+    const d = e.detail || {};
+    // Trailing comma belongs to the clause, so it disappears with it on an
+    // entry that has no client ("Title is a task created by X").
+    const rel = e.client ? `, related to ${clientLink(e.client)},` : '';
+    const actor = e.actor && e.actor !== 'client' && e.actor !== 'system' ? staffLabel(e.actor) : null;
+    const by = actor ? ` by <strong>${escapeHtml(actor)}</strong>` : '';
+    const title = escapeHtml(d.title || '(untitled)');
+    let text;
+    let meta = '';
+
+    switch (e.type) {
+      case 'note-added': {
+        const body = String(d.body || '').trim();
+        text = `A <span class="fq">note</span>${rel} was added${by}`;
+        meta = body.length > 200 ? `${escapeHtml(body.slice(0, 200))}…` : escapeHtml(body);
+        break;
+      }
+      case 'task-added':
+        text = `<strong>${title}</strong>${rel} is a task created${by}`;
+        break;
+      case 'task-completed':
+        text = `<strong>${title}</strong>${rel} has been completed${by}`;
+        break;
+      case 'meeting-added':
+        text = `<strong>${title}</strong>${rel} is a meeting scheduled${by}`;
+        break;
+      case 'meeting-held':
+        text = `<strong>${title}</strong>${rel} was held`;
+        break;
+      default: {
+        const label = TL_LABELS[e.type] || e.type;
+        text = `${clientLink(e.client) || 'Someone'} ${escapeHtml(label)}`;
+        const extra = d.module || d.onboardingId;
+        if (extra) meta = escapeHtml(extra);
+      }
+    }
+
+    return `<div class="feed-item">
+      <div class="feed-icon ${kind.cls}">${kind.icon}</div>
+      <div class="feed-main">
+        <div class="feed-text">${text}</div>
+        ${meta ? `<div class="feed-meta">${meta}</div>` : ''}
+      </div>
+      <div class="feed-time">${escapeHtml(relTime(e.ts))}</div>
+    </div>`;
+  }
+
+  function renderFeed(entries) {
+    const all = entries.concat(feedExtra);
+    fill('feed', all.map(feedItem).join(''), 'No activity yet. Notes, tasks and client milestones appear here.');
+    document.getElementById('feed-more').classList.toggle('hidden', !feedCursor);
+  }
+
+  document.getElementById('feed-more').addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    if (!feedCursor) return;
+    btn.disabled = true;
+    btn.textContent = 'Loading…';
+    try {
+      const page = await api(`/api/admin/activity?cursor=${encodeURIComponent(feedCursor)}`);
+      feedExtra = feedExtra.concat(page.entries || []);
+      feedCursor = page.cursor || null;
+      load();
+    } catch (err) {
+      document.getElementById('feed-status').textContent = `Could not load more: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Load older activity';
+    }
+  });
+
+  // ---------- @mention composer ----------
+
+  const textEl = document.getElementById('composer-text');
+  const menuEl = document.getElementById('mention-menu');
+  const hintEl = document.getElementById('composer-hint');
+  let mentioned = null;   // {email, name} chosen from the picker
+  let menuMatches = [];
+  let menuIndex = 0;
+
+  function setHint(msg, isErr) {
+    hintEl.textContent = msg;
+    hintEl.classList.toggle('err', !!isErr);
+  }
+
+  function closeMenu() {
+    menuEl.classList.add('hidden');
+    menuMatches = [];
+  }
+
+  // The active @token is the one immediately left of the caret. Anchoring to the
+  // caret (not the last @ in the string) keeps the picker correct when the
+  // advisor goes back and edits a mention mid-sentence.
+  function activeMentionQuery() {
+    const pos = textEl.selectionStart;
+    const upto = textEl.value.slice(0, pos);
+    const at = upto.lastIndexOf('@');
+    if (at === -1) return null;
+    const frag = upto.slice(at + 1);
+    if (/[\n]/.test(frag)) return null;
+    return { at, query: frag };
+  }
+
+  function renderMenu() {
+    if (!menuMatches.length) return closeMenu();
+    menuEl.innerHTML = menuMatches
+      .map(
+        (c, i) =>
+          `<button type="button" data-i="${i}" class="${i === menuIndex ? 'sel' : ''}">${escapeHtml(c.name || c.email)}<span class="mm-sub">${escapeHtml(c.email)}</span></button>`
+      )
+      .join('');
+    menuEl.classList.remove('hidden');
+  }
+
+  function pick(i) {
+    const c = menuMatches[i];
+    if (!c) return;
+    const m = activeMentionQuery();
+    if (!m) return;
+    const pos = textEl.selectionStart;
+    const label = c.name || c.email;
+    textEl.value = `${textEl.value.slice(0, m.at)}@${label} ${textEl.value.slice(pos)}`;
+    mentioned = { email: c.email, name: label };
+    closeMenu();
+    textEl.focus();
+    setHint(`This note will be filed to ${label}.`);
+  }
+
+  textEl.addEventListener('input', () => {
+    // A mention only counts while its label is still present in the text — if
+    // the advisor deletes it, the note loses its target rather than silently
+    // filing to a contact whose name is no longer on screen.
+    if (mentioned && !textEl.value.includes(`@${mentioned.name}`)) {
+      mentioned = null;
+      setHint('Type @ to attach this note to a contact.');
+    }
+    const m = activeMentionQuery();
+    if (!m) return closeMenu();
+    const q = m.query.trim().toLowerCase();
+    menuMatches = contactsCache
+      .filter((c) => !c.archived)
+      .filter((c) => !q || (c.name || '').toLowerCase().includes(q) || c.email.toLowerCase().includes(q))
+      .slice(0, 6);
+    menuIndex = 0;
+    renderMenu();
+  });
+
+  textEl.addEventListener('keydown', (ev) => {
+    if (menuEl.classList.contains('hidden')) return;
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); menuIndex = (menuIndex + 1) % menuMatches.length; renderMenu(); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); menuIndex = (menuIndex - 1 + menuMatches.length) % menuMatches.length; renderMenu(); }
+    else if (ev.key === 'Enter' || ev.key === 'Tab') { ev.preventDefault(); pick(menuIndex); }
+    else if (ev.key === 'Escape') { closeMenu(); }
+  });
+
+  menuEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-i]');
+    if (btn) pick(Number(btn.dataset.i));
+  });
+
+  document.addEventListener('click', (ev) => {
+    if (!menuEl.contains(ev.target) && ev.target !== textEl) closeMenu();
+  });
+
+  document.getElementById('composer-post').addEventListener('click', async (ev) => {
+    const body = textEl.value.trim();
+    if (!body) return setHint('Write something first.', true);
+    if (!mentioned) return setHint('Mention a contact with @ so the note has somewhere to file.', true);
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      await api('/api/admin/notes', {
+        method: 'POST',
+        body: JSON.stringify({ client: mentioned.email, body }),
+      });
+      textEl.value = '';
+      mentioned = null;
+      setHint('Note posted.');
+      load();
+    } catch (err) {
+      setHint(`Could not post: ${err.message}`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ---------- Load ----------
 
   async function load() {
     try {
@@ -131,28 +339,73 @@
         api('/api/admin/onboarding').catch(() => ({ records: [] })),
         api('/api/admin/admins').catch(() => ({ admins: [] })),
       ]);
-      // Archived contacts are hidden from every dashboard count, alert, and queue.
+      // Archived contacts are hidden from every count, queue and alert.
       const contacts = (contactData.contacts || []).filter((c) => !c.archived);
-      const tasks = (taskData.tasks || []).filter((t) => t.status === 'open');
-      const activity = actData.entries || [];
+      contactsCache = contacts;
+      const openTasks = (taskData.tasks || []).filter((t) => t.status === 'open');
       const onbs = (onbData.records || []).filter((r) => !r.deleted);
       const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
       // ----- Stat tiles -----
       const byStatus = (s) => contacts.filter((c) => c.status === s).length;
-      const dueToday = tasks.filter((t) => t.due && isSameLocalDay(new Date(t.due), now));
-      const overdue = tasks.filter((t) => t.due && new Date(t.due) < now && !isSameLocalDay(new Date(t.due), now));
+      const dueToday = openTasks.filter((t) => t.due && isSameLocalDay(new Date(t.due), now));
+      const overdue = openTasks.filter((t) => t.due && new Date(t.due) < now && !isSameLocalDay(new Date(t.due), now));
       document.getElementById('stat-tiles').innerHTML = [
         tile(byStatus('active'), 'Active Clients', '/admin/contacts.html'),
         tile(byStatus('prospect'), 'Prospects', '/admin/contacts.html'),
         tile(byStatus('onboarding'), 'Onboarding', '/admin/contacts.html'),
-        tile(dueToday.length, 'Tasks Due Today', '/admin/tasks.html?f=today'),
-        tile(overdue.length, 'Overdue', '/admin/tasks.html?f=overdue', overdue.length > 0),
+        tile(dueToday.length, 'Due Today', '/admin/operations.html?filter=today'),
+        tile(overdue.length, 'Overdue', '/admin/operations.html?filter=overdue', overdue.length > 0),
       ].join('');
 
-      // ----- Work queues -----
-      const reviewTasks = tasks.filter((t) => t.category === 'review');
-      const onbTasks = tasks.filter((t) => t.category === 'onboarding');
+      // ----- Feed (page 1 from the server, plus anything paged in) -----
+      feedCursor = actData.cursor || null;
+      renderFeed(actData.entries || []);
+
+      // ----- Events: meetings in the next 7 days -----
+      const meetings = openTasks
+        .filter((t) => t.category === 'meeting' && t.due)
+        .filter((t) => {
+          const d = new Date(t.due);
+          return !isNaN(d) && d >= startOfToday && d - startOfToday < 7 * 86400e3;
+        })
+        .sort((a, b) => new Date(a.due) - new Date(b.due));
+      fill(
+        'r-events',
+        meetings
+          .map((m) => {
+            const d = new Date(m.due);
+            const when = String(m.due).includes('T')
+              ? d.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+              : d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+            return `<a class="rail-row" style="text-decoration:none;color:inherit" href="/admin/calendar.html?task=${encodeURIComponent(m.id)}&view=day&date=${escapeHtml(String(m.due).slice(0, 10))}">
+              <div class="rr-main">
+                <div>${escapeHtml(m.title)}</div>
+                <div class="rr-sub">${m.client ? escapeHtml(contactName(m.client)) : 'Internal'} · ${escapeHtml(when)}</div>
+              </div>
+            </a>`;
+          })
+          .join(''),
+        'No events in the next 7 days.'
+      );
+
+      // ----- Tasks: overdue first, then today. Checkbox completes in place. -----
+      const railTask = (t) => `<div class="rail-row ${prioRailClass(t.priority)}">
+        <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" title="Mark complete" />
+        <div class="rr-main">
+          <div>${escapeHtml(t.title)}</div>
+          <div class="rr-sub">${t.category ? categoryBadge(t.category) + ' ' : ''}${t.client ? 'related to ' + clientLink(t.client) : 'internal'}</div>
+        </div>
+      </div>`;
+      const taskHtml =
+        (overdue.length ? `<div class="rail-group">Overdue</div>` + overdue.slice(0, 8).map(railTask).join('') : '') +
+        (dueToday.length ? `<div class="rail-group soon">Due today</div>` + dueToday.slice(0, 8).map(railTask).join('') : '');
+      fill('r-tasks', taskHtml, 'Nothing overdue or due today.');
+
+      // ----- Queues -----
+      const reviewTasks = openTasks.filter((t) => t.category === 'review');
+      const onbTasks = openTasks.filter((t) => t.category === 'onboarding');
       const unsigned = onbs.filter((r) => r.completionTime && !(r.data && r.data.agreement && r.data.agreement.signatureDataUrl));
       const waitingOnClient = contacts.filter((c) => {
         if (!c.hasAccount) return false;
@@ -160,76 +413,39 @@
         const totalCount = c.assignments == null ? ALL_KEYS_HINT : c.assignments.length;
         return doneCount < totalCount;
       });
-      document.getElementById('queue-row').innerHTML = [
-        chip(reviewTasks.length, 'Assessments to review', '/admin/tasks.html?cat=review'),
-        chip(onbTasks.length, 'Onboarding to review', '/admin/tasks.html?cat=onboarding'),
-        chip(unsigned.length, 'Unsigned agreements', '/admin/onboarding.html'),
+      document.getElementById('r-queues').innerHTML = [
+        chip(reviewTasks.length, 'Assessments', '/admin/operations.html?cat=review'),
+        chip(onbTasks.length, 'Onboarding', '/admin/operations.html?cat=onboarding'),
+        chip(unsigned.length, 'Unsigned', '/admin/onboarding.html'),
         chip(waitingOnClient.length, 'Waiting on client', '/admin/contacts.html'),
-        chip(overdue.length, 'Overdue tasks', '/admin/tasks.html?f=overdue'),
       ].join('');
 
-      // ----- Widgets -----
-      const meetings = tasks
-        .filter((t) => t.category === 'meeting' && t.due && new Date(t.due) >= new Date(now.getFullYear(), now.getMonth(), now.getDate()))
-        .sort((a, b) => new Date(a.due) - new Date(b.due));
-      fill('w-today', dueToday.map((t) => taskRow(t, contacts)).join(''), 'Nothing due today.');
-      fill('w-overdue', overdue.map((t) => taskRow(t, contacts)).join(''), 'Nothing overdue. Well done.');
-
-      // Upcoming meeting rows carry prep progress, missing docs, and the client's
-      // open-task count so the advisor sees readiness at a glance.
-      const meetingRow = (m) => {
-        const d = new Date(m.due);
-        const timeStr = String(m.due).includes('T')
-          ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-          : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-        const cObj = contacts.find((x) => x.email === m.client);
-        const who = m.client ? escapeHtml((cObj && cObj.name) || m.client) : 'Internal';
-        const cl = Array.isArray(m.checklist) ? m.checklist : [];
-        const done = cl.filter((c) => c.done).length;
-        const openForClient = m.client ? tasks.filter((t) => t.client === m.client && t.id !== m.id && t.status === 'open').length : 0;
-        const bits = [];
-        if (cl.length) bits.push(done === cl.length ? '<span class="badge badge-green">prep ready</span>' : `<span class="badge badge-red">${done}/${cl.length} prep</span>`);
-        if (openForClient) bits.push(`${openForClient} open task${openForClient > 1 ? 's' : ''}`);
-        return `<a class="row-item" style="text-decoration:none;color:inherit" href="/admin/calendar.html?task=${encodeURIComponent(m.id)}&view=day&date=${escapeHtml(String(m.due).slice(0, 10))}">
-          <div class="row-main">
-            <div class="row-title">${escapeHtml(m.title)}</div>
-            <div class="row-sub">${who} · ${escapeHtml(timeStr)}${bits.length ? ' · ' + bits.join(' · ') : ''}</div>
-          </div>
-        </a>`;
-      };
-      fill('w-meetings', meetings.slice(0, 6).map(meetingRow).join(''), 'No meetings scheduled — add one in the Calendar.');
-      fill('w-review', reviewTasks.concat(onbTasks).slice(0, 6).map((t) => taskRow(t, contacts)).join(''), 'Nothing waiting for review.');
-
-      // ----- Operations widget: quick pulse into the board -----
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const myToday = dueToday.filter((t) => t.assignee === SESSION.email);
-      const dueThisWeek = tasks.filter((t) => {
-        if (!t.due) return false;
-        const d = new Date(t.due);
-        return !isNaN(d) && d >= startOfToday && d - startOfToday < 7 * 86400e3;
+      // ----- Special dates: annual recurrences inside the next 30 days -----
+      const upcoming = [];
+      contacts.forEach((c) => {
+        (c.importantDates || []).forEach((d) => {
+          const next = nextAnniversary(d.date, now);
+          if (next && next.days <= 30) upcoming.push({ contact: c, label: d.label, next });
+        });
       });
-      const opsRow = (label, count, filter, danger) =>
-        `<a class="row-item" style="text-decoration:none;color:inherit" href="/admin/operations.html?filter=${filter}">
-          <div class="row-main"><div class="row-title">${escapeHtml(label)}</div></div>
-          <div class="row-side"><span class="badge ${danger && count ? 'badge-red' : 'badge-gray'}">${count}</span></div>
-        </a>`;
-      document.getElementById('w-ops').innerHTML =
-        opsRow('My tasks today', myToday.length, 'today') +
-        opsRow('Overdue tasks', overdue.length, 'overdue', true) +
-        opsRow('Due this week', dueThisWeek.length, 'week');
-
-      fill('w-activity', activity.slice(0, 8).map((e) => {
-        const c = contacts.find((x) => x.email === e.client);
-        const label = TL_LABELS[e.type] || e.type;
-        const extra = e.detail && (e.detail.module || e.detail.onboardingId || e.detail.title);
-        return `<div class="row-item">
-          <div class="row-main">
-            <div class="row-title"><a href="/admin/contacts.html?c=${encodeURIComponent(e.client)}">${escapeHtml((c && c.name) || e.client)}</a></div>
-            <div class="row-sub">${escapeHtml(label)}${extra ? ` (${escapeHtml(extra)})` : ''}</div>
-          </div>
-          <div class="row-side"><span class="cell-missing">${escapeHtml(relTime(e.ts))}</span></div>
-        </div>`;
-      }).join(''), 'No client activity yet.');
+      upcoming.sort((a, b) => a.next.days - b.next.days);
+      fill(
+        'r-dates',
+        upcoming
+          .map((u) => {
+            const when = u.next.days === 0 ? 'Today' : u.next.days === 1 ? 'Tomorrow'
+              : u.next.date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+            return `<a class="rail-row" style="text-decoration:none;color:inherit" href="/admin/contacts.html?c=${encodeURIComponent(u.contact.email)}">
+              <div class="rr-main">
+                <div>${escapeHtml(u.contact.name || u.contact.email)}</div>
+                <div class="rr-sub">${escapeHtml(u.label || 'Date')}</div>
+              </div>
+              <span class="sd-when">${escapeHtml(when)}</span>
+            </a>`;
+          })
+          .join(''),
+        'No dates in the next 30 days.'
+      );
 
       // ----- Compliance alerts (rule-based) -----
       const alerts = [];
@@ -256,13 +472,13 @@
           });
         }
       });
-      fill('w-alerts', alerts.map((a) => `
+      fill('r-alerts', alerts.map((a) => `
         <a class="alert-item" style="text-decoration:none;color:inherit" href="${a.href}">
           <span class="alert-dot" style="background:var(--${a.level === 'red' ? 'red' : 'amber'})"></span>
           <span>${escapeHtml(a.text)}</span>
         </a>`).join(''), 'No compliance alerts. All clear.');
 
-      // Complete-from-dashboard checkboxes
+      // Complete-from-home checkboxes
       document.querySelectorAll('.task-check').forEach((cb) =>
         cb.addEventListener('change', async () => {
           document.getElementById('dash-status').textContent = '';
@@ -283,12 +499,20 @@
         })
       );
     } catch (err) {
-      document.getElementById('w-activity').innerHTML = `<p class="empty">Failed to load: ${escapeHtml(err.message)}</p>`;
+      document.getElementById('feed').innerHTML = `<p class="empty">Failed to load: ${escapeHtml(err.message)}</p>`;
     }
   }
 
-  document.getElementById('dash-refresh').addEventListener('click', load);
-  setInterval(load, 30000);
+  document.getElementById('dash-refresh').addEventListener('click', () => {
+    feedExtra = []; // an explicit refresh collapses back to the newest page
+    load();
+  });
+  // Don't let the background poll yank the feed out from under someone who is
+  // reading paged-in history or mid-sentence in the composer.
+  setInterval(() => {
+    if (feedExtra.length || textEl.value.trim()) return;
+    load();
+  }, 30000);
   load();
 </script>
 </body>

@@ -449,6 +449,10 @@
     activeTab = 'overview';
     editingNoteId = null;
     history.replaceState(null, '', `?c=${encodeURIComponent(email)}`);
+    // Feeds the sidebar's Recently Viewed list (see shared.js). Recorded with
+    // the display name so the rail doesn't have to re-fetch contacts to render.
+    const rc = allContacts.find((c) => c.email === email);
+    recordRecentContact(email, rc && rc.name);
     renderProfile();
     document.getElementById('list-view').classList.add('hidden');
     document.getElementById('profile-view').classList.remove('hidden');
