@@ -43,13 +43,141 @@
     <div class="home-cols">
       <!-- Left: compose a note, then the firm-wide activity stream -->
       <div>
-        <div class="panel">
-          <div class="composer">
-            <textarea id="composer-text" rows="2" placeholder="@Mention a contact to add a note"></textarea>
-            <div class="mention-menu hidden" id="mention-menu"></div>
+        <div class="panel composer-panel">
+          <div class="composer-tabs" id="composer-tabs">
+            <button type="button" data-tab="update" class="active">Update</button>
+            <button type="button" data-tab="task">Task</button>
+            <button type="button" data-tab="event">Event</button>
+          </div>
+
+          <!-- Update: the @mention note composer -->
+          <div class="composer-pane" id="pane-update">
+            <div class="composer">
+              <textarea id="composer-text" rows="2" placeholder="@Mention a contact to add a note"></textarea>
+              <div class="mention-menu hidden" id="mention-menu"></div>
+              <div class="composer-actions">
+                <span class="composer-hint" id="composer-hint">Type @ to attach this note to a contact.</span>
+                <button type="button" class="btn btn-primary btn-small" id="composer-post">Post</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Task -->
+          <div class="composer-pane hidden" id="pane-task">
+            <div class="cf-field">
+              <label for="t-title">Task Name</label>
+              <input type="text" id="t-title" />
+            </div>
+            <div class="cf-check">
+              <input type="checkbox" id="t-repeats" />
+              <label for="t-repeats">Repeats?</label>
+              <select id="t-repeat" class="hidden">
+                <option value="daily">Daily</option>
+                <option value="weekly" selected>Weekly</option>
+                <option value="biweekly">Every 2 weeks</option>
+                <option value="monthly">Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="yearly">Yearly</option>
+              </select>
+            </div>
+            <div class="cf-field">
+              <label for="t-duequick">Due</label>
+              <div class="cf-inline">
+                <select id="t-duequick">
+                  <option value="today" selected>Today</option>
+                  <option value="tomorrow">Tomorrow</option>
+                  <option value="week">In a week</option>
+                  <option value="none">No due date</option>
+                  <option value="custom">Set date/time…</option>
+                </select>
+                <input type="datetime-local" id="t-due" class="hidden" />
+              </div>
+            </div>
+            <div class="cf-field">
+              <label for="t-assignee">Assign</label>
+              <select id="t-assignee"></select>
+            </div>
+            <div class="cf-field">
+              <label for="t-priority">Priority</label>
+              <select id="t-priority"></select>
+            </div>
+            <div class="cf-field">
+              <label for="t-category">Category</label>
+              <select id="t-category"></select>
+            </div>
+            <div class="cf-field">
+              <label for="t-client">Related To</label>
+              <select id="t-client"></select>
+            </div>
+            <div class="cf-field">
+              <label for="t-description">Description</label>
+              <textarea id="t-description" rows="3" placeholder="Enter details here"></textarea>
+            </div>
             <div class="composer-actions">
-              <span class="composer-hint" id="composer-hint">Type @ to attach this note to a contact.</span>
-              <button type="button" class="btn btn-primary btn-small" id="composer-post">Post</button>
+              <span class="composer-hint" id="t-hint"></span>
+              <button type="button" class="btn btn-primary btn-small" id="t-save">Save Task</button>
+            </div>
+          </div>
+
+          <!-- Event -->
+          <div class="composer-pane hidden" id="pane-event">
+            <div class="cf-field">
+              <label for="e-title">Event Name</label>
+              <input type="text" id="e-title" />
+            </div>
+            <div class="cf-field">
+              <label for="e-category">Category</label>
+              <select id="e-category"></select>
+            </div>
+            <div class="cf-field">
+              <label for="e-start">Date</label>
+              <div class="cf-inline">
+                <input type="date" id="e-start" />
+                <input type="time" id="e-startTime" />
+                <span class="cf-to">to</span>
+                <input type="date" id="e-end" />
+                <input type="time" id="e-endTime" />
+              </div>
+            </div>
+            <div class="cf-check">
+              <input type="checkbox" id="e-allday" />
+              <label for="e-allday">All day?</label>
+            </div>
+            <div class="cf-check">
+              <input type="checkbox" id="e-repeats" />
+              <label for="e-repeats">Repeats?</label>
+              <select id="e-repeat" class="hidden">
+                <option value="daily">Daily</option>
+                <option value="weekly" selected>Weekly</option>
+                <option value="biweekly">Every 2 weeks</option>
+                <option value="monthly">Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="yearly">Yearly</option>
+              </select>
+            </div>
+            <div class="cf-field">
+              <label for="e-status">Status</label>
+              <select id="e-status">
+                <option value="unconfirmed" selected>Unconfirmed</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div class="cf-field">
+              <label for="e-location">Location</label>
+              <input type="text" id="e-location" />
+            </div>
+            <div class="cf-field">
+              <label for="e-description">Description</label>
+              <textarea id="e-description" rows="3" placeholder="Enter details here"></textarea>
+            </div>
+            <div class="cf-field">
+              <label for="e-client">Related To</label>
+              <select id="e-client"></select>
+            </div>
+            <div class="composer-actions">
+              <span class="composer-hint" id="e-hint"></span>
+              <button type="button" class="btn btn-primary btn-small" id="e-save">Save Event</button>
             </div>
           </div>
         </div>
@@ -109,6 +237,7 @@
   // nextAnniversary / staffLabel / TL_LABELS all come from shared.js.
 
   let contactsCache = [];      // for the @mention picker and feed name lookups
+  let adminEmails = [];        // assignable accounts for the Task form
   let feedCursor = null;       // server cursor for the next older page
   let feedExtra = [];          // entries pulled by "Load older activity"
 
@@ -328,6 +457,184 @@
     }
   });
 
+  // ---------- Composer tabs: Update / Task / Event ----------
+
+  document.getElementById('composer-tabs').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-tab]');
+    if (!btn) return;
+    [...ev.currentTarget.children].forEach((b) => b.classList.toggle('active', b === btn));
+    ['update', 'task', 'event'].forEach((t) =>
+      document.getElementById(`pane-${t}`).classList.toggle('hidden', t !== btn.dataset.tab)
+    );
+  });
+
+  // "Repeats?" reveals the interval picker — an unchecked box means one-off,
+  // which the API represents as an empty repeat rather than a missing field.
+  const wireRepeat = (boxId, selId) => {
+    const box = document.getElementById(boxId);
+    box.addEventListener('change', () =>
+      document.getElementById(selId).classList.toggle('hidden', !box.checked)
+    );
+  };
+  wireRepeat('t-repeats', 't-repeat');
+  wireRepeat('e-repeats', 'e-repeat');
+
+  // Quick-pick due dates. "Set date/time…" swaps in a real picker so the common
+  // case stays one click without giving up an exact timestamp when it matters.
+  const dueQuick = document.getElementById('t-duequick');
+  dueQuick.addEventListener('change', () =>
+    document.getElementById('t-due').classList.toggle('hidden', dueQuick.value !== 'custom')
+  );
+
+  // Local-time formatting: toISOString() would shift a late-evening due date to
+  // the next day for anyone west of UTC, so build the string from local parts.
+  const pad = (n) => String(n).padStart(2, '0');
+  const localDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+  function resolveTaskDue() {
+    const now = new Date();
+    switch (dueQuick.value) {
+      case 'today': return localDate(now);
+      case 'tomorrow': return localDate(new Date(now.getTime() + 86400e3));
+      case 'week': return localDate(new Date(now.getTime() + 7 * 86400e3));
+      case 'none': return '';
+      case 'custom': return document.getElementById('t-due').value || '';
+      default: return '';
+    }
+  }
+
+  // Contact picker shared by both forms. Rebuilt whenever contacts reload so a
+  // newly synced client is selectable without a page refresh.
+  function fillPickers() {
+    const opts = '<option value="">— none —</option>' +
+      contactsCache.map((c) =>
+        `<option value="${escapeHtml(c.email)}">${escapeHtml(c.name || c.email)}</option>`
+      ).join('');
+    ['t-client', 'e-client'].forEach((id) => {
+      const el = document.getElementById(id);
+      const keep = el.value;
+      el.innerHTML = opts;
+      if (keep) el.value = keep;
+    });
+    const assignee = document.getElementById('t-assignee');
+    if (!assignee.options.length) {
+      assignee.innerHTML = '<option value="">— unassigned —</option>' +
+        adminEmails.map((a) =>
+          `<option value="${escapeHtml(a)}"${a === SESSION.email ? ' selected' : ''}>${escapeHtml(staffLabel(a))}</option>`
+        ).join('');
+    }
+    const prio = document.getElementById('t-priority');
+    if (!prio.options.length) prio.innerHTML = priorityOptions('medium');
+    const tcat = document.getElementById('t-category');
+    if (!tcat.options.length) tcat.innerHTML = categoryOptions('');
+    const ecat = document.getElementById('e-category');
+    if (!ecat.options.length) ecat.innerHTML = categoryOptions('meeting');
+  }
+
+  // Both category pickers offer "Create new category…"; resolve the sentinel
+  // into a real option the same way the contacts and operations pages do.
+  ['t-category', 'e-category'].forEach((id) => {
+    const sel = document.getElementById(id);
+    sel.addEventListener('change', () => {
+      if (sel.value !== NEW_CATEGORY_VALUE) return;
+      const name = promptNewCategoryName();
+      if (!name) { sel.value = ''; return; }
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      sel.insertBefore(opt, sel.querySelector(`option[value="${NEW_CATEGORY_VALUE}"]`));
+      sel.value = name;
+    });
+  });
+
+  const setFormHint = (id, msg, isErr) => {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.classList.toggle('err', !!isErr);
+  };
+
+  document.getElementById('t-save').addEventListener('click', async (ev) => {
+    const title = document.getElementById('t-title').value.trim();
+    if (!title) return setFormHint('t-hint', 'Give the task a name.', true);
+    const category = document.getElementById('t-category').value;
+    if (category === NEW_CATEGORY_VALUE) return setFormHint('t-hint', 'Name the new category first.', true);
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      await api('/api/admin/tasks', {
+        method: 'POST',
+        body: JSON.stringify({
+          title,
+          due: resolveTaskDue(),
+          repeat: document.getElementById('t-repeats').checked ? document.getElementById('t-repeat').value : '',
+          assignee: document.getElementById('t-assignee').value,
+          priority: document.getElementById('t-priority').value || 'medium',
+          category,
+          client: document.getElementById('t-client').value,
+          description: document.getElementById('t-description').value.trim(),
+        }),
+      });
+      document.getElementById('t-title').value = '';
+      document.getElementById('t-description').value = '';
+      document.getElementById('t-repeats').checked = false;
+      document.getElementById('t-repeat').classList.add('hidden');
+      setFormHint('t-hint', 'Task created.');
+      load();
+    } catch (err) {
+      setFormHint('t-hint', `Could not save: ${err.message}`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('e-save').addEventListener('click', async (ev) => {
+    const title = document.getElementById('e-title').value.trim();
+    if (!title) return setFormHint('e-hint', 'Give the event a name.', true);
+    const category = document.getElementById('e-category').value;
+    if (category === NEW_CATEGORY_VALUE) return setFormHint('e-hint', 'Name the new category first.', true);
+    const startDate = document.getElementById('e-start').value;
+    if (!startDate) return setFormHint('e-hint', 'Pick a start date.', true);
+    const allDay = document.getElementById('e-allday').checked;
+    const startTime = document.getElementById('e-startTime').value;
+    const endDate = document.getElementById('e-end').value;
+    const endTime = document.getElementById('e-endTime').value;
+    // An all-day event carries date only; the same date-vs-datetime distinction
+    // the server already uses to advance a recurring due date.
+    const due = allDay || !startTime ? startDate : `${startDate}T${startTime}`;
+    const endDue = !endDate ? '' : (allDay || !endTime ? endDate : `${endDate}T${endTime}`);
+    if (endDue && endDue < due) return setFormHint('e-hint', 'The event ends before it starts.', true);
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      await api('/api/admin/tasks', {
+        method: 'POST',
+        body: JSON.stringify({
+          title,
+          category,
+          due,
+          endDue,
+          allDay,
+          eventStatus: document.getElementById('e-status').value,
+          location: document.getElementById('e-location').value.trim(),
+          repeat: document.getElementById('e-repeats').checked ? document.getElementById('e-repeat').value : '',
+          description: document.getElementById('e-description').value.trim(),
+          client: document.getElementById('e-client').value,
+        }),
+      });
+      document.getElementById('e-title').value = '';
+      document.getElementById('e-location').value = '';
+      document.getElementById('e-description').value = '';
+      document.getElementById('e-repeats').checked = false;
+      document.getElementById('e-repeat').classList.add('hidden');
+      setFormHint('e-hint', 'Event created.');
+      load();
+    } catch (err) {
+      setFormHint('e-hint', `Could not save: ${err.message}`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   // ---------- Load ----------
 
   async function load() {
@@ -342,6 +649,13 @@
       // Archived contacts are hidden from every count, queue and alert.
       const contacts = (contactData.contacts || []).filter((c) => !c.archived);
       contactsCache = contacts;
+      adminEmails = contactData.admins || [];
+      registerStaff(Object.entries(contactData.adminNames || {}).map(([id, name]) => ({ id, name })));
+      fillPickers();
+      // Default the event start to today the first time the form is built, so
+      // the common "book something for today" path needs no date entry.
+      const eStart = document.getElementById('e-start');
+      if (!eStart.value) { eStart.value = localDate(new Date()); document.getElementById('e-end').value = eStart.value; }
       const openTasks = (taskData.tasks || []).filter((t) => t.status === 'open');
       const onbs = (onbData.records || []).filter((r) => !r.deleted);
       const now = new Date();

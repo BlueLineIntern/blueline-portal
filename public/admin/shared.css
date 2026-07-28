@@ -511,6 +511,52 @@ body .topbar, body .footer { display: none; }
 .rail-body { padding: var(--sp-2) var(--sp-4) var(--sp-3); }
 .rail-body .empty { padding: var(--sp-5) 0; text-align: center; }
 
+/* Composer tab strip: Update / Task / Event. Each pane files a different
+   record type from Home without navigating away first. */
+.composer-panel { padding: 0; }
+.composer-tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--border); padding: 0 var(--sp-4); }
+.composer-tabs button {
+  border: none; background: none; cursor: pointer;
+  font-family: var(--font-sans); font-size: var(--fs-sm); font-weight: var(--fw-semibold);
+  color: var(--muted); padding: var(--sp-3) var(--sp-3); margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+}
+.composer-tabs button:hover { color: var(--text); }
+.composer-tabs button.active { color: var(--sky-dark); border-bottom-color: var(--sky); }
+.composer-pane { padding: var(--sp-4); }
+.composer-pane .composer { margin-bottom: 0; }
+
+/* Composer form fields. Stacked label-over-control, matching the reference's
+   single-column form rather than the dense .field-row grid used in modals. */
+.cf-field { margin-bottom: var(--sp-3); }
+.cf-field > label {
+  display: block; font-size: var(--fs-sm); font-weight: var(--fw-medium);
+  color: var(--text); margin-bottom: var(--sp-1);
+}
+.cf-field input[type="text"], .cf-field input[type="date"], .cf-field input[type="time"],
+.cf-field input[type="datetime-local"], .cf-field select, .cf-field textarea {
+  width: 100%; font-family: var(--font-sans); font-size: var(--fs-base);
+  padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--panel); color: var(--text);
+}
+.cf-field textarea { resize: vertical; line-height: var(--lh-base); }
+.cf-field input:focus, .cf-field select:focus, .cf-field textarea:focus {
+  outline: none; border-color: var(--sky); box-shadow: var(--ring);
+}
+/* Date/time row: the inputs size to content so "to" stays adjacent instead of
+   being pushed to the far edge by four equal-width stretched fields. */
+.cf-inline { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.cf-inline > input, .cf-inline > select { width: auto; flex: 0 1 auto; min-width: 0; }
+.cf-to { color: var(--muted); font-size: var(--fs-sm); }
+.cf-check { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.cf-check input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--sky); cursor: pointer; }
+.cf-check > label { font-size: var(--fs-sm); font-weight: var(--fw-medium); cursor: pointer; }
+.cf-check select {
+  font-family: var(--font-sans); font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-2); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--panel); color: var(--text);
+}
+
 /* Note composer. The advisor names the client with an @mention, so a note can
    be filed from Home without first navigating into the profile. */
 .composer { margin-bottom: var(--sp-5); position: relative; }
@@ -641,6 +687,14 @@ body .topbar, body .footer { display: none; }
   .content { padding: var(--sp-5) var(--sp-4) 48px; }
   .field-row { grid-template-columns: 1fr; }
   .page-head { margin-bottom: var(--sp-5); }
+  /* tokens.css sets a 16px floor on bare input/select/textarea so iOS Safari
+     doesn't zoom the viewport on focus. The .cf-* composer rules are more
+     specific and were overriding it back down to 13-15px, so restate it here
+     at matching specificity. */
+  .cf-field input[type="text"], .cf-field input[type="date"], .cf-field input[type="time"],
+  .cf-field input[type="datetime-local"], .cf-field select, .cf-field textarea,
+  .cf-check select, .composer textarea { font-size: var(--fs-input); }
+
   /* auto-fit's 168px floor leaves room for only one column on a phone, so the
      five tiles became five full-width rows of chrome above the feed. Two up. */
   .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }

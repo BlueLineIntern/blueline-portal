@@ -51,6 +51,8 @@ $taskCategories = @(
     'follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other',
     'investment-reports', 'operational-task', 'trading', 'investment-policy-statement', 'financial-planning'
 )
+$taskRepeats = @('', 'daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'yearly')
+$eventStatuses = @('', 'unconfirmed', 'confirmed', 'cancelled')
 
 # Assignees are admin accounts only (board lists are a separate grouping).
 function Test-AssigneeAllowed($a) {
@@ -129,9 +131,15 @@ function New-MockTask($fields) {
         priority = if ($taskPriorities -contains $fields.priority) { $fields.priority } else { 'medium' }
         category = if ($taskCategories -contains $fields.category) { $fields.category } elseif (([string]$fields.category).Trim()) { ([string]$fields.category).Trim() } else { 'other' }
         status = 'open'
+        repeat = if ($taskRepeats -contains [string]$fields.repeat) { [string]$fields.repeat } else { '' }
         checklist = ConvertTo-Checklist $fields.checklist
         meetingType = [string]$fields.meetingType
         documents = ConvertTo-Documents $fields.documents
+        # Event fields (a task with category 'meeting'); inert on a plain task.
+        location = [string]$fields.location
+        endDue = [string]$fields.endDue
+        allDay = [bool]$fields.allDay
+        eventStatus = if ($eventStatuses -contains [string]$fields.eventStatus) { [string]$fields.eventStatus } else { '' }
         createdBy = $createdBy
         createdAt = $now
         completedAt = $null
@@ -670,9 +678,12 @@ while ($listener.IsListening) {
                 client = ([string]$body.client).Trim().ToLower(); assignee = ([string]$body.assignee).Trim().ToLower()
                 list = ([string]$body.list).Trim()
                 due = [string]$body.due; priority = [string]$body.priority; category = [string]$body.category
+                repeat = [string]$body.repeat
                 checklist = $body.checklist
                 meetingType = [string]$body.meetingType
                 documents = $body.documents
+                location = [string]$body.location; endDue = [string]$body.endDue
+                allDay = [bool]$body.allDay; eventStatus = [string]$body.eventStatus
                 createdBy = $adminEmail
             }
             Send-Json $ctx 200 @{ task = $task }
@@ -687,9 +698,10 @@ while ($listener.IsListening) {
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
             $wasOpen = $task.status -eq 'open'
             $prevAssignee = [string]$task.assignee
-            foreach ($f in @('title', 'description', 'client', 'assignee', 'list', 'due', 'priority', 'category', 'status', 'meetingType')) {
+            foreach ($f in @('title', 'description', 'client', 'assignee', 'list', 'due', 'priority', 'category', 'status', 'meetingType', 'repeat', 'location', 'endDue', 'eventStatus')) {
                 if ($body.PSObject.Properties[$f]) { $task[$f] = [string]$body.$f }
             }
+            if ($body.PSObject.Properties['allDay']) { $task.allDay = [bool]$body.allDay }
             if ($body.PSObject.Properties['checklist']) { $task.checklist = ConvertTo-Checklist $body.checklist }
             if ($body.PSObject.Properties['documents']) { $task.documents = ConvertTo-Documents $body.documents }
             if (-not $task.history) { $task.history = @() }

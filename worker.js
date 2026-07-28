@@ -2107,6 +2107,9 @@ const TASK_CATEGORIES = [
   'follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other',
   'investment-reports', 'operational-task', 'trading', 'investment-policy-statement', 'financial-planning',
 ];
+// Confirmation state for an event. '' means unset (an ordinary task); a newly
+// booked meeting starts 'unconfirmed' until the client actually confirms.
+const EVENT_STATUSES = ['', 'unconfirmed', 'confirmed', 'cancelled'];
 const TASK_CATEGORY_MAX_LEN = 60;
 // Advisors can pick from the known list or type a custom category name
 // (contacts.html's "Create new category…" option) — accept either, as long
@@ -2327,6 +2330,18 @@ function sanitizeTaskFields(body, allowedAssignees) {
   if (body.checklist !== undefined) out.checklist = sanitizeChecklist(body.checklist);
   if (body.meetingType !== undefined) out.meetingType = String(body.meetingType || '').trim().slice(0, 40);
   if (body.documents !== undefined) out.documents = sanitizeDocuments(body.documents);
+  // Event fields. A meeting IS a task here (category 'meeting'), so these live
+  // on the same record and simply stay unset on an ordinary task. `due` is the
+  // start; endDue is the matching end so an event can express a span, which a
+  // plain task never needs.
+  if (body.location !== undefined) out.location = String(body.location || '').trim().slice(0, 200);
+  if (body.endDue !== undefined) out.endDue = String(body.endDue || '').trim().slice(0, 40);
+  if (body.allDay !== undefined) out.allDay = !!body.allDay;
+  if (body.eventStatus !== undefined) {
+    const s = String(body.eventStatus || '').trim();
+    if (s && !EVENT_STATUSES.includes(s)) return { error: 'Invalid event status' };
+    out.eventStatus = s;
+  }
   return { fields: out };
 }
 
