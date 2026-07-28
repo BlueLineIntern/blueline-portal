@@ -69,6 +69,19 @@ function Write-Timeline($client, $type, $actor, $detail) {
     })
 }
 
+# Mirror worker.js filterDeletedReferences' content check: a note/task can
+# never be created or edited with empty body/title, so an entry showing one is
+# always leftover noise (from before delete handlers cleaned up their own
+# timeline entries, or any other stale state). Belt-and-suspenders alongside
+# the taskId/noteId cleanup the delete handlers do now.
+function Test-TimelineEntryValid($e) {
+    if ($e.type -eq 'note-added') { return [bool](([string]$e.detail.body).Trim()) }
+    if (@('task-added', 'task-completed', 'meeting-added', 'meeting-held') -contains $e.type) {
+        return [bool](([string]$e.detail.title).Trim())
+    }
+    return $true
+}
+
 # Mirror worker.js sanitizeChecklist: normalize to [{id, text, done}], drop blanks.
 function ConvertTo-Checklist($raw) {
     $out = @()
@@ -122,6 +135,10 @@ function New-MockTask($fields) {
         history = @([ordered]@{ ts = $now; actor = $createdBy; type = 'created'; detail = $null })
     }
     $tasks[$id] = $task
+    if ($task.client) {
+        $evt = if ($task.category -eq 'meeting') { 'meeting-added' } else { 'task-added' }
+        Write-Timeline $task.client $evt $createdBy @{ taskId = $id; title = $task.title; due = $task.due }
+    }
     return $task
 }
 
@@ -685,7 +702,7 @@ while ($listener.IsListening) {
                 & $appendHistory 'completed' $null
                 if ($task.client) {
                     $evt = if ($task.category -eq 'meeting') { 'meeting-held' } else { 'task-completed' }
-                    Write-Timeline $task.client $evt $adminEmail @{ title = $task.title }
+                    Write-Timeline $task.client $evt $adminEmail @{ taskId = $id; title = $task.title }
                 }
             }
             if ((-not $wasOpen) -and $task.status -eq 'open') {
@@ -699,7 +716,15 @@ while ($listener.IsListening) {
         }
         elseif ($path -match '^/api/admin/tasks/(.+)$' -and $method -eq 'DELETE') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $tasks.Remove([Uri]::UnescapeDataString($Matches[1]))
+            $delId = [Uri]::UnescapeDataString($Matches[1])
+            $tasks.Remove($delId)
+            # Drop this task's timeline/activity entries too, so a deleted task/
+            # meeting doesn't linger in Recent Activity — mirrors worker.js's
+            # deleteTimelineRefs (real backend deletes by stored key; the mock
+            # just filters the in-memory log by taskId since it has no keys).
+            $keep = @($timelineLog.ToArray() | Where-Object { -not ($_.detail -and $_.detail.taskId -eq $delId) })
+            $timelineLog.Clear()
+            foreach ($e in $keep) { $null = $timelineLog.Add($e) }
             Send-Json $ctx 200 @{ ok = $true }
         }
         elseif ($path -eq '/api/admin/lists' -and $method -eq 'GET') {
@@ -759,7 +784,7 @@ while ($listener.IsListening) {
                 createdAt = (Get-Date).ToString('o'); updatedAt = $null
             }
             $notes[$id] = $note
-            Write-Timeline $client 'note-added' $adminEmail $null
+            Write-Timeline $client 'note-added' $adminEmail @{ noteId = $id; body = $note.body }
             Send-Json $ctx 200 @{ note = $note }
         }
         elseif ($path -match '^/api/admin/notes/(.+)$' -and $method -eq 'POST') {
@@ -779,19 +804,25 @@ while ($listener.IsListening) {
         }
         elseif ($path -match '^/api/admin/notes/(.+)$' -and $method -eq 'DELETE') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $notes.Remove([Uri]::UnescapeDataString($Matches[1]))
+            $delNoteId = [Uri]::UnescapeDataString($Matches[1])
+            $notes.Remove($delNoteId)
+            # Drop this note's timeline/activity entry too — same reasoning as
+            # the task delete handler above.
+            $keep = @($timelineLog.ToArray() | Where-Object { -not ($_.detail -and $_.detail.noteId -eq $delNoteId) })
+            $timelineLog.Clear()
+            foreach ($e in $keep) { $null = $timelineLog.Add($e) }
             Send-Json $ctx 200 @{ ok = $true }
         }
         elseif ($path -match '^/api/admin/timeline/(.+)$' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $client = [Uri]::UnescapeDataString($Matches[1]).ToLower()
-            $entries = @($timelineLog.ToArray() | Where-Object { $_.client -eq $client })
+            $entries = @($timelineLog.ToArray() | Where-Object { $_.client -eq $client -and (Test-TimelineEntryValid $_) })
             [array]::Reverse($entries)
             Send-Json $ctx 200 @{ entries = $entries; hasMore = $false; cursor = $null }
         }
         elseif ($path -eq '/api/admin/activity' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $entries = @($timelineLog.ToArray())
+            $entries = @($timelineLog.ToArray() | Where-Object { Test-TimelineEntryValid $_ })
             [array]::Reverse($entries)
             $entries = @($entries | Select-Object -First 30)
             Send-Json $ctx 200 @{ entries = $entries; hasMore = $false; cursor = $null }

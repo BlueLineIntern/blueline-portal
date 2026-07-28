@@ -2154,10 +2154,14 @@ function invTs(now = Date.now()) {
 // Record a client-history event. Dual-write: per-client timeline (permanent)
 // + global activity feed (expiring). Best-effort like logAudit — a telemetry
 // failure must never break the request that triggered it.
+// Returns the KV keys the entry was written under, so a caller that owns a
+// deletable record (a note, a task) can store them and delete the timeline
+// entry directly when that record is deleted — rather than relying solely on
+// best-effort filtering at read time. Returns null on failure (best-effort).
 async function logTimeline(env, client, type, actor, detail) {
   try {
     const email = String(client || '').trim().toLowerCase();
-    if (!isValidEmail(email)) return;
+    if (!isValidEmail(email)) return null;
     const entry = {
       ts: new Date().toISOString(),
       client: email,
@@ -2167,10 +2171,24 @@ async function logTimeline(env, client, type, actor, detail) {
     };
     const suffix = `${invTs()}-${randomHex(4)}`;
     const encrypted = await encryptJSON(env, entry);
-    await env.PORTAL_KV.put(`timeline:${email}:${suffix}`, encrypted);
-    await env.PORTAL_KV.put(`activity:${suffix}`, encrypted, { expirationTtl: AUDIT_TTL_SECONDS });
+    const timelineKey = `timeline:${email}:${suffix}`;
+    const activityKey = `activity:${suffix}`;
+    await env.PORTAL_KV.put(timelineKey, encrypted);
+    await env.PORTAL_KV.put(activityKey, encrypted, { expirationTtl: AUDIT_TTL_SECONDS });
+    return { timelineKey, activityKey };
   } catch {
     // swallow — history is best-effort
+    return null;
+  }
+}
+
+// Delete timeline/activity entries logged for a note or task, so removing the
+// record also removes its footprint from Recent Activity / the Timeline tab
+// instead of leaving an orphaned entry that read-time filtering has to catch.
+async function deleteTimelineRefs(env, record) {
+  if (!record || !Array.isArray(record.timelineKeys)) return;
+  for (const key of record.timelineKeys) {
+    await env.PORTAL_KV.delete(key).catch(() => {});
   }
 }
 
@@ -2195,14 +2213,17 @@ async function createTask(env, fields) {
     createdAt: new Date().toISOString(),
     completedAt: null,
     history: [{ ts: new Date().toISOString(), actor: fields.createdBy || 'system', type: 'created', detail: null }],
+    timelineKeys: [],
   };
-  await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
   if (task.client) {
-    await logTimeline(env, task.client, task.category === 'meeting' ? 'meeting-added' : 'task-added', task.createdBy, {
+    const refs = await logTimeline(env, task.client, task.category === 'meeting' ? 'meeting-added' : 'task-added', task.createdBy, {
+      taskId: id,
       title: task.title,
       due: task.due || null,
     });
+    if (refs) task.timelineKeys.push(refs.timelineKey, refs.activityKey);
   }
+  await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
   return task;
 }
 
@@ -2337,8 +2358,12 @@ async function handleAdminUpdateTask(request, env, cors, id) {
     task.completedAt = new Date().toISOString();
     logHistory('completed', null);
     if (task.client) {
-      await logTimeline(env, task.client, task.category === 'meeting' ? 'meeting-held' : 'task-completed',
-        adminEmail, { title: task.title });
+      const refs = await logTimeline(env, task.client, task.category === 'meeting' ? 'meeting-held' : 'task-completed',
+        adminEmail, { taskId: id, title: task.title });
+      if (refs) {
+        if (!Array.isArray(task.timelineKeys)) task.timelineKeys = [];
+        task.timelineKeys.push(refs.timelineKey, refs.activityKey);
+      }
     }
     // Recurring task: completing this one schedules the next. Needs a due date
     // to advance from — a repeating task with no date has nothing to compute.
@@ -2379,7 +2404,13 @@ async function handleAdminUpdateTask(request, env, cors, id) {
 async function handleAdminDeleteTask(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`task:${id}`);
+  let task = null;
+  if (raw) {
+    try { task = await decryptToObject(env, raw); } catch {}
+  }
   await env.PORTAL_KV.delete(`task:${id}`);
+  await deleteTimelineRefs(env, task);
   return json({ ok: true }, 200, cors);
 }
 
@@ -2477,6 +2508,9 @@ async function handleAdminCreateNote(request, env, cors) {
   if (!text) return json({ error: 'Note text is required' }, 400, cors);
 
   const id = `${client}:${invTs()}-${randomHex(4)}`;
+  // Log first so the note record can carry the timeline entry's own keys —
+  // deleting the note later can then delete its timeline footprint directly.
+  const refs = await logTimeline(env, client, 'note-added', adminEmail, { noteId: id, body: text.slice(0, 300) });
   const note = {
     id,
     client,
@@ -2488,11 +2522,9 @@ async function handleAdminCreateNote(request, env, cors) {
     pinned: !!body.pinned,
     createdAt: new Date().toISOString(),
     updatedAt: null,
+    timelineKeys: refs ? [refs.timelineKey, refs.activityKey] : [],
   };
   await env.PORTAL_KV.put(`note:${id}`, await encryptJSON(env, note));
-  // Timeline entries are meant to be a compact activity feed, not full note
-  // storage (that's the note: record itself) -- cap what rides along here.
-  await logTimeline(env, client, 'note-added', adminEmail, { body: note.body.slice(0, 300) });
   await pushNoteToSharePoint(env, note);
   return json({ note }, 200, cors);
 }
@@ -2522,7 +2554,13 @@ async function handleAdminUpdateNote(request, env, cors, id) {
 async function handleAdminDeleteNote(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`note:${id}`);
+  let note = null;
+  if (raw) {
+    try { note = await decryptToObject(env, raw); } catch {}
+  }
   await env.PORTAL_KV.delete(`note:${id}`);
+  await deleteTimelineRefs(env, note);
   return json({ ok: true }, 200, cors);
 }
 
@@ -2543,6 +2581,45 @@ async function pagedEncryptedList(env, prefix, cursorParam, pageSize) {
   return { entries, hasMore: !page.list_complete, cursor: page.list_complete ? null : page.cursor };
 }
 
+// Check if a referenced item still exists (used to filter deleted notes/tasks from timeline)
+async function itemExists(env, type, id) {
+  if (type === 'note') return !!(await env.PORTAL_KV.get(`note:${id}`));
+  if (type === 'task') return !!(await env.PORTAL_KV.get(`task:${id}`));
+  return true; // if no ID provided or unknown type, include the entry
+}
+
+const TASK_TIMELINE_TYPES = ['task-added', 'task-completed', 'meeting-added', 'meeting-held'];
+
+// Filter timeline entries to exclude references to deleted notes/tasks/meetings.
+// Two layers, oldest-first because they catch different things:
+//  1. Content check: a note/task can never be created or edited with an empty
+//     body/title, so an entry showing one is *always* leftover noise from a
+//     deletion that happened before entries carried an id to look up — no KV
+//     read needed, and it catches history logged before this filter existed.
+//  2. Id check: for entries that do carry a noteId/taskId (everything logged
+//     after this change), confirm the record still exists — this is what
+//     actually needs to run for well-formed post-fix entries, since deletion
+//     now also removes the entry directly (see deleteTimelineRefs) and this is
+//     just a backstop for anything that slips past that.
+async function filterDeletedReferences(entries, env) {
+  const filtered = [];
+  for (const entry of entries) {
+    const d = entry.detail || {};
+    let isValid = true;
+
+    if (entry.type === 'note-added') {
+      isValid = !!String(d.body || '').trim();
+      if (isValid && d.noteId) isValid = await itemExists(env, 'note', d.noteId);
+    } else if (TASK_TIMELINE_TYPES.includes(entry.type)) {
+      isValid = !!String(d.title || '').trim();
+      if (isValid && d.taskId) isValid = await itemExists(env, 'task', d.taskId);
+    }
+
+    if (isValid) filtered.push(entry);
+  }
+  return filtered;
+}
+
 async function handleAdminTimeline(request, env, cors, rawEmail) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -2550,6 +2627,7 @@ async function handleAdminTimeline(request, env, cors, rawEmail) {
   if (!isValidEmail(email)) return json({ error: 'Invalid client email' }, 400, cors);
   const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
   const result = await pagedEncryptedList(env, `timeline:${email}:`, cursor, 50);
+  result.entries = await filterDeletedReferences(result.entries, env);
   return json(result, 200, cors);
 }
 
@@ -2558,6 +2636,7 @@ async function handleAdminActivity(request, env, cors) {
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
   const result = await pagedEncryptedList(env, 'activity:', cursor, 30);
+  result.entries = await filterDeletedReferences(result.entries, env);
   return json(result, 200, cors);
 }
 
