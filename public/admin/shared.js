@@ -145,7 +145,10 @@ function categoryBadgeClass(cat) {
 }
 function categoryBadge(cat) {
   if (!cat) return '';
-  return `<span class="badge ${categoryBadgeClass(cat)}">${escapeHtml(categoryLabel(cat))}</span>`;
+  const label = categoryLabel(cat);
+  // title carries the full label so a name truncated by a narrow container
+  // (the Home rail — see .rail-row .badge) is still readable on hover.
+  return `<span class="badge ${categoryBadgeClass(cat)}" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
 }
 
 // Sentinel option value for "type me a new category". Lives here so the

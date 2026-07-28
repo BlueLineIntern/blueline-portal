@@ -569,6 +569,13 @@ body .topbar, body .footer { display: none; }
 .rail-row:last-child { border-bottom: none; }
 .rail-row .rr-main { flex: 1; min-width: 0; }
 .rail-row .rr-sub { font-size: var(--fs-xs); color: var(--muted); margin-top: 1px; }
+/* A long category name ("Investment Policy Statement") was wide enough to
+   push "related to <client>" onto a second line, making that row taller than
+   its neighbors — the rail reads as a tidy uniform list, so one long label
+   shouldn't visibly break that rhythm. The colour already carries the
+   category at a glance; the full name is still available via the title
+   tooltip added in categoryBadge() (shared.js). */
+.rail-row .badge { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 .rail-group { font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: 0.06em; text-transform: uppercase; color: var(--red); padding: var(--sp-3) 0 var(--sp-1); }
 .rail-group.soon { color: var(--amber); }
 .sd-when { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
