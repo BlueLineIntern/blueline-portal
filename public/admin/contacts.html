@@ -502,7 +502,7 @@
     document.getElementById('print-client-line').textContent = `Client: ${c.name || c.email} (${c.email})`;
     document.getElementById('print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
 
-    renderOverviewTab(c, p);
+    renderOverviewTab(c, p, opts.background);
     renderAssessmentsTab(c);
     renderDocumentsTab(c);
     // A background poll must never yank a tab out from under the advisor.
@@ -517,8 +517,17 @@
     return `<div class="kv-row"><span>${escapeHtml(label)}</span><strong>${valueHtml}</strong></div>`;
   }
 
-  function renderOverviewTab(c, p) {
+  function renderOverviewTab(c, p, background) {
     const act = lastActivity(c);
+    const email = c.email;
+    // Recent Activity needs its own fetch, unlike the rest of this tab (built
+    // from data already in memory). Overview isn't poll-skipped like
+    // Notes/Tasks/Timeline, so without this a background poll would flash
+    // "Loading…" and re-fetch every 20s. Keep whatever's already showing and
+    // skip the fetch when polling in the background; a real tab-open always
+    // refreshes.
+    const prevActivity = document.getElementById('overview-activity-body');
+    const keepActivity = background && prevActivity ? prevActivity.innerHTML : null;
     document.getElementById('tab-overview').innerHTML = `
       <div class="overview-grid">
         <div class="panel">
@@ -553,7 +562,37 @@
             ? `<div class="kv-rows">${c.importantDates.map((d) => kvRow(d.label, escapeHtml(d.date || '—'))).join('')}</div>`
             : '<p class="empty">None recorded — add them via Edit Contact.</p>'}
         </div>
+        <div class="panel" id="overview-activity-panel">
+          <div class="panel-head"><h2>Recent Activity</h2>
+            <a class="panel-link" href="#" id="overview-activity-link">Full timeline →</a></div>
+          <div id="overview-activity-body">${keepActivity || '<p class="empty">Loading…</p>'}</div>
+        </div>
       </div>`;
+    document.getElementById('overview-activity-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      setTab('timeline');
+    });
+    if (!background || !prevActivity) renderOverviewActivity(email);
+  }
+
+  const OVERVIEW_ACTIVITY_COUNT = 5;
+
+  async function renderOverviewActivity(email) {
+    const body = document.getElementById('overview-activity-body');
+    try {
+      const data = await api(`/api/admin/timeline/${encodeURIComponent(email)}`);
+      // The panel may have been torn down (profile switched, or the poll's
+      // background guard doesn't cover Overview) by the time this resolves.
+      if (selectedEmail !== email || !document.getElementById('overview-activity-body')) return;
+      const entries = (data.entries || []).slice(0, OVERVIEW_ACTIVITY_COUNT);
+      document.getElementById('overview-activity-body').innerHTML = entries.length
+        ? entries.map(timelineLine).join('')
+        : '<p class="empty">Nothing recorded yet.</p>';
+    } catch (err) {
+      if (selectedEmail !== email) return;
+      const el = document.getElementById('overview-activity-body');
+      if (el) el.innerHTML = `<p class="empty">Failed to load: ${escapeHtml(err.message)}</p>`;
+    }
   }
 
   // ---------- Assessments tab (the P0 client detail, unchanged) ----------
