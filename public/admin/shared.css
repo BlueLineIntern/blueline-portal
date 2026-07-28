@@ -578,6 +578,14 @@ body .topbar, body .footer { display: none; }
 .rail-row .badge { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 .rail-group { font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: 0.06em; text-transform: uppercase; color: var(--red); padding: var(--sp-3) 0 var(--sp-1); }
 .rail-group.soon { color: var(--amber); }
+/* The Tasks rail groups rows by urgency (Overdue / Due today), so the rail
+   bar echoes the SAME red/amber as its group heading rather than priority.
+   Priority still shows as a neutral text label (.prio-label) beside the
+   category badge -- a second colour here (--prio-medium is a different
+   orange than --amber) would clash right under a heading that already
+   committed to one specific hue for this group. */
+.rail-row.rail-overdue { box-shadow: inset 3px 0 0 var(--red); }
+.rail-row.rail-duetoday { box-shadow: inset 3px 0 0 var(--amber); }
 .sd-when { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
 
 /* Sidebar recently-viewed */
