@@ -7,19 +7,19 @@
 <title>Dashboard — BlueLine Admin</title>
 <link rel="stylesheet" href="/admin/shared.css" />
 <style>
-  .queue-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+  .queue-row { display: flex; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-5); }
   .queue-chip {
-    display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
-    padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border);
-    background: var(--panel); color: var(--text); font-size: 0.85rem; font-weight: 550;
+    display: inline-flex; align-items: center; gap: var(--sp-2); text-decoration: none;
+    padding: var(--sp-2) 14px; border-radius: var(--radius-pill); border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); font-size: var(--fs-sm); font-weight: var(--fw-semibold);
     box-shadow: var(--shadow);
   }
   .queue-chip:hover { border-color: var(--sky); text-decoration: none; }
-  .queue-chip .qc-count { background: var(--navy); color: #fff; border-radius: 999px; padding: 1px 8px; font-size: 0.75rem; font-weight: 700; }
+  .queue-chip .qc-count { background: var(--navy); color: #fff; border-radius: var(--radius-pill); padding: 1px var(--sp-2); font-size: var(--fs-xs); font-weight: var(--fw-bold); }
   .queue-chip.zero { opacity: 0.55; }
   .queue-chip.zero .qc-count { background: var(--gray-bg); color: var(--muted); }
   .task-check { width: 18px; height: 18px; accent-color: var(--sky); cursor: pointer; margin-top: 2px; flex-shrink: 0; }
-  .alert-item { display: flex; gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--border); font-size: 0.9rem; align-items: flex-start; }
+  .alert-item { display: flex; gap: var(--sp-3); padding: var(--sp-2) 2px; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); align-items: flex-start; }
   .alert-item:last-child { border-bottom: none; }
   .alert-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
 </style>
@@ -89,13 +89,14 @@
 
   const ALL_KEYS_HINT = 18; // 17 modules + wizard; used only for progress text
 
-  function isSameLocalDay(a, b) {
-    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-  }
+  // isSameLocalDay / duePill / prioRailClass / categoryBadge all come from shared.js.
 
+  // `danger` marks a problem count (overdue, stalled): the .alert class turns the
+  // figure red via shared.css rather than an inline colour.
   function tile(num, label, href, danger) {
-    const inner = `<div class="num" ${danger ? 'style="color:var(--red)"' : ''}>${num}</div><div class="lbl">${escapeHtml(label)}</div>`;
-    return href ? `<a class="stat-tile" href="${href}">${inner}</a>` : `<div class="stat-tile">${inner}</div>`;
+    const cls = `stat-tile${danger ? ' alert' : ''}`;
+    const inner = `<div class="num">${num}</div><div class="lbl">${escapeHtml(label)}</div>`;
+    return href ? `<a class="${cls}" href="${href}">${inner}</a>` : `<div class="${cls}">${inner}</div>`;
   }
 
   function chip(count, label, href) {
@@ -107,12 +108,12 @@
     const clientBit = t.client
       ? ` · <a href="/admin/contacts.html?c=${encodeURIComponent(t.client)}">${escapeHtml((c && c.name) || t.client)}</a>`
       : '';
-    const due = t.due ? new Date(t.due).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'no due date';
-    return `<div class="row-item">
+    // Priority rides the leading rail; the due date carries the only hue in the row.
+    return `<div class="row-item ${prioRailClass(t.priority)}">
       <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" title="Mark complete" />
       <div class="row-main">
         <div class="row-title">${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
-        <div class="row-sub">${escapeHtml(due)}${clientBit} · ${t.assignee ? escapeHtml(t.assignee.split('@')[0]) : 'unassigned'}</div>
+        <div class="row-sub">${duePill(t)}${t.category ? ' ' + categoryBadge(t.category) : ''}${t.priority ? ` <span class="prio-label">${escapeHtml(t.priority)}</span>` : ''}${clientBit} · ${t.assignee ? escapeHtml(t.assignee.split('@')[0]) : 'unassigned'}</div>
       </div>
     </div>`;
   }

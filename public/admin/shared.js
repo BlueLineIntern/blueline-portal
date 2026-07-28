@@ -79,6 +79,167 @@ function relTime(iso) {
   return d.toLocaleDateString();
 }
 
+// ---------- Task presentation (categories, priority, due urgency) ----------
+// One definition for every admin page. These used to be copy-pasted per page —
+// contacts.html and operations.html each carried their own PRIORITY_BADGE, and
+// operations.html's category map silently never learned about the five
+// categories added later (trading, investment-reports, …), so those rendered
+// with an undefined class. Anything task-shaped renders through here now.
+//
+// Two independent visual channels, so a colour never means two things at once:
+//   HUE (green/amber/red)  = time. Due dates only. See dueMeta/duePill.
+//   LEADING RAIL           = priority. Red/amber/slate, never green.
+//   NOMINAL HUE (violet/teal/slate/sky/navy) = category. Never the traffic light.
+
+const TASK_CATEGORY_LABELS = {
+  'follow-up': 'Follow-Up',
+  meeting: 'Meeting',
+  'investment-reports': 'Investment Reports',
+  'operational-task': 'Operational Task',
+  trading: 'Trading',
+  'investment-policy-statement': 'Investment Policy Statement',
+  'financial-planning': 'Financial Planning',
+  // Legacy/automated categories: still written by onboarding and review flows,
+  // so they must render even though the pickers no longer offer them.
+  review: 'Review',
+  onboarding: 'Onboarding',
+  compliance: 'Compliance',
+  other: 'Other',
+};
+
+// Categories the pickers offer, in display order. Legacy values above are
+// deliberately excluded — they're recognised, not offered.
+const TASK_CATEGORY_CHOICES = [
+  'follow-up', 'meeting', 'investment-reports', 'operational-task',
+  'trading', 'investment-policy-statement', 'financial-planning',
+];
+
+// Grouped by kind of work so related categories share a hue and the eye can
+// group a long list. Repeats across 11 categories are fine: the text is the
+// identifier, colour is only an aid to scanning.
+const CATEGORY_BADGE = {
+  'follow-up': 'badge-sky',        // client contact
+  meeting: 'badge-sky',
+  'investment-reports': 'badge-teal',   // reporting & planning deliverables
+  'financial-planning': 'badge-teal',
+  'investment-policy-statement': 'badge-teal',
+  trading: 'badge-violet',         // portfolio actions
+  'operational-task': 'badge-slate',    // internal operations
+  review: 'badge-slate',
+  compliance: 'badge-slate',
+  onboarding: 'badge-navy',
+  other: 'badge-gray',
+};
+
+// An advisor-typed custom category ("Client Gift Follow-up") has no entry in
+// either map: show it verbatim and give it the neutral tag treatment.
+function categoryLabel(cat) {
+  if (!cat) return '';
+  return TASK_CATEGORY_LABELS[cat] || String(cat);
+}
+function categoryBadgeClass(cat) {
+  return CATEGORY_BADGE[cat] || 'badge-gray';
+}
+function categoryBadge(cat) {
+  if (!cat) return '';
+  return `<span class="badge ${categoryBadgeClass(cat)}">${escapeHtml(categoryLabel(cat))}</span>`;
+}
+
+// Sentinel option value for "type me a new category". Lives here so the
+// contacts quick-add form and the operations drawer offer the same affordance.
+const NEW_CATEGORY_VALUE = '__new_category__';
+const promptNewCategoryName = () => (prompt('New category name:') || '').trim();
+
+// <option> list for a category picker.
+//   current — the task's existing category, or '' for an unset new-task picker.
+// An unset picker leads with a disabled "-category-" placeholder so the field
+// reads as unanswered rather than defaulting to Follow-Up behind the advisor's
+// back. A custom or legacy value not among the offered choices is preserved as
+// its own selected option, so merely opening the dropdown can't silently
+// rewrite it.
+function categoryOptions(current) {
+  let opts = '';
+  if (current && !TASK_CATEGORY_CHOICES.includes(current)) {
+    opts += `<option value="${escapeHtml(current)}" selected>${escapeHtml(categoryLabel(current))}</option>`;
+  } else if (!current) {
+    opts += '<option value="" disabled selected>-category-</option>';
+  }
+  opts += TASK_CATEGORY_CHOICES
+    .map((k) => `<option value="${escapeHtml(k)}"${k === current ? ' selected' : ''}>${escapeHtml(TASK_CATEGORY_LABELS[k])}</option>`)
+    .join('');
+  opts += `<option value="${NEW_CATEGORY_VALUE}">Create new category…</option>`;
+  return opts;
+}
+
+// Priority picker options. Mirrors categoryOptions' placeholder behaviour.
+const TASK_PRIORITY_CHOICES = ['low', 'medium', 'high'];
+function priorityOptions(current) {
+  return `<option value="" disabled${current ? '' : ' selected'}>-priority-</option>` +
+    TASK_PRIORITY_CHOICES
+      .map((p) => `<option value="${p}"${p === current ? ' selected' : ''}>${p.charAt(0).toUpperCase() + p.slice(1)} priority</option>`)
+      .join('');
+}
+
+// Priority. The rail carries the colour; the text label stays neutral so the
+// row has one coloured priority element, not two. Low is slate rather than
+// green — green on work you still owe someone reads as "done".
+const PRIORITY_RAIL = { high: 'prio-rail-high', medium: 'prio-rail-medium', low: 'prio-rail-low' };
+function prioRailClass(priority) {
+  return `prio-rail ${PRIORITY_RAIL[priority] || 'prio-rail-low'}`;
+}
+
+function isSameLocalDay(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+// Urgency for a task's due date. Superset of the old per-page dueInfo(): the
+// {text, overdue, today, thisWeek} shape is preserved for existing callers,
+// plus `state` (over|soon|ok|none) and ready-made class names.
+//
+// "soon" is today or tomorrow — the window where something is actionable now.
+// A done task is never overdue; finished work shouldn't glow red forever.
+function dueMeta(task) {
+  const none = { text: '', state: 'none', overdue: false, today: false, thisWeek: false, pillClass: 'due-none', textClass: '' };
+  if (!task || !task.due) return none;
+  const d = new Date(task.due);
+  if (isNaN(d)) return none;
+  const now = new Date();
+  const done = task.status === 'done';
+  const today = isSameLocalDay(d, now);
+  const overdue = !done && d < now && !today;
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const isTomorrow = isSameLocalDay(d, tomorrow);
+  const thisWeek = d >= now && d - now < 7 * 86400e3;
+
+  const hasTime = String(task.due).includes('T');
+  const timeBit = hasTime ? ` ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
+  let label;
+  if (today) label = `Due today${timeBit}`;
+  else if (isTomorrow) label = `Due tomorrow${timeBit}`;
+  else if (overdue) label = `Overdue · ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
+  else label = `Due ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
+
+  const state = done ? 'ok' : overdue ? 'over' : (today || isTomorrow) ? 'soon' : 'ok';
+  return {
+    text: label,
+    state,
+    overdue,
+    today,
+    thisWeek,
+    pillClass: `due-${state}`,
+    textClass: state === 'ok' ? '' : `due-text-${state}`,
+  };
+}
+
+// Full pill, for list rows. Always renders — a task with no due date shows a
+// neutral "No due date" rather than vanishing, so a missing date is visible.
+function duePill(task) {
+  const d = dueMeta(task);
+  if (!d.text) return '<span class="due due-none">No due date</span>';
+  return `<span class="due ${d.pillClass}">${escapeHtml(d.text)}</span>`;
+}
+
 const NAV_ITEMS = [
   { id: 'dashboard', href: '/admin/', icon: '⌂', label: 'Dashboard' },
   { id: 'contacts', href: '/admin/contacts.html', icon: '☰', label: 'Contacts' },

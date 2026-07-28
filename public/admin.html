@@ -5,22 +5,56 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link rel="icon" href="assets/blueline-logo.png" type="image/png" />
 <title>BlueLine Advisors — Admin Sign In</title>
+<!-- style.css already @imports tokens.css, so this link is not strictly required.
+     It's here because an @import is only discovered after style.css has been
+     fetched and parsed, serialising two round-trips on the one page a user waits
+     at before anything is cached. Linking it explicitly lets both download in
+     parallel. Load order is harmless either way: tokens.css only defines
+     :root custom properties, and style.css no longer declares a :root of its own. -->
+<link rel="stylesheet" href="assets/tokens.css" />
 <link rel="stylesheet" href="assets/style.css" />
 <style>
   /* Sign-in is the front door to the admin app (/admin/). This page only
-     handles password + MFA; on success it redirects into the app. */
+     handles password + MFA; on success it redirects into the app.
+     Serif brand face from style.css is deliberately kept — this is a
+     client-facing surface, not the sans admin shell. */
   .token-form { max-width: 400px; margin: 60px auto 0; }
-  .mfa-steps { margin: 8px 0 0; padding-left: 20px; }
-  .mfa-steps li { margin-bottom: 18px; line-height: 1.5; }
-  .mfa-secret { font-family: 'Courier New', monospace; font-size: 1.15rem; letter-spacing: 2px; font-weight: 700;
-    background: #f4f6f9; border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; margin: 8px 0 0;
+  .card.token-form { border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
+
+  /* Field treatment mirrors admin/shared.css: stronger resting border, the
+     shared focus ring, and a :focus-visible outline for keyboard users. */
+  .token-form input[type="email"],
+  .token-form input[type="password"],
+  .token-form input[type="text"] {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    transition: border-color var(--transition), box-shadow var(--transition);
+  }
+  .token-form input[type="email"]:focus,
+  .token-form input[type="password"]:focus,
+  .token-form input[type="text"]:focus {
+    outline: none;
+    border-color: var(--sky);
+    box-shadow: var(--ring);
+  }
+  :focus-visible { outline: 2px solid var(--sky); outline-offset: 2px; border-radius: var(--radius-sm); }
+
+  .token-form .form-error { color: var(--red); font-size: var(--fs-base); font-weight: var(--fw-medium); }
+
+  .mfa-steps { margin: var(--sp-2) 0 0; padding-left: var(--sp-5); }
+  .mfa-steps li { margin-bottom: var(--sp-5); line-height: var(--lh-base); }
+  .mfa-secret { font-family: var(--font-mono); font-size: var(--fs-lg); letter-spacing: 2px; font-weight: var(--fw-bold);
+    background: var(--gray-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: var(--sp-3) var(--sp-4); margin: var(--sp-2) 0 0;
     word-break: break-all; color: var(--navy); }
-  .mfa-backup { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 18px; font-family: 'Courier New', monospace;
-    background: #f4f6f9; border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; margin: 8px 0 0; }
-  #mfa-code, #mfa-enroll-code { letter-spacing: 4px; font-size: 1.2rem; text-align: center; }
-  .admin-empty { color: var(--text-muted); }
-  .btn-ghost { color: var(--navy); border: 1px solid var(--border); }
-  .btn-small { padding: 6px 14px; font-size: 0.85rem; }
+  .mfa-backup { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-2) var(--sp-5);
+    font-family: var(--font-mono); font-size: var(--fs-base);
+    background: var(--gray-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: var(--sp-3) var(--sp-4); margin: var(--sp-2) 0 0; }
+  #mfa-code, #mfa-enroll-code { letter-spacing: 4px; font-size: var(--fs-xl); text-align: center; }
+  .admin-empty { color: var(--muted); }
+  .btn-ghost { background: var(--panel); color: var(--navy); border: 1px solid var(--border-strong); }
+  .btn-small { padding: var(--sp-2) var(--sp-4); font-size: var(--fs-sm); }
   @media (max-width: 640px) { .token-form { max-width: 100%; } }
 </style>
 </head>
@@ -56,7 +90,7 @@
         <button type="submit" class="btn btn-primary">Verify</button>
         <button type="button" class="btn btn-ghost btn-small" id="mfa-cancel-btn">Cancel</button>
       </form>
-      <p class="admin-empty" style="margin-top:14px;">Lost your device? Enter one of your backup codes above instead.</p>
+      <p class="admin-empty" style="margin-top:var(--sp-4);">Lost your device? Enter one of your backup codes above instead.</p>
     </div>
 
     <div class="card token-form hidden" id="mfa-enroll-card" style="max-width: 520px;">

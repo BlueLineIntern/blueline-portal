@@ -1,0 +1,199 @@
+/* BlueLine — design tokens. Single source of truth for every surface:
+   the admin CRM (admin/shared.css), the client portal (assets/style.css), and
+   the onboarding flow (onboarding/onboarding.css) all @import this first.
+
+   WHY THIS FILE EXISTS
+   Before it, each of those three stylesheets declared its own near-miss copies
+   of the same palette (--bg was #f6f8fa in one and #f4f7fa in another, body text
+   #1a2332 vs #1c2530), and admin set `html { font-size: 14px }` while the other
+   two inherited the browser's 16px. Identical CSS therefore rendered ~14%
+   smaller in admin than in the portal, and the two admin pages that load BOTH
+   stylesheets got portal rules squeezed to a 14px root. Fonts are sized off the
+   scale below and the root stays 16px everywhere, so a token means one thing.
+
+   RULES
+   - Never set font-size on html/:root again; it silently rescales every rem.
+   - Size type from --fs-*, never a raw px/rem literal.
+   - Hue carries urgency (see "Urgency" below). Don't reuse green/amber/red to
+     encode anything else, or the traffic light stops meaning anything. */
+
+:root {
+  /* ---------- Brand ---------- */
+  --navy: #1B2A4A;
+  --navy-soft: #24345c;
+  --sky: #4AABDB;
+  --sky-dark: #3690c0;
+
+  /* ---------- Surfaces & text ----------
+     One reconciled set. The portal's older spellings (--card-bg, --text-muted,
+     --error, --navy-light) are aliased at the bottom so its existing rules keep
+     working without a find-and-replace across every file. */
+  --bg: #f5f7fa;
+  --panel: #ffffff;
+  --panel-subtle: #fafbfd;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --text: #1a2332;
+  --text-strong: #0f172a;
+  --muted: #64748b;
+  --muted-soft: #94a3b8;
+
+  /* ---------- Status palette ----------
+     Foreground values are the darkened variants: the light tints below are
+     backgrounds, and the mid-tone hue fails contrast as text on them. */
+  --green: #15803d;
+  --green-bg: #e7f6ec;
+  --green-line: #86cfa0;
+  --amber: #b45309;
+  --amber-bg: #fdf3e0;
+  --amber-line: #e8b877;
+  --red: #dc2626;
+  --red-bg: #fdeaea;
+  --red-line: #f0a3a3;
+  --sky-bg: #e8f4fb;
+  --sky-line: #9fd2ec;
+  --gray-bg: #eef2f6;
+  --gray-line: #cbd5e1;
+
+  /* ---------- Nominal hues (categories, tags) ----------
+     Task category is a nominal dimension — "trading" is not more urgent than
+     "follow-up" — so it must NOT borrow green/amber/red. These sit outside the
+     urgency vocabulary and exist purely so category tags stay scannable.
+     (The previous palette used green for meetings and red for compliance,
+     which made a routine compliance tag look like an alarm.) */
+  --violet: #6d47b8;
+  --violet-bg: #f1ecfb;
+  --teal: #0f766e;
+  --teal-bg: #e3f4f2;
+  --slate: #475569;
+  --slate-bg: #eaeef4;
+
+  /* ---------- Urgency (due dates) ----------
+     Hue = how soon, and nothing else. Green is RESERVED for this axis so it
+     always reads "time is fine" — which is also why priority-low is slate, not
+     green (green on a task you still owe someone reads as "done"). */
+  --due-over-fg: var(--red);
+  --due-over-bg: var(--red-bg);
+  --due-soon-fg: var(--amber);
+  --due-soon-bg: var(--amber-bg);
+  --due-ok-fg: var(--green);
+  --due-ok-bg: var(--green-bg);
+  --due-none-fg: var(--muted);
+  --due-none-bg: var(--gray-bg);
+
+  /* ---------- Priority rail ----------
+     Rendered as a thin vertical bar on a row's leading edge, never a filled
+     pill — the different form is what keeps it readable next to a due pill
+     that shares its red/amber hues. */
+  --prio-high: #dc2626;
+  --prio-medium: #e09a3e;
+  --prio-low: #94a3b8;
+
+  /* ---------- Type ----------
+     A 9-step scale replacing the 41 ad-hoc sizes that were in use (which
+     included clusters like 0.82/0.83/0.84/0.85/0.86rem — differences of a third
+     of a pixel). Values are rem against a 16px root; px shown for reference. */
+  /* System stacks only — deliberately no webfont. A locally-installed optional
+     face (the old stack listed Inter) renders for some staff and not others,
+     which is the same inconsistency this file exists to remove. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: Georgia, Cambria, "Times New Roman", serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* Admin's long-standing alias; still points at the sans stack. */
+  --font: var(--font-sans);
+
+  --fs-2xs: 0.6875rem;  /* 11px — kbd hints, densest meta */
+  --fs-xs: 0.75rem;     /* 12px — badges, uppercase table headers */
+  --fs-sm: 0.8125rem;   /* 13px — sub-text, captions, row meta */
+  --fs-base: 0.875rem;  /* 14px — body copy, inputs, buttons */
+  --fs-md: 0.9375rem;   /* 15px — nav, emphasized body */
+  --fs-input: 1rem;     /* 16px — see the mobile form-control rule at the foot of
+                           this file. iOS Safari force-zooms the viewport when a
+                           focused field is under 16px, so form controls have a
+                           floor the rest of the scale doesn't need. */
+  --fs-lg: 1.0625rem;   /* 17px — panel/card headings */
+  --fs-xl: 1.25rem;     /* 20px — modal & drawer titles */
+  --fs-2xl: 1.5rem;     /* 24px — page titles */
+  --fs-3xl: 2rem;       /* 32px — stat figures, hero numerals */
+
+  --lh-tight: 1.25;
+  --lh-snug: 1.4;
+  --lh-base: 1.55;
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* Uppercase micro-labels need loosened tracking to stay legible. */
+  --ls-caps: 0.06em;
+  --ls-tight: -0.011em;
+
+  /* ---------- Space ---------- 4px rhythm; use these, not arbitrary values. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* ---------- Radius & elevation ----------
+     Three shadow steps only: resting cards, floating panels, modal/drawer. */
+  --radius-sm: 5px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow: 0 1px 3px rgba(16, 24, 40, 0.07), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.09), 0 2px 4px rgba(16, 24, 40, 0.05);
+  --shadow-lg: 0 12px 40px rgba(16, 24, 40, 0.2);
+
+  --ring: 0 0 0 3px rgba(74, 171, 219, 0.22);
+  --transition: 0.16s ease;
+
+  /* ---------- Back-compat aliases ----------
+     assets/style.css and onboarding.css were written against these names.
+     Keeping them as aliases means one palette with zero rule rewrites. */
+  --navy-light: var(--navy-soft);
+  --card-bg: var(--panel);
+  --text-muted: var(--muted);
+  --error: var(--red);
+  --ok: var(--green);
+}
+
+/* The root must stay at the browser default so 1rem == 16px on every surface.
+   Per-surface body sizes come from the scale (admin uses --fs-base, the
+   client-facing pages step up to --fs-md for longer-form reading). */
+html {
+  font-size: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Tabular figures keep money columns, dates and counts from shifting width
+   digit to digit — the single cheapest credibility win in a finance UI. */
+.num, .stat-tile .num, .data-table td.num, .money, time {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* iOS Safari zooms the viewport when focusing a field whose text is under 16px,
+   which yanks the layout sideways mid-form. Enforced here once for all three
+   surfaces rather than per-stylesheet, since every one of them has forms and
+   the desktop sizes (14–15px) are all below the threshold. */
+@media (max-width: 900px) {
+  input, select, textarea {
+    font-size: var(--fs-input);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

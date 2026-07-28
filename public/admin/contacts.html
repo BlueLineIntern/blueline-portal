@@ -10,17 +10,17 @@
 <style>
   /* Client detail (module cards + charts come from style.css/render.js) */
   .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
-  .detail-header h1 { margin: 0 0 2px; font-size: 1.3rem; }
+  .detail-header h1 { margin: 0 0 2px; font-size: var(--fs-xl); }
   .detail-header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .detail-client-email { color: var(--muted); margin: 2px 0 0; }
   .detail-title-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
   .detail-section { margin-top: 28px; }
-  .detail-section > h2 { margin: 0 0 4px; font-size: 1.1rem; }
+  .detail-section > h2 { margin: 0 0 4px; font-size: var(--fs-lg); }
   .detail-section-desc { color: var(--muted); margin: 0 0 16px; }
-  .detail-subsection { color: var(--navy); font-size: 1rem; margin: 22px 0 12px; font-weight: 650; }
+  .detail-subsection { color: var(--navy); font-size: var(--fs-md); margin: 22px 0 12px; font-weight: var(--fw-semibold); }
   .detail-flags { background: var(--amber-bg); border-left: 3px solid #F2A65A; border-radius: 4px; padding: 12px 16px; margin-bottom: 8px; }
-  .detail-flags h2 { margin: 0 0 6px; font-size: 0.95rem; color: var(--amber); }
-  .detail-flags ul { margin: 0; padding-left: 20px; color: var(--amber); font-weight: 600; }
+  .detail-flags h2 { margin: 0 0 6px; font-size: var(--fs-base); color: var(--amber); }
+  .detail-flags ul { margin: 0; padding-left: 20px; color: var(--amber); font-weight: var(--fw-semibold); }
   .detail-empty-module { color: var(--muted); margin: 14px 0 0; }
   .onb-link-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: #fff; margin-bottom: 10px; }
   .onb-signature { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px; max-width: 400px; margin-top: 12px; }
@@ -31,18 +31,18 @@
   .overview-grid .panel { margin-bottom: 0; }
   .overview-grid .panel-full { grid-column: 1 / -1; }
   .kv-rows { display: flex; flex-direction: column; }
-  .kv-row { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
+  .kv-row { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
   .kv-row:last-child { border-bottom: none; }
   .kv-row span { color: var(--muted); }
-  .kv-row strong { font-weight: 600; text-align: right; }
+  .kv-row strong { font-weight: var(--fw-semibold); text-align: right; }
 
   /* Assignment editor */
   .assignment-group { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-top: 14px; }
   .assignment-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px; }
   .assignment-group-head strong { color: var(--navy); }
-  .assignment-select-all { font-size: 0.82rem; color: var(--muted); display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+  .assignment-select-all { font-size: var(--fs-sm); color: var(--muted); display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
   .assignment-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 20px; }
-  .assignment-item { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem; }
+  .assignment-item { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: var(--fs-sm); }
   .assignment-item input, .assignment-select-all input { width: 16px; height: 16px; accent-color: var(--sky); flex-shrink: 0; }
   .assignment-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
   @media (max-width: 640px) { .assignment-items { grid-template-columns: 1fr; } }
@@ -532,7 +532,7 @@
     document.getElementById('tab-overview').innerHTML = `
       <div class="overview-grid">
         <div class="panel">
-          <div class="panel-head"><h2>Contact Information</h2><span class="cell-missing" style="font-size:12px;">Synced from SharePoint</span></div>
+          <div class="panel-head"><h2>Contact Information</h2><span class="cell-missing" style="font-size:var(--fs-xs);">Synced from SharePoint</span></div>
           <div class="kv-rows">
             ${kvRow('Name', c.name ? escapeHtml(c.name) : '<span class="cell-missing">—</span>')}
             ${kvRow('Preferred name', c.preferredName ? escapeHtml(c.preferredName) : '<span class="cell-missing">—</span>')}
@@ -737,7 +737,8 @@
 
   // ---------- Tasks tab ----------
 
-  const PRIORITY_BADGE = { high: 'badge-red', medium: 'badge-amber', low: 'badge-gray' };
+  // Category labels/badges, priority rails, due-date urgency and both pickers
+  // all come from shared.js so this page and Operations can't drift apart.
 
   // Recurrence options, matching TASK_REPEATS in worker.js. A repeating task
   // spawns its next occurrence when this one is marked done.
@@ -754,41 +755,6 @@
     Object.entries(REPEAT_LABELS)
       .map(([k, label]) => `<option value="${escapeHtml(k)}"${k === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`)
       .join('');
-  const priorityOptions = (selected) =>
-    `<option value="" disabled${selected ? '' : ' selected'}>-priority-</option>` +
-    ['low', 'medium', 'high']
-      .map((p) => `<option value="${p}"${p === selected ? ' selected' : ''}>${p.charAt(0).toUpperCase() + p.slice(1)} priority</option>`)
-      .join('');
-
-  const TASK_CATEGORY_LABELS = {
-    'follow-up': 'Follow-Up',
-    meeting: 'Meeting',
-    'investment-reports': 'Investment Reports',
-    'operational-task': 'Operational Task',
-    trading: 'Trading',
-    'investment-policy-statement': 'Investment Policy Statement',
-    'financial-planning': 'Financial Planning',
-  };
-  const NEW_CATEGORY_VALUE = '__new_category__';
-  const promptNewCategoryName = () => (prompt('New category name:') || '').trim();
-  // A task's category may be a legacy value (review/onboarding/compliance/
-  // other, set by automated flows) or an advisor-typed custom name that
-  // isn't in TASK_CATEGORY_LABELS — surface it as its own option so picking
-  // the select doesn't silently overwrite it.
-  const categoryOptions = (current) => {
-    const known = Object.keys(TASK_CATEGORY_LABELS);
-    let opts = '';
-    if (current && !known.includes(current)) {
-      opts += `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>`;
-    } else if (!current) {
-      opts += '<option value="" disabled selected>-category-</option>';
-    }
-    opts += known
-      .map((k) => `<option value="${escapeHtml(k)}"${k === current ? ' selected' : ''}>${escapeHtml(TASK_CATEGORY_LABELS[k])}</option>`)
-      .join('');
-    opts += `<option value="${NEW_CATEGORY_VALUE}">Create new category…</option>`;
-    return opts;
-  };
 
   async function renderTasksTab() {
     const wrap = document.getElementById('tab-tasks');
@@ -811,8 +777,23 @@
       // Meetings are tasks too, but they have their own tab now — listing them
       // here as well would show one record in two places, tickable from either.
       const mine = (data.tasks || []).filter((t) => t.client === email && t.category !== 'meeting');
-      const open = mine.filter((t) => t.status === 'open');
-      const done = mine.filter((t) => t.status === 'done');
+      // Order by urgency, then priority. Colour-coding the due dates is only
+      // useful if the row that needs attention first is also the row on top;
+      // in arrival order the most overdue task can sit below a task due in
+      // three weeks. Undated tasks sink to the bottom (nothing is pending on
+      // them), and within an equal date the higher priority wins.
+      const P_RANK = { high: 0, medium: 1, low: 2 };
+      const byUrgency = (a, b) => {
+        const ad = a.due ? new Date(a.due).getTime() : Infinity;
+        const bd = b.due ? new Date(b.due).getTime() : Infinity;
+        if (ad !== bd) return ad - bd;
+        return (P_RANK[a.priority] ?? 1) - (P_RANK[b.priority] ?? 1);
+      };
+      const open = mine.filter((t) => t.status === 'open').sort(byUrgency);
+      // Completed work reads newest-first — it's a record, not a queue.
+      const done = mine
+        .filter((t) => t.status === 'done')
+        .sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
       // Assignee picker: admin accounts only (what the API accepts), plus an
       // explicit unassigned option so a task can be handed back to the pool.
       const assigneeOptions = (selected) =>
@@ -823,16 +804,23 @@
               `<option value="${escapeHtml(a)}"${a === selected ? ' selected' : ''}>${escapeHtml(staffLabel(a))}</option>`
           )
           .join('');
-      const row = (t) => `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
-        <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
+      // Priority reads as the leading rail, urgency as the due pill, category as
+      // a nominal tag. The category select is kept (it's how a task gets
+      // recategorised) but sits with the assignee control on the trailing side.
+      const row = (t) => `<div class="row-item ${prioRailClass(t.priority)} ${t.status === 'done' ? 'task-done' : ''}">
+        <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark done'}" style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
         <div class="row-main">
-          <div class="row-title" ${t.status === 'done' ? 'style="text-decoration:line-through;color:var(--muted)"' : ''}>${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
-          <div class="row-sub">${t.due ? escapeHtml(new Date(t.due).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : 'no due date'}${t.repeat ? ` · ↻ ${escapeHtml(REPEAT_LABELS[t.repeat] || t.repeat)}` : ''}${t.description ? `<br>${escapeHtml(t.description)}` : ''}</div>
+          <div class="row-title">${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
+          <div class="row-sub">
+            ${duePill(t)}
+            <span class="prio-label">${escapeHtml(t.priority || 'low')}</span>
+            ${t.repeat ? `<span>↻ ${escapeHtml(REPEAT_LABELS[t.repeat] || t.repeat)}</span>` : ''}
+          </div>
+          ${t.description ? `<div class="row-sub">${escapeHtml(t.description)}</div>` : ''}
         </div>
-        <div class="row-side" style="display:flex; align-items:center; gap:8px;">
-          <select class="task-category" data-id="${escapeHtml(t.id)}" title="Category" style="max-width:170px;">${categoryOptions(t.category || '')}</select>
-          <select class="task-assignee" data-id="${escapeHtml(t.id)}" title="Assign to" style="max-width:150px;">${assigneeOptions(t.assignee || '')}</select>
-          <span class="badge ${PRIORITY_BADGE[t.priority] || 'badge-gray'}">${escapeHtml(t.priority)}</span>
+        <div class="row-side">
+          <select class="task-category row-select" data-id="${escapeHtml(t.id)}" title="Category">${categoryOptions(t.category || '')}</select>
+          <select class="task-assignee row-select" data-id="${escapeHtml(t.id)}" title="Assign to">${assigneeOptions(t.assignee || '')}</select>
         </div>
       </div>`;
       wrap.innerHTML = `
@@ -840,17 +828,17 @@
           <div class="panel-head"><h2>Open Tasks (${open.length})</h2>
             <a class="panel-link" href="/admin/tasks.html">Full task manager →</a></div>
           <div class="row-list">${open.length ? open.map(row).join('') : '<p class="empty">No open tasks for this contact.</p>'}</div>
-          <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px;">
+          <div class="quick-add">
             <input type="text" class="input" id="quick-task-title" placeholder="Task name…" />
-            <div style="display:flex; gap:10px; flex-wrap:wrap;">
-              <input type="date" class="input" id="quick-task-due" title="Due date" style="flex:1; min-width:150px;" />
-              <select id="quick-task-repeat" title="Repeats" style="flex:1; min-width:150px;">${repeatOptions(draft.repeat)}</select>
-              <select id="quick-task-assignee" title="Assigned to" style="flex:1; min-width:150px;">${assigneeOptions(SESSION.email)}</select>
-              <select id="quick-task-priority" title="Priority" style="flex:1; min-width:150px;">${priorityOptions(draft.priority)}</select>
-              <select id="quick-task-category" title="Category" style="flex:1; min-width:150px;">${categoryOptions(draft.category)}</select>
+            <div class="quick-add-row">
+              <input type="date" class="input" id="quick-task-due" title="Due date" />
+              <select id="quick-task-repeat" title="Repeats">${repeatOptions(draft.repeat)}</select>
+              <select id="quick-task-assignee" title="Assigned to">${assigneeOptions(SESSION.email)}</select>
+              <select id="quick-task-priority" title="Priority">${priorityOptions(draft.priority)}</select>
+              <select id="quick-task-category" title="Category">${categoryOptions(draft.category)}</select>
             </div>
             <textarea class="input" id="quick-task-description" rows="2" placeholder="Description (optional)"></textarea>
-            <div><button type="button" class="btn btn-primary btn-small" id="quick-task-add">Add Task</button></div>
+            <div><button type="button" class="btn btn-primary" id="quick-task-add">Add Task</button></div>
           </div>
           <p class="form-error" id="quick-task-error"></p>
         </div>
@@ -1130,7 +1118,7 @@
           <div class="field"><textarea id="note-body" rows="4" placeholder="Meeting notes, reminders, context…"></textarea></div>
           <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
             <input type="text" class="input" id="note-tags" placeholder="Tags (comma-separated)" style="flex:1; min-width:180px;" />
-            <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;color:var(--muted);">
+            <label style="display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--muted);">
               <input type="checkbox" id="note-pinned" style="width:16px;height:16px;accent-color:var(--sky);" /> Pin</label>
             <button type="button" class="btn btn-primary btn-small" id="note-save-btn">${editingNoteId ? 'Update Note' : 'Save Note'}</button>
             ${editingNoteId ? '<button type="button" class="btn btn-ghost btn-small" id="note-cancel-edit">Cancel</button>' : ''}

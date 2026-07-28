@@ -9,82 +9,86 @@
 <style>
   /* Calendar is a view over the same task: records (meetings are tasks with
      category 'meeting'; every task with a due date appears). No new store. */
-  .cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-  .cal-nav { display: flex; align-items: center; gap: 8px; }
-  .cal-period { font-weight: 650; font-size: 1rem; color: var(--navy); min-width: 180px; }
-  .cal-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
-  .cal-seg button { border: none; background: var(--panel); color: var(--muted); padding: 7px 14px; font-family: var(--font); font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+  .cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+  .cal-nav { display: flex; align-items: center; gap: var(--sp-2); }
+  .cal-period { font-weight: var(--fw-semibold); font-size: var(--fs-md); color: var(--navy); min-width: 180px; }
+  .cal-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius); overflow: hidden; }
+  .cal-seg button { border: none; background: var(--panel); color: var(--muted); padding: 7px 14px; font-family: var(--font-sans); font-size: var(--fs-sm); font-weight: var(--fw-semibold); cursor: pointer; }
   .cal-seg button + button { border-left: 1px solid var(--border-strong); }
   .cal-seg button.active { background: var(--navy); color: #fff; }
 
   /* Month grid */
   .cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-bottom: 6px; }
-  .cal-weekdays span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; text-align: left; padding-left: 4px; }
+  .cal-weekdays span { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--muted); font-weight: var(--fw-bold); text-align: left; padding-left: var(--sp-1); }
   .cal-month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
-  .cal-cell { min-height: 108px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+  .cal-cell { min-height: 108px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; cursor: pointer; display: flex; flex-direction: column; gap: var(--sp-1); overflow: hidden; }
   .cal-cell:hover { border-color: var(--sky); }
   .cal-cell.other-month { background: var(--bg); opacity: 0.6; }
   .cal-cell.today { border-color: var(--sky); box-shadow: inset 0 0 0 1px var(--sky); }
-  .cal-daynum { font-size: 0.78rem; font-weight: 650; color: var(--text); }
+  .cal-daynum { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--text); }
   .cal-cell.today .cal-daynum { color: var(--sky-dark); }
-  .cal-more { font-size: 0.7rem; color: var(--muted); font-weight: 600; }
+  .cal-more { font-size: var(--fs-xs); color: var(--muted); font-weight: var(--fw-semibold); }
 
   /* Event chips */
-  .cal-chip { font-size: 0.72rem; padding: 2px 6px; border-radius: 5px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--border); background: var(--panel); display: flex; align-items: center; gap: 5px; }
+  .cal-chip { font-size: var(--fs-xs); padding: 2px 6px; border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid var(--border); background: var(--panel); display: flex; align-items: center; gap: 5px; }
   .cal-chip:hover { border-color: var(--sky); }
   .cal-chip .cal-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--border-strong); }
-  .cal-chip.is-meeting { font-weight: 600; color: var(--navy); }
+  .cal-chip.is-meeting { font-weight: var(--fw-semibold); color: var(--navy); }
   /* Prep-readiness colour: blue = no prep, red = outstanding, green = all done */
   .cal-chip.prep-none { background: var(--sky-bg); border-color: var(--sky); }
   .cal-chip.prep-none .cal-dot { background: var(--sky); }
-  .cal-chip.prep-todo { background: #fdeaea; border-color: var(--red); }
+  .cal-chip.prep-todo { background: var(--red-bg); border-color: var(--red); }
   .cal-chip.prep-todo .cal-dot { background: var(--red); }
-  .cal-chip.prep-done { background: #e7f6ec; border-color: var(--green); }
+  .cal-chip.prep-done { background: var(--green-bg); border-color: var(--green); }
   .cal-chip.prep-done .cal-dot { background: var(--green); }
   .cal-chip.done { opacity: 0.55; text-decoration: line-through; }
   .cal-chip .cal-time { color: var(--muted); font-variant-numeric: tabular-nums; }
 
   /* Week + day */
   .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: start; }
-  .cal-col { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; min-height: 120px; display: flex; flex-direction: column; }
+  .cal-col { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); min-height: 120px; display: flex; flex-direction: column; }
   .cal-col.today { border-color: var(--sky); }
-  .cal-col-head { padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 0.78rem; font-weight: 650; color: var(--navy); cursor: pointer; }
-  .cal-col-head span { color: var(--muted); font-weight: 500; }
-  .cal-col-body { padding: 8px; display: flex; flex-direction: column; gap: 6px; flex: 1; cursor: pointer; }
+  .cal-col-head { padding: var(--sp-2) 10px; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--navy); cursor: pointer; }
+  .cal-col-head span { color: var(--muted); font-weight: var(--fw-medium); }
+  .cal-col-body { padding: var(--sp-2); display: flex; flex-direction: column; gap: 6px; flex: 1; cursor: pointer; }
   .cal-day-single { max-width: 640px; }
   .cal-day-single .cal-col { min-height: 300px; }
 
   /* Agenda */
   .cal-agenda { display: flex; flex-direction: column; gap: 18px; max-width: 720px; }
-  .agenda-day-label { font-weight: 650; color: var(--navy); font-size: 0.9rem; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .agenda-day-label { font-weight: var(--fw-semibold); color: var(--navy); font-size: var(--fs-base); margin-bottom: var(--sp-2); padding-bottom: 6px; border-bottom: 1px solid var(--border); }
   .agenda-day-label.is-today { color: var(--sky-dark); }
-  .agenda-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); cursor: pointer; margin-bottom: 6px; }
+  .agenda-row { display: flex; align-items: center; gap: 10px; padding: var(--sp-2) 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); cursor: pointer; margin-bottom: 6px; }
   .agenda-row:hover { border-color: var(--sky); }
-  .agenda-time { font-size: 0.8rem; color: var(--muted); min-width: 74px; font-variant-numeric: tabular-nums; }
-  .agenda-title { font-weight: 600; font-size: 0.88rem; flex: 1; }
-  .cal-empty { color: var(--muted); font-size: 0.86rem; padding: 8px 0; }
+  .agenda-time { font-size: var(--fs-sm); color: var(--muted); min-width: 74px; font-variant-numeric: tabular-nums; }
+  .agenda-title { font-weight: var(--fw-semibold); font-size: var(--fs-base); flex: 1; }
+  .agenda-title.done { text-decoration: line-through; color: var(--muted); }
+  .cal-empty { color: var(--muted); font-size: var(--fs-sm); padding: var(--sp-2) 0; }
 
   /* Drawer internals (prep checklist, history) */
-  .checklist-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+  .checklist-item { display: flex; align-items: center; gap: var(--sp-2); padding: 5px 0; }
   .checklist-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--sky); flex-shrink: 0; }
-  .checklist-item .ci-text { flex: 1; font-size: 0.88rem; }
+  .checklist-item .ci-text { flex: 1; font-size: var(--fs-base); }
   .checklist-item.done .ci-text { text-decoration: line-through; color: var(--muted); }
-  .checklist-item .ci-remove { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 0 4px; }
+  .checklist-item .ci-remove { background: none; border: none; color: var(--muted); cursor: pointer; font-size: var(--fs-base); padding: 0 var(--sp-1); }
   .checklist-item .ci-remove:hover { color: var(--red); }
-  .checklist-add { display: flex; gap: 8px; margin-top: 8px; }
+  .checklist-add { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
   .checklist-add input { flex: 1; }
   .drawer-section { margin-top: 22px; }
-  .drawer-section > h3 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .drawer-section .sec-count { color: var(--muted); font-weight: 600; }
-  .related-item { display: block; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; cursor: pointer; color: var(--text); }
+  .drawer-section > h3 { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--muted); margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+  .drawer-section .sec-count { color: var(--muted); font-weight: var(--fw-semibold); }
+  .related-item { display: block; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); cursor: pointer; color: var(--text); }
   .related-item:last-child { border-bottom: none; }
   .related-item:hover { color: var(--sky-dark); }
-  .hist-item { display: flex; gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 0.84rem; }
+  .hist-item { display: flex; gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
   .hist-item:last-child { border-bottom: none; }
   .hist-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sky); margin-top: 6px; flex-shrink: 0; }
   .hist-item.hist-comment .hist-dot { background: var(--amber); }
-  .hist-when { color: var(--muted); font-size: 0.76rem; }
-  .comment-box { display: flex; flex-direction: column; gap: 8px; }
+  .hist-when { color: var(--muted); font-size: var(--fs-xs); }
+  .comment-box { display: flex; flex-direction: column; gap: var(--sp-2); }
+  /* Empty-state line inside drawer sections (no history, no related tasks).
+     Colour comes from .cell-missing; this only pins the size to the scale. */
+  .sec-none { font-size: var(--fs-sm); }
 </style>
 </head>
 <body>
@@ -142,14 +146,9 @@
       </div>
       <div class="field">
         <label for="d-category">Category</label>
-        <select id="d-category">
-          <option value="meeting">Meeting</option>
-          <option value="follow-up">Follow-up</option>
-          <option value="review">Review</option>
-          <option value="onboarding">Onboarding</option>
-          <option value="compliance">Compliance</option>
-          <option value="other">Other</option>
-        </select>
+        <!-- Options come from categoryOptions() in shared.js so this picker can
+             never drift from the real category list (or lose a custom one). -->
+        <select id="d-category"></select>
       </div>
     </div>
     <div class="field-row">
@@ -200,14 +199,14 @@
         <textarea id="d-comment" rows="2" placeholder="Add a note…"></textarea>
         <div><button type="button" class="btn btn-ghost btn-small" id="d-comment-add">Add note</button></div>
       </div>
-      <div id="d-history" style="margin-top:14px;"></div>
+      <div id="d-history" style="margin-top:var(--sp-4);"></div>
     </div>
 
     <p class="form-error" id="d-error"></p>
   </div>
   <div class="drawer-foot">
     <button type="button" class="btn btn-danger btn-small" id="d-delete" title="Delete">Delete</button>
-    <div style="display:flex; gap:10px;">
+    <div style="display:flex; gap:var(--sp-3);">
       <button type="button" class="btn btn-ghost" id="d-cancel">Cancel</button>
       <button type="button" class="btn btn-primary" id="d-save">Save</button>
     </div>
@@ -370,6 +369,7 @@
           <span class="agenda-time">${escapeHtml(timeLabel(t) || '—')}</span>
           <span class="cal-dot" style="width:8px;height:8px;border-radius:50%;background:${prepColorVar(t)}"></span>
           <span class="agenda-title ${t.status === 'done' ? 'done' : ''}">${escapeHtml(t.title)}</span>
+          ${categoryBadge(t.category)}
           <span class="cell-sub">${t.client ? escapeHtml(contactName(t.client)) : (t.category === 'meeting' ? 'Internal' : '')}</span>
         </div>`).join('')}</div>`;
     }
@@ -443,7 +443,11 @@
     fillSelect('d-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), draft.client, true);
     fillSelect('d-assignee', adminList.map((a) => ({ value: a, label: staffLabel(a) })), draft.assignee, true);
     document.getElementById('d-due').value = draft.due ? String(draft.due).slice(0, 16) : '';
-    document.getElementById('d-category').value = draft.category;
+    // categoryOptions marks the right option selected and preserves a custom or
+    // legacy value as its own option, so rebuilding can't rewrite the category.
+    const catSel = document.getElementById('d-category');
+    catSel.innerHTML = categoryOptions(draft.category);
+    catSel.dataset.prev = draft.category || '';
     document.getElementById('d-priority').value = draft.priority;
     document.getElementById('d-error').textContent = '';
     document.getElementById('d-comment').value = '';
@@ -452,6 +456,23 @@
     document.getElementById('d-related-section').classList.toggle('hidden', drawerMode !== 'edit' || !draft.client);
     document.getElementById('d-delete').classList.toggle('hidden', drawerMode !== 'edit');
   }
+
+  // "Create new category…" sentinel. There's no task to PATCH from here (the
+  // drawer saves as a whole), so the typed name is injected as a real option and
+  // the select's own value carries it into the save payload. Cancelling the
+  // prompt falls back to whatever was selected before.
+  document.getElementById('d-category').addEventListener('change', (e) => {
+    const sel = e.target;
+    if (sel.value !== NEW_CATEGORY_VALUE) { sel.dataset.prev = sel.value; return; }
+    const name = promptNewCategoryName();
+    if (!name) { sel.value = sel.dataset.prev || ''; return; }
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    opt.selected = true;
+    sel.insertBefore(opt, sel.querySelector(`option[value="${NEW_CATEGORY_VALUE}"]`));
+    sel.dataset.prev = name;
+  });
 
   // List renderer for the prep checklist.
   function renderList(boxId, arr, key, progressId, persistFn) {
@@ -499,9 +520,14 @@
     const box = document.getElementById('d-related');
     if (!draft.client) { box.innerHTML = ''; return; }
     const related = allTasks.filter((t) => t.client === draft.client && t.id !== drawerTaskId && t.status === 'open');
+    // Due date as bare coloured text (due-text-*): a related task that's overdue
+    // or landing today should say so without a second pill competing with the row.
     box.innerHTML = related.length
-      ? related.map((t) => `<span class="related-item" data-open="${escapeHtml(t.id)}">${escapeHtml(t.title)}${t.due ? ` · ${escapeHtml(timeLabel(t) === 'All day' || !hasTime(t) ? new Date(t.due).toLocaleDateString() : new Date(t.due).toLocaleString())}` : ''}</span>`).join('')
-      : '<p class="cell-missing" style="font-size:0.84rem;">No other open tasks for this client.</p>';
+      ? related.map((t) => {
+        const dm = dueMeta(t);
+        return `<span class="related-item" data-open="${escapeHtml(t.id)}">${escapeHtml(t.title)}${dm.text ? ` · <span class="${dm.textClass}">${escapeHtml(dm.text)}</span>` : ''}</span>`;
+      }).join('')
+      : '<p class="cell-missing sec-none">No other open tasks for this client.</p>';
     box.querySelectorAll('.related-item').forEach((el) => el.addEventListener('click', () => openDrawerEdit(el.dataset.open)));
   }
 
@@ -519,7 +545,7 @@
       <div class="hist-item ${h.type === 'comment' ? 'hist-comment' : ''}">
         <span class="hist-dot"></span>
         <div><div>${historyLine(h)}</div><div class="hist-when">${escapeHtml(staffLabel(h.actor))} · ${escapeHtml(relTime(h.ts))}</div></div>
-      </div>`).join('') : '<p class="cell-missing" style="font-size:0.84rem;">No history yet.</p>';
+      </div>`).join('') : '<p class="cell-missing sec-none">No history yet.</p>';
   }
 
   document.getElementById('d-comment-add').addEventListener('click', async () => {
@@ -546,6 +572,8 @@
     draft.priority = document.getElementById('d-priority').value;
     const errEl = document.getElementById('d-error');
     if (!draft.title.trim()) { errEl.textContent = 'Title is required.'; return; }
+    // The sentinel is a UI affordance, never a category — refuse to persist it.
+    if (!draft.category || draft.category === NEW_CATEGORY_VALUE) { errEl.textContent = 'Choose a category.'; return; }
     const payload = {
       title: draft.title, description: draft.description, client: draft.client, assignee: draft.assignee,
       due: draft.due, category: draft.category, priority: draft.priority, meetingType: draft.meetingType,
