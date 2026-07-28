@@ -7,16 +7,6 @@
 <title>Home — BlueLine Admin</title>
 <link rel="stylesheet" href="/admin/shared.css" />
 <style>
-  .queue-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
-  .queue-chip {
-    display: inline-flex; align-items: center; gap: var(--sp-2); text-decoration: none;
-    padding: var(--sp-1) var(--sp-3); border-radius: var(--radius-pill); border: 1px solid var(--border);
-    background: var(--panel); color: var(--text); font-size: var(--fs-xs); font-weight: var(--fw-semibold);
-  }
-  .queue-chip:hover { border-color: var(--sky); text-decoration: none; }
-  .queue-chip .qc-count { background: var(--navy); color: #fff; border-radius: var(--radius-pill); padding: 1px var(--sp-2); font-size: var(--fs-2xs); font-weight: var(--fw-bold); }
-  .queue-chip.zero { opacity: 0.55; }
-  .queue-chip.zero .qc-count { background: var(--gray-bg); color: var(--muted); }
   .task-check { width: 16px; height: 16px; accent-color: var(--sky); cursor: pointer; margin-top: 2px; flex-shrink: 0; }
   .alert-item { display: flex; gap: var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); align-items: flex-start; }
   .alert-item:last-child { border-bottom: none; }
@@ -203,10 +193,6 @@
           <div class="rail-body" id="r-tasks"></div>
         </div>
         <div class="panel">
-          <div class="panel-head"><h2>Queues</h2></div>
-          <div class="rail-body"><div class="queue-row" id="r-queues"></div></div>
-        </div>
-        <div class="panel">
           <div class="panel-head"><h2>Special Dates</h2><span class="panel-status">next 30 days</span></div>
           <div class="rail-body" id="r-dates"></div>
         </div>
@@ -231,10 +217,8 @@
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   });
 
-  const ALL_KEYS_HINT = 18; // 17 modules + wizard; used only for progress text
-
   // isSameLocalDay / duePill / prioRailClass / categoryBadge / activityKind /
-  // nextAnniversary / staffLabel / TL_LABELS all come from shared.js.
+  // upcomingImportantDate / staffLabel / TL_LABELS all come from shared.js.
 
   let contactsCache = [];      // for the @mention picker and feed name lookups
   let adminEmails = [];        // assignable accounts for the Task form
@@ -245,10 +229,6 @@
     const cls = `stat-tile${danger ? ' alert' : ''}`;
     const inner = `<div class="num">${num}</div><div class="lbl">${escapeHtml(label)}</div>`;
     return href ? `<a class="${cls}" href="${href}">${inner}</a>` : `<div class="${cls}">${inner}</div>`;
-  }
-
-  function chip(count, label, href) {
-    return `<a class="queue-chip ${count ? '' : 'zero'}" href="${href}"><span class="qc-count">${count}</span>${escapeHtml(label)}</a>`;
   }
 
   function fill(id, html, emptyText) {
@@ -726,22 +706,10 @@
         (railDueToday.length ? `<div class="rail-group soon">Due today</div>` + railDueToday.slice(0, 8).map(railTask).join('') : '');
       fill('r-tasks', taskHtml, 'Nothing overdue or due today.');
 
-      // ----- Queues -----
-      const reviewTasks = openTasks.filter((t) => t.category === 'review');
-      const onbTasks = openTasks.filter((t) => t.category === 'onboarding');
+      // Completed onboardings whose advisory agreement is still unsigned. The
+      // Queues card that also counted these is gone; the Compliance alerts
+      // below still name each one individually, so the signal is not lost.
       const unsigned = onbs.filter((r) => r.completionTime && !(r.data && r.data.agreement && r.data.agreement.signatureDataUrl));
-      const waitingOnClient = contacts.filter((c) => {
-        if (!c.hasAccount) return false;
-        const doneCount = Object.keys(c.modules || {}).length;
-        const totalCount = c.assignments == null ? ALL_KEYS_HINT : c.assignments.length;
-        return doneCount < totalCount;
-      });
-      document.getElementById('r-queues').innerHTML = [
-        chip(reviewTasks.length, 'Assessments', '/admin/operations.html?cat=review'),
-        chip(onbTasks.length, 'Onboarding', '/admin/operations.html?cat=onboarding'),
-        chip(unsigned.length, 'Unsigned', '/admin/onboarding.html'),
-        chip(waitingOnClient.length, 'Waiting on client', '/admin/contacts.html'),
-      ].join('');
 
       // ----- Special dates: whatever falls inside the next 30 days -----
       // upcomingImportantDate honours each entry's repeatsAnnually flag, so a
