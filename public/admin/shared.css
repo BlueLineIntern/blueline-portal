@@ -565,27 +565,24 @@ body .topbar, body .footer { display: none; }
 
 /* Rail rows: tasks, events, special dates. Denser than .row-item — the rail is
    320px and these are glanceable, not workable. */
-.rail-row { display: flex; gap: var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
+.rail-row { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
 .rail-row:last-child { border-bottom: none; }
 .rail-row .rr-main { flex: 1; min-width: 0; }
 .rail-row .rr-sub { font-size: var(--fs-xs); color: var(--muted); margin-top: 1px; }
-/* A long category name ("Investment Policy Statement") was wide enough to
-   push "related to <client>" onto a second line, making that row taller than
-   its neighbors — the rail reads as a tidy uniform list, so one long label
-   shouldn't visibly break that rhythm. The colour already carries the
-   category at a glance; the full name is still available via the title
-   tooltip added in categoryBadge() (shared.js). */
-.rail-row .badge { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 .rail-group { font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: 0.06em; text-transform: uppercase; color: var(--red); padding: var(--sp-3) 0 var(--sp-1); }
 .rail-group.soon { color: var(--amber); }
-/* The Tasks rail groups rows by urgency (Overdue / Due today), so the rail
-   bar echoes the SAME red/amber as its group heading rather than priority.
-   Priority still shows as a neutral text label (.prio-label) beside the
-   category badge -- a second colour here (--prio-medium is a different
-   orange than --amber) would clash right under a heading that already
-   committed to one specific hue for this group. */
-.rail-row.rail-overdue { box-shadow: inset 3px 0 0 var(--red); }
-.rail-row.rail-duetoday { box-shadow: inset 3px 0 0 var(--amber); }
+
+/* Task rows read as one flowing sentence: [badge] Title related to Client.
+   The group heading above already names the urgency in words, so the row
+   carries no urgency colour of its own — an edge bar here only restated the
+   heading in a second, slightly different hue. Rows are allowed to wrap to
+   whatever height their content needs; forcing a uniform height is what made
+   long titles and long category names fight for the same line. */
+.rail-row .rr-main { line-height: 1.45; }
+.rail-row .rr-title { color: var(--sky-dark); font-weight: var(--fw-semibold); text-decoration: none; }
+.rail-row .rr-title:hover { text-decoration: underline; }
+.rail-row .rr-rel { color: var(--muted); }
+.rail-row .badge { vertical-align: baseline; }
 .sd-when { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
 
 /* Sidebar recently-viewed */

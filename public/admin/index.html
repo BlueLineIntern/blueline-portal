@@ -397,19 +397,19 @@
       // contacts.html's Tasks tab already makes for the same reason.
       const railOverdue = overdue.filter((t) => t.category !== 'meeting');
       const railDueToday = dueToday.filter((t) => t.category !== 'meeting');
-      // Rail colour = which group the row is in (matches that group's heading
-      // exactly); priority rides along as a neutral text label instead of a
-      // second colour, so the two channels never fight for the same 3px edge.
-      const railTask = (urgencyCls) => (t) => `<div class="rail-row ${urgencyCls}">
+      // One flowing line per task: [badge] Title — related to Client. The group
+      // heading (Overdue / Due today) already states the urgency in words, so
+      // the row itself carries no urgency colour; a coloured edge bar here just
+      // restated the heading in a second, competing hue.
+      const railTask = (t) => `<div class="rail-row">
         <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" title="Mark complete" />
         <div class="rr-main">
-          <div>${escapeHtml(t.title)}</div>
-          <div class="rr-sub">${t.category ? categoryBadge(t.category) + ' ' : ''}${t.client ? 'related to ' + clientLink(t.client) : 'internal'}${t.priority ? ` <span class="prio-label">${escapeHtml(t.priority)}</span>` : ''}</div>
+          ${t.category ? categoryBadge(t.category) + ' ' : ''}<a class="rr-title" href="/admin/contacts.html?c=${encodeURIComponent(t.client || '')}&tab=tasks">${escapeHtml(t.title)}</a>${t.client ? ` <span class="rr-rel">related to</span> ${clientLink(t.client)}` : ''}
         </div>
       </div>`;
       const taskHtml =
-        (railOverdue.length ? `<div class="rail-group">Overdue</div>` + railOverdue.slice(0, 8).map(railTask('rail-overdue')).join('') : '') +
-        (railDueToday.length ? `<div class="rail-group soon">Due today</div>` + railDueToday.slice(0, 8).map(railTask('rail-duetoday')).join('') : '');
+        (railOverdue.length ? `<div class="rail-group">Overdue</div>` + railOverdue.slice(0, 8).map(railTask).join('') : '') +
+        (railDueToday.length ? `<div class="rail-group soon">Due today</div>` + railDueToday.slice(0, 8).map(railTask).join('') : '');
       fill('r-tasks', taskHtml, 'Nothing overdue or due today.');
 
       // ----- Queues -----
