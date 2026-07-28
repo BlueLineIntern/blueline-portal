@@ -86,7 +86,8 @@ a:hover { text-decoration: underline; }
   box-shadow: inset 3px 0 0 var(--sky);
   font-weight: var(--fw-semibold);
 }
-.sidebar-nav a .nav-icon { width: 18px; text-align: center; opacity: 0.9; }
+.nav-icon { width: 18px; height: 18px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; opacity: 0.9; }
+.icon-svg { width: 100%; height: 100%; }
 .sidebar-search { margin: 2px var(--sp-2) 0; }
 .sidebar-search button {
   width: 100%; display: flex; align-items: center; gap: var(--sp-3);

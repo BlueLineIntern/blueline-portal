@@ -243,17 +243,35 @@ function duePill(task) {
   return `<span class="due ${d.pillClass}">${escapeHtml(d.text)}</span>`;
 }
 
+// Line-style icon set (2px stroke, no fill) matching the clean outline look
+// of the CRM this sidebar is modeled on — the previous ⌂ ☰ ▦ etc. were
+// Unicode glyphs, not icons, and render inconsistently across fonts/platforms.
+// Paths are Feather Icons (MIT licensed) trimmed to the ones actually used.
+const ICONS = {
+  home: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  'check-square': '<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+  'log-in': '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  bell: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+};
+function icon(name) {
+  return `<svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
+}
+
 // `id` is the activePage key each page passes to initShell() — it is NOT the
 // display label, so the two renames below (Dashboard -> Home, Operations ->
 // Tasks) change only what the advisor reads. Ids and hrefs stay put so no page
 // loses its active state and no existing bookmark breaks.
 const NAV_ITEMS = [
-  { id: 'dashboard', href: '/admin/', icon: '⌂', label: 'Home' },
-  { id: 'contacts', href: '/admin/contacts.html', icon: '☰', label: 'Contacts' },
-  { id: 'operations', href: '/admin/operations.html', icon: '▦', label: 'Tasks' },
-  { id: 'calendar', href: '/admin/calendar.html', icon: '▤', label: 'Calendar' },
-  { id: 'onboarding', href: '/admin/onboarding.html', icon: '➔', label: 'Onboarding' },
-  { id: 'settings', href: '/admin/settings.html', icon: '⚙', label: 'Settings' },
+  { id: 'dashboard', href: '/admin/', icon: 'home', label: 'Home' },
+  { id: 'contacts', href: '/admin/contacts.html', icon: 'users', label: 'Contacts' },
+  { id: 'operations', href: '/admin/operations.html', icon: 'check-square', label: 'Tasks' },
+  { id: 'calendar', href: '/admin/calendar.html', icon: 'calendar', label: 'Calendar' },
+  { id: 'onboarding', href: '/admin/onboarding.html', icon: 'log-in', label: 'Onboarding' },
+  { id: 'settings', href: '/admin/settings.html', icon: 'settings', label: 'Settings' },
 ];
 
 // ---------- Recently viewed contacts ----------
@@ -375,16 +393,16 @@ function initShell(activePage) {
       <a href="/admin/"><img src="/assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" /></a>
     </div>
     <div class="sidebar-search">
-      <button type="button" id="shell-search-btn">🔍 Search<span class="kbd">Ctrl K</span></button>
+      <button type="button" id="shell-search-btn"><span class="nav-icon">${icon('search')}</span>Search<span class="kbd">Ctrl K</span></button>
     </div>
     <nav class="sidebar-nav">
       ${NAV_ITEMS.map((n) =>
-        `<a href="${n.href}" class="${n.id === activePage ? 'active' : ''}"><span class="nav-icon">${n.icon}</span>${n.label}</a>`
+        `<a href="${n.href}" class="${n.id === activePage ? 'active' : ''}"><span class="nav-icon">${icon(n.icon)}</span>${n.label}</a>`
       ).join('')}
     </nav>
     ${recentSidebarHtml()}
     <div class="sidebar-notif">
-      <button type="button" id="shell-notif-btn"><span class="nav-icon">🔔</span>Notifications<span class="notif-badge hidden" id="notif-badge"></span></button>
+      <button type="button" id="shell-notif-btn"><span class="nav-icon">${icon('bell')}</span>Notifications<span class="notif-badge hidden" id="notif-badge"></span></button>
     </div>
     <div class="sidebar-foot">
       <div class="who">${escapeHtml(SESSION.email || '')}</div>
