@@ -755,6 +755,7 @@
       .map(([k, label]) => `<option value="${escapeHtml(k)}"${k === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`)
       .join('');
   const priorityOptions = (selected) =>
+    `<option value="" disabled${selected ? '' : ' selected'}>-priority-</option>` +
     ['low', 'medium', 'high']
       .map((p) => `<option value="${p}"${p === selected ? ' selected' : ''}>${p.charAt(0).toUpperCase() + p.slice(1)} priority</option>`)
       .join('');
@@ -780,7 +781,7 @@
     if (current && !known.includes(current)) {
       opts += `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>`;
     } else if (!current) {
-      opts += '<option value="" disabled selected>Select…</option>';
+      opts += '<option value="" disabled selected>-category-</option>';
     }
     opts += known
       .map((k) => `<option value="${escapeHtml(k)}"${k === current ? ' selected' : ''}>${escapeHtml(TASK_CATEGORY_LABELS[k])}</option>`)
@@ -799,9 +800,9 @@
       title: document.getElementById('quick-task-title')?.value || '',
       due: document.getElementById('quick-task-due')?.value || '',
       repeat: document.getElementById('quick-task-repeat')?.value || '',
-      priority: document.getElementById('quick-task-priority')?.value || 'medium',
+      priority: document.getElementById('quick-task-priority')?.value || '',
       description: document.getElementById('quick-task-description')?.value || '',
-      category: document.getElementById('quick-task-category')?.value || 'follow-up',
+      category: document.getElementById('quick-task-category')?.value || '',
     };
     wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
     try {
@@ -910,7 +911,7 @@
         const sel = e.target;
         if (sel.value !== NEW_CATEGORY_VALUE) return;
         const name = promptNewCategoryName();
-        if (!name) { sel.value = 'follow-up'; return; }
+        if (!name) { sel.value = ''; return; }
         // Selecting "Create new category…" has no task yet to PATCH — inject
         // the typed name as a real option so the select's own value carries it.
         const opt = document.createElement('option');
@@ -927,9 +928,11 @@
         const repeat = document.getElementById('quick-task-repeat').value;
         const due = document.getElementById('quick-task-due').value;
         const category = document.getElementById('quick-task-category').value;
+        const priority = document.getElementById('quick-task-priority').value;
         // A repeat has nothing to advance from without a due date, so it would
         // silently never recur — say so instead of accepting it quietly.
         if (repeat && !due) { errEl.textContent = 'A repeating task needs a due date.'; return; }
+        if (!priority) { errEl.textContent = 'Choose a priority.'; return; }
         if (!category || category === NEW_CATEGORY_VALUE) { errEl.textContent = 'Choose a category.'; return; }
         try {
           await api('/api/admin/tasks', {
@@ -942,7 +945,7 @@
               repeat,
               description: document.getElementById('quick-task-description').value,
               category,
-              priority: document.getElementById('quick-task-priority').value,
+              priority,
             }),
           });
           // Clear before re-rendering: the draft snapshot would otherwise
