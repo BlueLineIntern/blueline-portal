@@ -391,6 +391,12 @@
       );
 
       // ----- Tasks: overdue first, then today. Checkbox completes in place. -----
+      // Meetings are tasks too (category: 'meeting'), but the Events panel right
+      // above already lists them — showing one here as well would duplicate the
+      // same record in two adjacent panels, tickable from either. Same call
+      // contacts.html's Tasks tab already makes for the same reason.
+      const railOverdue = overdue.filter((t) => t.category !== 'meeting');
+      const railDueToday = dueToday.filter((t) => t.category !== 'meeting');
       const railTask = (t) => `<div class="rail-row ${prioRailClass(t.priority)}">
         <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" title="Mark complete" />
         <div class="rr-main">
@@ -399,8 +405,8 @@
         </div>
       </div>`;
       const taskHtml =
-        (overdue.length ? `<div class="rail-group">Overdue</div>` + overdue.slice(0, 8).map(railTask).join('') : '') +
-        (dueToday.length ? `<div class="rail-group soon">Due today</div>` + dueToday.slice(0, 8).map(railTask).join('') : '');
+        (railOverdue.length ? `<div class="rail-group">Overdue</div>` + railOverdue.slice(0, 8).map(railTask).join('') : '') +
+        (railDueToday.length ? `<div class="rail-group soon">Due today</div>` + railDueToday.slice(0, 8).map(railTask).join('') : '');
       fill('r-tasks', taskHtml, 'Nothing overdue or due today.');
 
       // ----- Queues -----
