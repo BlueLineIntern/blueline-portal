@@ -346,6 +346,24 @@ function nextAnniversary(dateStr, from = new Date()) {
   return { date: next, days: Math.round((next - today) / 86400000), year: Number(m[1]) };
 }
 
+// When an important date next falls, honouring whether it recurs. A recurring
+// entry (birthday, anniversary) rolls forward to its next occurrence; a one-off
+// (a closing date, a policy expiry) is upcoming only until the day itself and
+// then stops surfacing for good, rather than returning every year forever.
+// Entries saved before the flag existed have it undefined and were all treated
+// as recurring, so that stays the default.
+function upcomingImportantDate(entry, from = new Date()) {
+  if (!entry || !entry.date) return null;
+  const recurs = entry.repeatsAnnually === undefined ? true : !!entry.repeatsAnnually;
+  if (recurs) return nextAnniversary(entry.date, from);
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(entry.date).trim());
+  if (!m) return null;
+  const today = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const on = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (isNaN(on.getTime()) || on < today) return null;
+  return { date: on, days: Math.round((on - today) / 86400000), year: Number(m[1]) };
+}
+
 // Friendly display name for a staff/assignee email. Keeps board columns and
 // task chips readable ("Frank" not "fsabin@…"). Falls back to a capitalized
 // local-part so a new admin account still renders sensibly before it's mapped.

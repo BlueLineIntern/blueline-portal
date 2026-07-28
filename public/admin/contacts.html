@@ -222,8 +222,9 @@
       <input type="text" id="cm-tags" placeholder="Business Owner, Estate Planning" disabled />
     </div>
     <div class="field">
-      <label for="cm-dates">Important dates (one per line, "Label: date")</label>
-      <textarea id="cm-dates" rows="3" placeholder="Birthday: 1975-04-12&#10;Client since: 2024-06-01"></textarea>
+      <label>Important dates</label>
+      <div class="id-list" id="cm-dates"></div>
+      <button type="button" class="btn btn-ghost btn-small" id="cm-date-add">+ Add date</button>
     </div>
     <p class="form-error" id="cm-error"></p>
     <div class="modal-actions">
@@ -388,9 +389,7 @@
     document.getElementById('cm-address').value = contact ? contact.address || '' : '';
     document.getElementById('cm-gender').value = contact ? contact.gender || '' : '';
     document.getElementById('cm-tags').value = contact ? (contact.tags || []).join(', ') : '';
-    document.getElementById('cm-dates').value = contact
-      ? (contact.importantDates || []).map((d) => `${d.label}: ${d.date}`).join('\n')
-      : '';
+    renderDateRows(contact ? contact.importantDates || [] : []);
     document.getElementById('cm-advisor').value = contact ? contact.advisor || '' : '';
     document.getElementById('cm-error').textContent = '';
     document.getElementById('contact-modal-backdrop').classList.remove('hidden');
@@ -399,6 +398,56 @@
   function closeContactModal() {
     document.getElementById('contact-modal-backdrop').classList.add('hidden');
   }
+
+  // ---------- Important dates ----------
+  // Was a free-text textarea parsed on "Label: date", which silently accepted
+  // unparseable lines and couldn't express whether a date recurs. Now one row
+  // per date: purpose, the date, and whether it comes round every year.
+
+  function dateRowHtml(d) {
+    const label = d ? d.label || '' : '';
+    const date = d ? d.date || '' : '';
+    // Rows saved before the flag existed were all treated as recurring, so an
+    // absent value stays checked rather than silently turning a birthday
+    // into a one-off the next time the contact is saved.
+    const rep = d && d.repeatsAnnually !== undefined ? !!d.repeatsAnnually : true;
+    return `<div class="id-row">
+      <input type="text" class="id-label" placeholder="Purpose (e.g. Birthday)" value="${escapeHtml(label)}" />
+      <input type="date" class="id-date" value="${escapeHtml(date)}" />
+      <label class="id-rep"><input type="checkbox" class="id-annual"${rep ? ' checked' : ''} /> Repeats annually</label>
+      <button type="button" class="id-del" title="Remove this date">&times;</button>
+    </div>`;
+  }
+
+  function renderDateRows(list) {
+    const wrap = document.getElementById('cm-dates');
+    // Always leave one blank row so adding the first date needs no extra click.
+    wrap.innerHTML = (list && list.length ? list : [null]).map(dateRowHtml).join('');
+  }
+
+  function readDateRows() {
+    return [...document.querySelectorAll('#cm-dates .id-row')]
+      .map((row) => ({
+        label: row.querySelector('.id-label').value.trim(),
+        date: row.querySelector('.id-date').value.trim(),
+        repeatsAnnually: row.querySelector('.id-annual').checked,
+      }))
+      // Drop rows the advisor left completely empty (including the default
+      // blank one); a row with only a label is kept so a date can be filled in later.
+      .filter((d) => d.label || d.date);
+  }
+
+  document.getElementById('cm-date-add').addEventListener('click', () => {
+    document.getElementById('cm-dates').insertAdjacentHTML('beforeend', dateRowHtml(null));
+  });
+
+  document.getElementById('cm-dates').addEventListener('click', (ev) => {
+    if (!ev.target.classList.contains('id-del')) return;
+    const wrap = document.getElementById('cm-dates');
+    ev.target.closest('.id-row').remove();
+    // Removing the last row would leave nothing to type into.
+    if (!wrap.querySelector('.id-row')) wrap.innerHTML = dateRowHtml(null);
+  });
 
   document.getElementById('new-contact-btn').addEventListener('click', () => openContactModal(null));
   document.getElementById('cm-cancel-btn').addEventListener('click', closeContactModal);
@@ -414,16 +463,14 @@
       errEl.textContent = 'Enter a valid email address.';
       return;
     }
-    const importantDates = document.getElementById('cm-dates').value
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const i = line.indexOf(':');
-        return i > 0
-          ? { label: line.slice(0, i).trim(), date: line.slice(i + 1).trim() }
-          : { label: line, date: '' };
-      });
+    const importantDates = readDateRows();
+    // A row with a date but no purpose can't be labelled anywhere it appears
+    // (the profile, Home's Special Dates), so make it fixable here rather than
+    // saving something that renders as a blank line later.
+    if (importantDates.some((d) => !d.label && d.date)) {
+      errEl.textContent = 'Give every important date a purpose, or clear its date.';
+      return;
+    }
     // Name, status, advisor, phone, work email/phone, address, gender, household, and tags are
     // owned by SharePoint and overwritten by the sync every 15 minutes — sending edits to them
     // from here would just be silently discarded on the next sync, so only send what this app
@@ -564,7 +611,17 @@
         <div class="panel">
           <div class="panel-head"><h2>Important Dates</h2></div>
           ${(c.importantDates || []).length
-            ? `<div class="kv-rows">${c.importantDates.map((d) => kvRow(d.label, escapeHtml(d.date || '—'))).join('')}</div>`
+            ? `<div class="kv-rows">${c.importantDates
+                .map((d) => {
+                  // Only recurring dates get the marker: it explains why the
+                  // date keeps reappearing in Home's Special Dates, so putting
+                  // it on one-offs too would say nothing.
+                  const recurs = d.repeatsAnnually !== undefined ? d.repeatsAnnually : true;
+                  const val = escapeHtml(d.date || '—') +
+                    (recurs ? ' <span class="badge badge-gray">annual</span>' : '');
+                  return kvRow(d.label, val);
+                })
+                .join('')}</div>`
             : '<p class="empty">None recorded — add them via Edit Contact.</p>'}
         </div>
         <div class="panel panel-full" id="overview-activity-panel">

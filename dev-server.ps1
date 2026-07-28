@@ -929,7 +929,12 @@ while ($listener.IsListening) {
             }
             if ($body.PSObject.Properties['tags']) { $rec.tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() }) }
             if ($body.PSObject.Properties['importantDates']) {
-                $rec.importantDates = @($body.importantDates | Where-Object { $_ -and $_.label } | ForEach-Object { @{ label = ([string]$_.label).Trim(); date = [string]$_.date } })
+                # Mirror worker.js: an absent repeatsAnnually reads as true so
+                # legacy rows (which were all treated as recurring) keep working.
+                $rec.importantDates = @($body.importantDates | Where-Object { $_ -and $_.label } | ForEach-Object {
+                    $rep = if ($_.PSObject.Properties['repeatsAnnually']) { [bool]$_.repeatsAnnually } else { $true }
+                    @{ label = ([string]$_.label).Trim(); date = [string]$_.date; repeatsAnnually = $rep }
+                })
             }
             $rec.updatedAt = (Get-Date).ToString('o')
             $contacts[$target] = $rec

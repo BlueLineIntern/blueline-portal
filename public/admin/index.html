@@ -743,11 +743,14 @@
         chip(waitingOnClient.length, 'Waiting on client', '/admin/contacts.html'),
       ].join('');
 
-      // ----- Special dates: annual recurrences inside the next 30 days -----
+      // ----- Special dates: whatever falls inside the next 30 days -----
+      // upcomingImportantDate honours each entry's repeatsAnnually flag, so a
+      // one-off drops off this list for good once its date passes instead of
+      // coming back every year like a birthday.
       const upcoming = [];
       contacts.forEach((c) => {
         (c.importantDates || []).forEach((d) => {
-          const next = nextAnniversary(d.date, now);
+          const next = upcomingImportantDate(d, now);
           if (next && next.days <= 30) upcoming.push({ contact: c, label: d.label, next });
         });
       });

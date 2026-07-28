@@ -1920,7 +1920,14 @@ function sanitizeContactFields(body) {
   if (Array.isArray(body.importantDates)) {
     out.importantDates = body.importantDates
       .filter((d) => d && typeof d.label === 'string' && d.label.trim())
-      .map((d) => ({ label: String(d.label).trim().slice(0, 60), date: String(d.date || '').trim().slice(0, 40) }))
+      .map((d) => ({
+        label: String(d.label).trim().slice(0, 60),
+        date: String(d.date || '').trim().slice(0, 40),
+        // Birthdays and anniversaries recur; a closing date or a policy expiry
+        // happens once. Legacy rows predate this flag and were all treated as
+        // recurring, so absent reads as true to preserve their behaviour.
+        repeatsAnnually: d.repeatsAnnually === undefined ? true : !!d.repeatsAnnually,
+      }))
       .slice(0, 20);
   }
   return { fields: out };
