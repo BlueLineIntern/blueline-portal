@@ -759,6 +759,35 @@
       .map((p) => `<option value="${p}"${p === selected ? ' selected' : ''}>${p.charAt(0).toUpperCase() + p.slice(1)} priority</option>`)
       .join('');
 
+  const TASK_CATEGORY_LABELS = {
+    'follow-up': 'Follow-Up',
+    meeting: 'Meeting',
+    'investment-reports': 'Investment Reports',
+    'operational-task': 'Operational Task',
+    trading: 'Trading',
+    'investment-policy-statement': 'Investment Policy Statement',
+    'financial-planning': 'Financial Planning',
+  };
+  const NEW_CATEGORY_VALUE = '__new_category__';
+  // A task's category may be a legacy value (review/onboarding/compliance/
+  // other, set by automated flows) or an advisor-typed custom name that
+  // isn't in TASK_CATEGORY_LABELS — surface it as its own option so picking
+  // the select doesn't silently overwrite it.
+  const categoryOptions = (current) => {
+    const known = Object.keys(TASK_CATEGORY_LABELS);
+    let opts = '';
+    if (current && !known.includes(current)) {
+      opts += `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)}</option>`;
+    } else if (!current) {
+      opts += '<option value="" disabled selected>Select…</option>';
+    }
+    opts += known
+      .map((k) => `<option value="${escapeHtml(k)}"${k === current ? ' selected' : ''}>${escapeHtml(TASK_CATEGORY_LABELS[k])}</option>`)
+      .join('');
+    opts += `<option value="${NEW_CATEGORY_VALUE}">Create new category…</option>`;
+    return opts;
+  };
+
   async function renderTasksTab() {
     const wrap = document.getElementById('tab-tasks');
     const email = selectedEmail;
@@ -798,6 +827,7 @@
           <div class="row-sub">${t.due ? escapeHtml(new Date(t.due).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) : 'no due date'}${t.repeat ? ` · ↻ ${escapeHtml(REPEAT_LABELS[t.repeat] || t.repeat)}` : ''}${t.description ? `<br>${escapeHtml(t.description)}` : ''}</div>
         </div>
         <div class="row-side" style="display:flex; align-items:center; gap:8px;">
+          <select class="task-category" data-id="${escapeHtml(t.id)}" title="Category" style="max-width:170px;">${categoryOptions(t.category || '')}</select>
           <select class="task-assignee" data-id="${escapeHtml(t.id)}" title="Assign to" style="max-width:150px;">${assigneeOptions(t.assignee || '')}</select>
           <span class="badge ${PRIORITY_BADGE[t.priority] || 'badge-gray'}">${escapeHtml(t.priority)}</span>
         </div>
@@ -851,6 +881,28 @@
           }
         })
       );
+      wrap.querySelectorAll('.task-category').forEach((sel) => {
+        sel.dataset.prev = sel.value;
+        sel.addEventListener('change', async () => {
+          const errEl = document.getElementById('quick-task-error');
+          errEl.textContent = '';
+          let value = sel.value;
+          if (value === NEW_CATEGORY_VALUE) {
+            const name = (prompt('New category name:') || '').trim();
+            if (!name) { sel.value = sel.dataset.prev; return; }
+            value = name;
+          }
+          try {
+            await api(`/api/admin/tasks/${encodeURIComponent(sel.dataset.id)}`, {
+              method: 'POST', body: JSON.stringify({ category: value }),
+            });
+            renderTasksTab();
+          } catch (err) {
+            errEl.textContent = err.message;
+            sel.value = sel.dataset.prev;
+          }
+        });
+      });
       document.getElementById('quick-task-add').addEventListener('click', async () => {
         const title = document.getElementById('quick-task-title').value.trim();
         const errEl = document.getElementById('quick-task-error');

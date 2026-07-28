@@ -2103,7 +2103,11 @@ function advanceDue(due, repeat) {
   const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   return hasTime ? `${date}T${p(d.getHours())}:${p(d.getMinutes())}` : date;
 }
-const TASK_CATEGORIES = ['follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other'];
+const TASK_CATEGORIES = [
+  'follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other',
+  'investment-reports', 'operational-task', 'trading', 'investment-policy-statement', 'financial-planning',
+];
+const TASK_CATEGORY_MAX_LEN = 60;
 const TASK_CHECKLIST_MAX = 50;
 const TASK_DOCUMENTS_MAX = 50;
 const TASK_HISTORY_MAX = 200;
@@ -2304,8 +2308,12 @@ function sanitizeTaskFields(body, allowedAssignees) {
     out.priority = body.priority;
   }
   if (body.category !== undefined) {
-    if (!TASK_CATEGORIES.includes(body.category)) return { error: 'Invalid category' };
-    out.category = body.category;
+    // Advisors can pick from the known list or type a custom category name
+    // (contacts.html's "Create new category…" option) — accept either, as
+    // long as it's a non-empty, reasonably short string.
+    const cat = TASK_CATEGORIES.includes(body.category) ? body.category : String(body.category || '').trim();
+    if (!cat || cat.length > TASK_CATEGORY_MAX_LEN) return { error: 'Invalid category' };
+    out.category = cat;
   }
   if (body.status !== undefined) {
     if (!['open', 'done'].includes(body.status)) return { error: 'Invalid status' };
