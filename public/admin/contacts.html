@@ -1146,17 +1146,56 @@
     'onboarding-completed': 'Completed the onboarding workflow',
     'agreement-signed': 'Signed the advisory agreement',
     'assignments-changed': 'Module assignments changed',
-    'task-completed': 'Task completed',
-    'meeting-held': 'Meeting held',
-    'note-added': 'Note added',
   };
 
+  // Date-only ("2026-08-03") or datetime-local ("2026-08-03T14:00") due value,
+  // formatted for a one-line timeline entry. Mirrors how the server tells the
+  // two apart (advanceDue in worker.js) so a task's date-only due never grows
+  // a spurious midnight time here.
+  function dueLabel(due) {
+    if (!due) return '';
+    const hasTime = String(due).includes('T');
+    const d = new Date(hasTime ? due : `${due}T00:00`);
+    if (isNaN(d)) return '';
+    return hasTime
+      ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+      : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  // Note/task/meeting entries show the actual content (what was written,
+  // scheduled, or completed) instead of a generic "Note added" label — that's
+  // the whole point of a timeline: knowing what happened without opening the
+  // Notes/Tasks/Meetings tab to find out.
   function timelineLine(e) {
-    const label = TIMELINE_LABELS[e.type] || e.type;
+    const d = e.detail || {};
     const bits = [];
-    if (e.detail && e.detail.module) bits.push(e.detail.module);
-    if (e.detail && e.detail.onboardingId) bits.push(e.detail.onboardingId);
-    if (e.detail && e.detail.title) bits.push(e.detail.title);
+    let label;
+    switch (e.type) {
+      case 'note-added': {
+        const body = String(d.body || '').trim();
+        const snippet = body.length > 140 ? `${body.slice(0, 140)}…` : body;
+        label = `Note: "${snippet || '(empty)'}"`;
+        break;
+      }
+      case 'task-added':
+        label = `Task scheduled: ${d.title || '(untitled)'}`;
+        if (d.due) bits.push(`due ${dueLabel(d.due)}`);
+        break;
+      case 'meeting-added':
+        label = `Meeting scheduled: ${d.title || '(untitled)'}`;
+        if (d.due) bits.push(dueLabel(d.due));
+        break;
+      case 'task-completed':
+        label = `Task completed: ${d.title || '(untitled)'}`;
+        break;
+      case 'meeting-held':
+        label = `Meeting held: ${d.title || '(untitled)'}`;
+        break;
+      default:
+        label = TIMELINE_LABELS[e.type] || e.type;
+        if (d.module) bits.push(d.module);
+        if (d.onboardingId) bits.push(d.onboardingId);
+    }
     const by = e.actor && e.actor !== 'client' && e.actor !== 'system' ? ` · by ${staffLabel(e.actor)}` : '';
     return `<div class="tl-item">
       <div class="tl-rail"><div class="tl-dot"></div><div class="tl-line"></div></div>

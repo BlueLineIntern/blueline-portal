@@ -2197,6 +2197,12 @@ async function createTask(env, fields) {
     history: [{ ts: new Date().toISOString(), actor: fields.createdBy || 'system', type: 'created', detail: null }],
   };
   await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
+  if (task.client) {
+    await logTimeline(env, task.client, task.category === 'meeting' ? 'meeting-added' : 'task-added', task.createdBy, {
+      title: task.title,
+      due: task.due || null,
+    });
+  }
   return task;
 }
 
@@ -2484,7 +2490,9 @@ async function handleAdminCreateNote(request, env, cors) {
     updatedAt: null,
   };
   await env.PORTAL_KV.put(`note:${id}`, await encryptJSON(env, note));
-  await logTimeline(env, client, 'note-added', adminEmail, null);
+  // Timeline entries are meant to be a compact activity feed, not full note
+  // storage (that's the note: record itself) -- cap what rides along here.
+  await logTimeline(env, client, 'note-added', adminEmail, { body: note.body.slice(0, 300) });
   await pushNoteToSharePoint(env, note);
   return json({ note }, 200, cors);
 }
