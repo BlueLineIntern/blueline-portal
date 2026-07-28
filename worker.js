@@ -2108,6 +2108,14 @@ const TASK_CATEGORIES = [
   'investment-reports', 'operational-task', 'trading', 'investment-policy-statement', 'financial-planning',
 ];
 const TASK_CATEGORY_MAX_LEN = 60;
+// Advisors can pick from the known list or type a custom category name
+// (contacts.html's "Create new category…" option) — accept either, as long
+// as it's a non-empty, reasonably short string. Falls back to 'other'.
+function sanitizeTaskCategory(raw) {
+  if (TASK_CATEGORIES.includes(raw)) return raw;
+  const cat = String(raw || '').trim().slice(0, TASK_CATEGORY_MAX_LEN);
+  return cat || 'other';
+}
 const TASK_CHECKLIST_MAX = 50;
 const TASK_DOCUMENTS_MAX = 50;
 const TASK_HISTORY_MAX = 200;
@@ -2208,7 +2216,7 @@ async function createTask(env, fields) {
     due: fields.due || '',
     repeat: TASK_REPEATS.includes(fields.repeat) ? fields.repeat : '',
     priority: TASK_PRIORITIES.includes(fields.priority) ? fields.priority : 'medium',
-    category: TASK_CATEGORIES.includes(fields.category) ? fields.category : 'other',
+    category: sanitizeTaskCategory(fields.category),
     status: 'open',
     checklist: sanitizeChecklist(fields.checklist),
     meetingType: fields.meetingType || '',
@@ -2308,9 +2316,6 @@ function sanitizeTaskFields(body, allowedAssignees) {
     out.priority = body.priority;
   }
   if (body.category !== undefined) {
-    // Advisors can pick from the known list or type a custom category name
-    // (contacts.html's "Create new category…" option) — accept either, as
-    // long as it's a non-empty, reasonably short string.
     const cat = TASK_CATEGORIES.includes(body.category) ? body.category : String(body.category || '').trim();
     if (!cat || cat.length > TASK_CATEGORY_MAX_LEN) return { error: 'Invalid category' };
     out.category = cat;

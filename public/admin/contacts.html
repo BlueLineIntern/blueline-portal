@@ -769,6 +769,7 @@
     'financial-planning': 'Financial Planning',
   };
   const NEW_CATEGORY_VALUE = '__new_category__';
+  const promptNewCategoryName = () => (prompt('New category name:') || '').trim();
   // A task's category may be a legacy value (review/onboarding/compliance/
   // other, set by automated flows) or an advisor-typed custom name that
   // isn't in TASK_CATEGORY_LABELS — surface it as its own option so picking
@@ -800,6 +801,7 @@
       repeat: document.getElementById('quick-task-repeat')?.value || '',
       priority: document.getElementById('quick-task-priority')?.value || 'medium',
       description: document.getElementById('quick-task-description')?.value || '',
+      category: document.getElementById('quick-task-category')?.value || 'follow-up',
     };
     wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
     try {
@@ -844,6 +846,7 @@
               <select id="quick-task-repeat" title="Repeats" style="flex:1; min-width:150px;">${repeatOptions(draft.repeat)}</select>
               <select id="quick-task-assignee" title="Assigned to" style="flex:1; min-width:150px;">${assigneeOptions(SESSION.email)}</select>
               <select id="quick-task-priority" title="Priority" style="flex:1; min-width:150px;">${priorityOptions(draft.priority)}</select>
+              <select id="quick-task-category" title="Category" style="flex:1; min-width:150px;">${categoryOptions(draft.category)}</select>
             </div>
             <textarea class="input" id="quick-task-description" rows="2" placeholder="Description (optional)"></textarea>
             <div><button type="button" class="btn btn-primary btn-small" id="quick-task-add">Add Task</button></div>
@@ -888,7 +891,7 @@
           errEl.textContent = '';
           let value = sel.value;
           if (value === NEW_CATEGORY_VALUE) {
-            const name = (prompt('New category name:') || '').trim();
+            const name = promptNewCategoryName();
             if (!name) { sel.value = sel.dataset.prev; return; }
             value = name;
           }
@@ -903,6 +906,19 @@
           }
         });
       });
+      document.getElementById('quick-task-category').addEventListener('change', (e) => {
+        const sel = e.target;
+        if (sel.value !== NEW_CATEGORY_VALUE) return;
+        const name = promptNewCategoryName();
+        if (!name) { sel.value = 'follow-up'; return; }
+        // Selecting "Create new category…" has no task yet to PATCH — inject
+        // the typed name as a real option so the select's own value carries it.
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        opt.selected = true;
+        sel.insertBefore(opt, sel.querySelector(`option[value="${NEW_CATEGORY_VALUE}"]`));
+      });
       document.getElementById('quick-task-add').addEventListener('click', async () => {
         const title = document.getElementById('quick-task-title').value.trim();
         const errEl = document.getElementById('quick-task-error');
@@ -910,9 +926,11 @@
         if (!title) { errEl.textContent = 'Enter a task name.'; return; }
         const repeat = document.getElementById('quick-task-repeat').value;
         const due = document.getElementById('quick-task-due').value;
+        const category = document.getElementById('quick-task-category').value;
         // A repeat has nothing to advance from without a due date, so it would
         // silently never recur — say so instead of accepting it quietly.
         if (repeat && !due) { errEl.textContent = 'A repeating task needs a due date.'; return; }
+        if (!category || category === NEW_CATEGORY_VALUE) { errEl.textContent = 'Choose a category.'; return; }
         try {
           await api('/api/admin/tasks', {
             method: 'POST',
@@ -923,7 +941,7 @@
               due,
               repeat,
               description: document.getElementById('quick-task-description').value,
-              category: 'follow-up',
+              category,
               priority: document.getElementById('quick-task-priority').value,
             }),
           });

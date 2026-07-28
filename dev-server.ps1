@@ -47,7 +47,10 @@ $notifSeen = @{}        # admin email -> last time they opened notifications
 $boardLists = @()       # board columns: [{id, type(person/custom), account?, name?, createdAt}]
 $script:crmCounter = 0
 $taskPriorities = @('low', 'medium', 'high')
-$taskCategories = @('follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other')
+$taskCategories = @(
+    'follow-up', 'review', 'meeting', 'onboarding', 'compliance', 'other',
+    'investment-reports', 'operational-task', 'trading', 'investment-policy-statement', 'financial-planning'
+)
 
 # Assignees are admin accounts only (board lists are a separate grouping).
 function Test-AssigneeAllowed($a) {
@@ -124,7 +127,7 @@ function New-MockTask($fields) {
         list = [string]$fields.list
         due = [string]$fields.due
         priority = if ($taskPriorities -contains $fields.priority) { $fields.priority } else { 'medium' }
-        category = if ($taskCategories -contains $fields.category) { $fields.category } else { 'other' }
+        category = if ($taskCategories -contains $fields.category) { $fields.category } elseif (([string]$fields.category).Trim()) { ([string]$fields.category).Trim() } else { 'other' }
         status = 'open'
         checklist = ConvertTo-Checklist $fields.checklist
         meetingType = [string]$fields.meetingType
@@ -658,7 +661,7 @@ while ($listener.IsListening) {
             $body = Read-Body $ctx
             if (-not $body -or -not [string]$body.title) { Send-Json $ctx 400 @{ error = 'Title is required' }; continue }
             if ($body.PSObject.Properties['priority'] -and $taskPriorities -notcontains [string]$body.priority) { Send-Json $ctx 400 @{ error = 'Invalid priority' }; continue }
-            if ($body.PSObject.Properties['category'] -and $taskCategories -notcontains [string]$body.category) { Send-Json $ctx 400 @{ error = 'Invalid category' }; continue }
+            if ($body.PSObject.Properties['category'] -and $taskCategories -notcontains [string]$body.category -and -not ([string]$body.category).Trim()) { Send-Json $ctx 400 @{ error = 'Invalid category' }; continue }
             if ($body.PSObject.Properties['assignee'] -and -not (Test-AssigneeAllowed $body.assignee)) {
                 Send-Json $ctx 400 @{ error = 'Assignee must be an admin account' }; continue
             }
