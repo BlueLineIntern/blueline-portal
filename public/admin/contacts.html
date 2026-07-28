@@ -29,6 +29,7 @@
   /* Overview tab */
   .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
   .overview-grid .panel { margin-bottom: 0; }
+  .overview-grid .panel-full { grid-column: 1 / -1; }
   .kv-rows { display: flex; flex-direction: column; }
   .kv-row { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
   .kv-row:last-child { border-bottom: none; }
@@ -562,7 +563,7 @@
             ? `<div class="kv-rows">${c.importantDates.map((d) => kvRow(d.label, escapeHtml(d.date || '—'))).join('')}</div>`
             : '<p class="empty">None recorded — add them via Edit Contact.</p>'}
         </div>
-        <div class="panel" id="overview-activity-panel">
+        <div class="panel panel-full" id="overview-activity-panel">
           <div class="panel-head"><h2>Recent Activity</h2>
             <a class="panel-link" href="#" id="overview-activity-link">Full timeline →</a></div>
           <div id="overview-activity-body">${keepActivity || '<p class="empty">Loading…</p>'}</div>
