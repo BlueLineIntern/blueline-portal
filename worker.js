@@ -1811,9 +1811,17 @@ function contactFieldsFromSharePoint(fields) {
     workPhone: String(fields.WorkPhone || '').trim().slice(0, 50),
     address: String(fields.Address || '').trim().slice(0, 300),
     gender: String(fields.Gender || '').trim().slice(0, 40),
-    tags: Array.isArray(fields.Tags)
-      ? fields.Tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim().slice(0, 40)).slice(0, 20)
-      : [],
+    // Tags is "Multiple lines of text" in SharePoint — a plain string, not a
+    // multi-value column — so it arrives comma-separated ("client, vip"),
+    // never as an array. Array.isArray(fields.Tags) was always false against
+    // a real value from this column type, meaning every tag pulled from
+    // SharePoint was silently discarded as [] regardless of content.
+    tags: String(fields.Tags || '')
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .map((t) => t.slice(0, 40))
+      .slice(0, 20),
   };
 }
 
@@ -1837,7 +1845,10 @@ function contactFieldsToSharePoint(record) {
     WorkPhone: record.workPhone || '',
     Address: record.address || '',
     Gender: record.gender || '',
-    Tags: record.tags || [],
+    // Multiple lines of text, not a multi-value column — send comma-joined
+    // text, matching the format the read side now parses and the format the
+    // contact modal's own Tags input already uses ("client, vip").
+    Tags: (record.tags || []).join(', '),
   };
 }
 
