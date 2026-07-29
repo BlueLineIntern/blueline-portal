@@ -369,19 +369,29 @@ untouched and keeps its own look.
   The dashboard **Upcoming Meetings** widget shows client, time, prep readiness,
   and the client's open-task count, linking to the meeting in the calendar.
   (No hour-grid, recurring meetings, or document upload yet.)
-- **Outlook calendar push** (`calendarOwner` on a `task:` record) — a meeting can
-  be mirrored onto a staff member's real Outlook calendar. The **"Add to Outlook
-  calendar"** picker in the meeting panel chooses *which* mailbox per meeting
-  (restricted to admin accounts, so it can't target an arbitrary tenant mailbox),
-  so one advisor can book onto another's calendar. **Push-only** — Outlook is
-  never read back; this app stays the source of truth. `outlookEventId` +
-  `outlookSyncedOwner` are stored on the task so an edit PATCHes the same event,
-  re-pointing the picker moves it (delete + recreate, since Graph can't move an
-  event between mailboxes), clearing the picker deletes it, and deleting the task
-  takes the calendar entry with it. A 404 on update means someone deleted it in
-  Outlook — it's recreated. Sends **no attendees on purpose**: Graph emails an
-  invitation to every attendee, so listing the client would fire real mail at
-  them on save; inviting people stays a manual step in Outlook.
+- **Outlook calendar push** (`calendarOwners` on a `task:` record) — a meeting can
+  be mirrored onto staff members' real Outlook calendars. The **"Add to Outlook
+  calendars"** checkbox list in the meeting panel picks *which* mailboxes per
+  meeting — **any number of them** (each restricted to an admin account, so it
+  can't target arbitrary tenant mailboxes) — so one advisor can book onto
+  another's calendar, or onto several at once. **Push-only** — Outlook is never
+  read back; this app stays the source of truth.
+  - `outlookEvents` is a `{mailbox: eventId}` map, reconciled as a **set** on every
+    save: each ticked mailbox is created or PATCHed, and any mailbox no longer
+    ticked has *only its own* copy deleted. Clearing every name (or removing the
+    date, which stops it being an event at all) withdraws them all, and deleting
+    the task takes every calendar entry with it. A 404 on PATCH means someone
+    deleted that copy in Outlook, so it's recreated; any other PATCH error keeps
+    the stored id rather than orphaning a real event.
+  - **Legacy bridge**: records written before multi-calendar support carry the
+    singular `calendarOwner` + `outlookEventId` + `outlookSyncedOwner`.
+    `taskCalendarOwners()` / `taskOutlookEvents()` read those as a one-entry
+    equivalent, so an already-synced meeting **PATCHes its existing event instead
+    of duplicating it**, and the singular fields are blanked on first save under
+    the new code so there's one source of truth afterward.
+  - Sends **no attendees on purpose**: Graph emails an invitation to every
+    attendee, so listing the client would fire real mail at them on save;
+    inviting people stays a manual step in Outlook.
   - Uses the same app registration + client-credentials token as the SharePoint
     sync (`OUTLOOK_CLIENT_ID` / `OUTLOOK_CLIENT_SECRET` / `OUTLOOK_TENANT_ID`),
     which additionally needs the **`Calendars.ReadWrite.All` _application_
@@ -391,9 +401,11 @@ untouched and keeps its own look.
     Skips silently when the `OUTLOOK_*` secrets are absent, and every failure is
     caught + logged so a Graph outage can never block saving the meeting.
   - **Not verifiable against the local mock**: `dev-server.ps1` has no Microsoft
-    Graph behind it, so it stores/echoes `calendarOwner` (enough to exercise the
+    Graph behind it, so it stores/echoes `calendarOwners` (enough to exercise the
     picker and validation) but creates no real event. End-to-end confirmation
-    requires a deploy with the secrets set.
+    requires a deploy with the secrets set. The reconcile logic itself (create /
+    PATCH / delete sets, legacy migration, 404 recreate) is covered by unit tests
+    run against the real source with a stubbed Graph layer.
 - `contacts.html` honors `?c=<email>&tab=<tab>`. `operations.html` honors
   `?view=<board|list>`, `?filter=<today|week|overdue|mine>` (board pill), and
   `?f=<quick filter>&cat=<category>&q=<search>` (list; presence of any implies

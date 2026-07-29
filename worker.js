@@ -39,8 +39,9 @@
  *   (comma-separated list; defaults to the Worker's own origin only)
  * Microsoft Graph (SharePoint sync + Outlook calendar push) uses one app
  *   registration: OUTLOOK_CLIENT_ID / OUTLOOK_CLIENT_SECRET / OUTLOOK_TENANT_ID.
- *   Pushing meetings to staff Outlook calendars additionally needs the
- *   Calendars.ReadWrite.All APPLICATION permission with admin consent granted.
+ *   Pushing meetings to staff Outlook calendars (any number of them per meeting)
+ *   additionally needs the Calendars.ReadWrite.All APPLICATION permission with
+ *   admin consent granted.
  *   Override the assumed timezone with: wrangler secret put OUTLOOK_TIMEZONE
  *   (a Windows zone name, e.g. "Central Standard Time"; default Eastern)
  *
@@ -2886,13 +2887,13 @@ async function deleteTimelineRefs(env, record) {
 }
 
 // ---------- Outlook calendar push ----------
-// A meeting scheduled in this app can be mirrored onto a staff member's real
-// Outlook calendar. Which mailbox it lands in is chosen per meeting
-// (`calendarOwner`), so one advisor can book onto another's calendar. Push-only:
-// Outlook is never read back, and this app stays the source of truth. Reuses the
-// same app registration + client-credentials token as the SharePoint sync
-// (getGraphToken), which needs the Calendars.ReadWrite.All APPLICATION
-// permission with admin consent granted.
+// A meeting scheduled in this app can be mirrored onto staff members' real
+// Outlook calendars. Which mailboxes it lands in is chosen per meeting
+// (`calendarOwners`, any number of them), so one advisor can book onto another's
+// calendar, or onto several at once. Push-only: Outlook is never read back, and
+// this app stays the source of truth. Reuses the same app registration +
+// client-credentials token as the SharePoint sync (getGraphToken), which needs
+// the Calendars.ReadWrite.All APPLICATION permission with admin consent granted.
 //
 // Deliberately sends NO attendees. Graph emails an invitation to every attendee
 // it's given, so listing the client would fire real mail at them the moment an
@@ -2985,48 +2986,95 @@ async function deleteOutlookEvent(env, owner, eventId) {
   }
 }
 
-// Reconcile a task's Outlook event with its current state. Returns the fields
-// the caller must persist ({outlookEventId, outlookSyncedOwner}), or null when
-// there's nothing to change. `outlookSyncedOwner` records which mailbox the
-// stored event id actually lives in, so re-pointing calendarOwner can move it.
+// The mailboxes a task should currently appear on. Reads the singular
+// `calendarOwner` from records written before multi-calendar support so meetings
+// already synced to one person keep working (and get migrated on next save).
+function taskCalendarOwners(task) {
+  const raw = Array.isArray(task.calendarOwners)
+    ? task.calendarOwners
+    : (task.calendarOwner ? [task.calendarOwner] : []);
+  return [...new Set(raw.map((o) => String(o || '').trim().toLowerCase()).filter(Boolean))];
+}
+
+// {mailbox: outlookEventId} for events we've already pushed. Same legacy bridge:
+// a pre-multi record stored one id + the mailbox it lived in, which is exactly
+// one entry of this map — so the reconcile below updates that existing event
+// instead of abandoning it and creating a duplicate alongside it.
+function taskOutlookEvents(task) {
+  if (task.outlookEvents && typeof task.outlookEvents === 'object') {
+    const out = {};
+    for (const [owner, id] of Object.entries(task.outlookEvents)) {
+      const key = String(owner || '').trim().toLowerCase();
+      if (key && id) out[key] = String(id);
+    }
+    return out;
+  }
+  const legacyOwner = String(task.outlookSyncedOwner || task.calendarOwner || '').trim().toLowerCase();
+  return legacyOwner && task.outlookEventId ? { [legacyOwner]: String(task.outlookEventId) } : {};
+}
+
+// Reconcile a task's Outlook events against the mailboxes it should be on.
+// Returns the fields to persist, or null when nothing changed. Set-based: each
+// wanted mailbox is created or patched, and any mailbox no longer wanted has its
+// event deleted — so unticking one name removes only that copy.
+//
+// Always returns the legacy singular fields blanked once it writes, so a record
+// has exactly one source of truth after its first save under this code.
 async function syncTaskToOutlook(env, task) {
   if (!outlookConfigured(env)) return null;
   try {
-    const owner = String(task.calendarOwner || '').trim().toLowerCase();
-    const prevOwner = String(task.outlookSyncedOwner || '').trim().toLowerCase();
-    const prevId = task.outlookEventId || '';
-    const payload = owner ? outlookEventBody(task, outlookTimeZone(env)) : null;
+    const wanted = taskCalendarOwners(task);
+    const existing = taskOutlookEvents(task);
+    const payload = wanted.length ? outlookEventBody(task, outlookTimeZone(env)) : null;
+    const next = {};
+    let changed = false;
 
-    // Owner cleared, or the date was removed so it can no longer be an event:
-    // withdraw whatever we previously put on a calendar.
-    if (!payload) {
-      if (prevId) await deleteOutlookEvent(env, prevOwner || owner, prevId);
-      return prevId ? { outlookEventId: '', outlookSyncedOwner: '' } : null;
-    }
+    // No usable date (or nobody selected) means this can't be an event at all —
+    // withdraw every copy rather than leaving stale ones behind.
+    const targets = payload ? wanted : [];
 
-    if (prevId && prevOwner && prevOwner !== owner) {
-      // Graph can't move an event between mailboxes, so recreate it in the new
-      // one and drop the old copy.
-      await deleteOutlookEvent(env, prevOwner, prevId);
-    } else if (prevId) {
-      const res = await graphCalendarFetch(
-        env, 'PATCH', `/users/${encodeURIComponent(owner)}/events/${encodeURIComponent(prevId)}`, payload
-      );
-      if (res.ok) return null; // stored ids already correct
-      if (res.status !== 404) {
-        console.error('Outlook event update failed:', res.status, await res.text());
-        return null;
+    for (const owner of targets) {
+      const priorId = existing[owner];
+      if (priorId) {
+        const res = await graphCalendarFetch(
+          env, 'PATCH', `/users/${encodeURIComponent(owner)}/events/${encodeURIComponent(priorId)}`, payload
+        );
+        if (res.ok) { next[owner] = priorId; continue; }
+        if (res.status !== 404) {
+          // Keep the id: the event probably still exists and dropping it here
+          // would orphan it on someone's calendar forever.
+          console.error('Outlook event update failed:', owner, res.status, await res.text());
+          next[owner] = priorId;
+          continue;
+        }
+        // 404 — deleted in Outlook; fall through and recreate it.
       }
-      // 404 — someone deleted it in Outlook; fall through and recreate.
+      const res = await graphCalendarFetch(env, 'POST', `/users/${encodeURIComponent(owner)}/events`, payload);
+      if (!res.ok) {
+        console.error('Outlook event create failed:', owner, res.status, await res.text());
+        continue;
+      }
+      const created = await res.json();
+      if (created.id) { next[owner] = created.id; changed = true; }
     }
 
-    const res = await graphCalendarFetch(env, 'POST', `/users/${encodeURIComponent(owner)}/events`, payload);
-    if (!res.ok) {
-      console.error('Outlook event create failed:', res.status, await res.text());
-      return null;
+    // Mailboxes that were unticked (or all of them, if this stopped being an
+    // event) lose their copy.
+    for (const [owner, id] of Object.entries(existing)) {
+      if (next[owner]) continue;
+      await deleteOutlookEvent(env, owner, id);
+      changed = true;
     }
-    const created = await res.json();
-    return { outlookEventId: created.id || '', outlookSyncedOwner: owner };
+
+    const hadLegacy = task.outlookEventId || task.outlookSyncedOwner || task.calendarOwner;
+    if (!changed && !hadLegacy && JSON.stringify(next) === JSON.stringify(existing)) return null;
+    return {
+      outlookEvents: next,
+      // Retire the pre-multi fields now that outlookEvents carries the truth.
+      outlookEventId: '',
+      outlookSyncedOwner: '',
+      calendarOwner: '',
+    };
   } catch (err) {
     console.error('Error syncing task to Outlook:', err);
     return null;
@@ -3057,9 +3105,10 @@ async function createTask(env, fields) {
     endDue: fields.endDue || '',
     allDay: !!fields.allDay,
     eventStatus: EVENT_STATUSES.includes(fields.eventStatus) ? fields.eventStatus : '',
-    calendarOwner: String(fields.calendarOwner || '').trim().toLowerCase(),
-    outlookEventId: '',
-    outlookSyncedOwner: '',
+    // Mailboxes to mirror onto. taskCalendarOwners also accepts the singular
+    // legacy field, so an older caller passing calendarOwner still works.
+    calendarOwners: taskCalendarOwners(fields),
+    outlookEvents: {},
     createdBy: fields.createdBy || 'system',
     createdAt: new Date().toISOString(),
     completedAt: null,
@@ -3180,16 +3229,26 @@ function sanitizeTaskFields(body, allowedAssignees) {
     if (s && !EVENT_STATUSES.includes(s)) return { error: 'Invalid event status' };
     out.eventStatus = s;
   }
-  // Whose Outlook calendar this meeting is mirrored onto. Restricted to admin
-  // accounts — the same set assignee allows — so this can't be pointed at an
-  // arbitrary mailbox in the tenant. Empty means "don't put it on a calendar",
-  // and clearing it withdraws any event already pushed.
-  if (body.calendarOwner !== undefined) {
-    const c = String(body.calendarOwner || '').trim().toLowerCase();
-    if (c && allowedAssignees && !allowedAssignees.has(c)) {
-      return { error: 'Calendar owner must be an admin account' };
+  // Whose Outlook calendars this meeting is mirrored onto. Each is restricted to
+  // an admin account — the same set assignee allows — so this can't be pointed at
+  // arbitrary mailboxes in the tenant. An empty list means "don't put it on any
+  // calendar", and removing a name withdraws that person's copy.
+  // `calendarOwner` (singular) is still accepted so an older client or a stored
+  // legacy payload keeps working; it normalizes into the list.
+  if (body.calendarOwners !== undefined || body.calendarOwner !== undefined) {
+    const raw = body.calendarOwners !== undefined
+      ? body.calendarOwners
+      : (body.calendarOwner ? [body.calendarOwner] : []);
+    if (!Array.isArray(raw)) return { error: 'calendarOwners must be an array of admin emails' };
+    const owners = [...new Set(raw.map((o) => String(o || '').trim().toLowerCase()).filter(Boolean))];
+    for (const owner of owners) {
+      if (allowedAssignees && !allowedAssignees.has(owner)) {
+        return { error: 'Calendar owner must be an admin account' };
+      }
     }
-    out.calendarOwner = c;
+    out.calendarOwners = owners;
+    // Any surviving singular value would shadow the list on the next read.
+    out.calendarOwner = '';
   }
   return { fields: out };
 }
@@ -3259,11 +3318,11 @@ async function handleAdminUpdateTask(request, env, cors, id) {
         meetingType: task.meetingType,
         location: task.location,
         allDay: task.allDay,
-        // The next occurrence belongs on the same calendar as this one. Its
-        // event id is deliberately NOT carried over — createTask pushes a fresh
-        // event, so copying the id would make the new occurrence overwrite the
-        // completed one's calendar entry.
-        calendarOwner: task.calendarOwner,
+        // The next occurrence belongs on the same calendars as this one. Event
+        // ids are deliberately NOT carried over — createTask pushes fresh
+        // events, so copying them would make the new occurrence overwrite the
+        // completed one's calendar entries.
+        calendarOwners: taskCalendarOwners(task),
         // Carry the prep items forward but unticked — it's a fresh occurrence.
         checklist: (task.checklist || []).map((c) => ({ ...c, done: false })),
         createdBy: adminEmail,
@@ -3300,13 +3359,15 @@ async function handleAdminDeleteTask(request, env, cors, id) {
   }
   await env.PORTAL_KV.delete(`task:${id}`);
   await deleteTimelineRefs(env, task);
-  // Take the mirrored Outlook event down with it, so a deleted meeting doesn't
-  // linger on someone's real calendar.
-  if (task && task.outlookEventId && outlookConfigured(env)) {
+  // Take every mirrored Outlook event down with it, so a deleted meeting doesn't
+  // linger on anyone's real calendar.
+  if (task && outlookConfigured(env)) {
     try {
-      await deleteOutlookEvent(env, task.outlookSyncedOwner || task.calendarOwner, task.outlookEventId);
+      for (const [owner, eventId] of Object.entries(taskOutlookEvents(task))) {
+        await deleteOutlookEvent(env, owner, eventId);
+      }
     } catch (err) {
-      console.error('Error removing Outlook event for deleted task:', err);
+      console.error('Error removing Outlook events for deleted task:', err);
     }
   }
   return json({ ok: true }, 200, cors);

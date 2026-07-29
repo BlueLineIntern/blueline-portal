@@ -110,6 +110,20 @@ function Test-TimelineEntryValid($e) {
     return $true
 }
 
+# Mirror worker.js taskCalendarOwners: normalize the mailbox list, accepting the
+# pre-multi singular `calendarOwner` so older payloads/records still work.
+# Always returns an array — a bare @() would serialize to null, and the picker
+# reads this straight back.
+function ConvertTo-CalendarOwners($many, $one) {
+    $src = if ($null -ne $many) { @($many) } elseif ([string]$one) { @([string]$one) } else { @() }
+    $out = [System.Collections.ArrayList]::new()
+    foreach ($o in $src) {
+        $e = ([string]$o).Trim().ToLower()
+        if ($e -and -not $out.Contains($e)) { $null = $out.Add($e) }
+    }
+    return , @($out.ToArray())
+}
+
 # Mirror worker.js sanitizeChecklist: normalize to [{id, text, done}], drop blanks.
 function ConvertTo-Checklist($raw) {
     $out = @()
@@ -163,12 +177,11 @@ function New-MockTask($fields) {
         endDue = [string]$fields.endDue
         allDay = [bool]$fields.allDay
         eventStatus = if ($eventStatuses -contains [string]$fields.eventStatus) { [string]$fields.eventStatus } else { '' }
-        # Whose Outlook calendar this mirrors onto. The mock has no Microsoft
-        # Graph behind it, so the value is stored and echoed back (enough to
+        # Whose Outlook calendars this mirrors onto. The mock has no Microsoft
+        # Graph behind it, so values are stored and echoed back (enough to
         # exercise the picker) but no real calendar event is ever created.
-        calendarOwner = ([string]$fields.calendarOwner).Trim().ToLower()
-        outlookEventId = ''
-        outlookSyncedOwner = ''
+        calendarOwners = ConvertTo-CalendarOwners $fields.calendarOwners $fields.calendarOwner
+        outlookEvents = @{}
         createdBy = $createdBy
         createdAt = $now
         completedAt = $null
@@ -702,9 +715,17 @@ while ($listener.IsListening) {
             if ($body.PSObject.Properties['assignee'] -and -not (Test-AssigneeAllowed $body.assignee)) {
                 Send-Json $ctx 400 @{ error = 'Assignee must be an admin account' }; continue
             }
-            if ($body.PSObject.Properties['calendarOwner'] -and -not (Test-AssigneeAllowed $body.calendarOwner)) {
-                Send-Json $ctx 400 @{ error = 'Calendar owner must be an admin account' }; continue
-            }
+            # Checked without a nested loop on purpose: `continue` has to target
+            # the request loop, and PowerShell's `continue` takes a label (not a
+            # level count), so continuing out of a foreach here would abort the
+            # server rather than skip to the next request.
+            # Assigned before piping, not piped straight from the call: the
+            # function's `, @(...)` return is a 1-element array wrapping the real
+            # array, so piping it directly hands Where-Object the whole array as
+            # one item and every list of 2+ owners looks like a single bad email.
+            $wantOwners = ConvertTo-CalendarOwners $body.calendarOwners $body.calendarOwner
+            $badOwner = @($wantOwners) | Where-Object { -not (Test-AssigneeAllowed $_) } | Select-Object -First 1
+            if ($badOwner) { Send-Json $ctx 400 @{ error = 'Calendar owner must be an admin account' }; continue }
             $task = New-MockTask @{
                 title = [string]$body.title; description = [string]$body.description
                 client = ([string]$body.client).Trim().ToLower(); assignee = ([string]$body.assignee).Trim().ToLower()
@@ -716,7 +737,7 @@ while ($listener.IsListening) {
                 documents = $body.documents
                 location = [string]$body.location; endDue = [string]$body.endDue
                 allDay = [bool]$body.allDay; eventStatus = [string]$body.eventStatus
-                calendarOwner = [string]$body.calendarOwner
+                calendarOwners = $body.calendarOwners; calendarOwner = [string]$body.calendarOwner
                 createdBy = $adminEmail
             }
             Send-Json $ctx 200 @{ task = $task }
@@ -731,10 +752,19 @@ while ($listener.IsListening) {
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
             $wasOpen = $task.status -eq 'open'
             $prevAssignee = [string]$task.assignee
-            if ($body.PSObject.Properties['calendarOwner'] -and -not (Test-AssigneeAllowed $body.calendarOwner)) {
-                Send-Json $ctx 400 @{ error = 'Calendar owner must be an admin account' }; continue
+            $ownersGiven = $body.PSObject.Properties['calendarOwners'] -or $body.PSObject.Properties['calendarOwner']
+            $newOwners = if ($ownersGiven) { ConvertTo-CalendarOwners $body.calendarOwners $body.calendarOwner } else { $null }
+            # Flat check for the same reason as the create handler: `continue`
+            # must reach the request loop, which a nested foreach would prevent.
+            # @() so a single owner still iterates as one string, not as chars.
+            $badOwner = @($newOwners) | Where-Object { -not (Test-AssigneeAllowed $_) } | Select-Object -First 1
+            if ($badOwner) { Send-Json $ctx 400 @{ error = 'Calendar owner must be an admin account' }; continue }
+            if ($ownersGiven) {
+                $task.calendarOwners = $newOwners
+                # Retire the pre-multi field so it can't shadow the list.
+                if ($task.Contains('calendarOwner')) { $task.calendarOwner = '' }
             }
-            foreach ($f in @('title', 'description', 'client', 'assignee', 'list', 'due', 'priority', 'category', 'status', 'meetingType', 'repeat', 'location', 'endDue', 'eventStatus', 'calendarOwner')) {
+            foreach ($f in @('title', 'description', 'client', 'assignee', 'list', 'due', 'priority', 'category', 'status', 'meetingType', 'repeat', 'location', 'endDue', 'eventStatus')) {
                 if ($body.PSObject.Properties[$f]) { $task[$f] = [string]$body.$f }
             }
             if ($body.PSObject.Properties['allDay']) { $task.allDay = [bool]$body.allDay }
