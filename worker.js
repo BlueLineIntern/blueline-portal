@@ -1819,6 +1819,13 @@ function contactFieldsFromSharePoint(fields) {
 
 function contactFieldsToSharePoint(record) {
   return {
+    // SharePoint's built-in Title column is required on most list templates.
+    // The pull side never reads it (contacts are keyed by Email, not Title),
+    // but a create/update that omits a required column is rejected outright —
+    // silently, from this app's point of view, since the push is best-effort
+    // and only logs to the Worker's own console. Falls back to the email so a
+    // brand-new contact with no name yet still satisfies the requirement.
+    Title: record.name || record.email,
     Email: record.email,
     Name: record.name || '',
     PreferredName: record.preferredName || '',
@@ -1919,17 +1926,34 @@ async function pushContactToSharePoint(env, record) {
       );
       if (res.ok) item = await res.json();
     }
+    let lookupFailed = false;
     if (!item) {
       const escaped = record.email.replace(/'/g, "''");
       const res = await fetch(
         `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?expand=fields&$filter=fields/Email eq '${escaped}'`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            // Graph often rejects a $filter on a column that isn't indexed
+            // unless this is set; harmless to send even if the column is
+            // indexed or the tenant doesn't require it.
+            Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly',
+          },
+        }
       );
       if (res.ok) {
         const found = await res.json();
         item = (found.value || [])[0] || null;
+      } else {
+        // Genuinely don't know whether a row already exists — proceeding to
+        // "create" below would risk minting a duplicate every time this
+        // contact is edited, for as long as the lookup keeps failing. Bail
+        // out instead; the error is visible in the Worker's own logs.
+        lookupFailed = true;
+        console.error('Failed to look up contact in SharePoint by email:', res.status, await res.text());
       }
     }
+    if (lookupFailed) return record;
 
     if (item) {
       const spModified = item.fields.Modified ? new Date(item.fields.Modified) : null;
