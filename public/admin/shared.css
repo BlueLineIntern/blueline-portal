@@ -557,6 +557,60 @@ body .topbar, body .footer { display: none; }
   border-radius: var(--radius-sm); background: var(--panel); color: var(--text);
 }
 
+/* Contacts list: table plus a filter/actions rail, same split as Home. */
+.list-cols { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: var(--sp-5); align-items: start; }
+.list-main { min-width: 0; }
+.list-rail { display: flex; flex-direction: column; gap: var(--sp-5); }
+.list-rail .panel { padding: 0; }
+.list-rail .panel-head { padding: var(--sp-3) var(--sp-4); margin: 0; border-bottom: 1px solid var(--border); }
+.list-rail .panel-head h2 { font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.list-toolbar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+.list-toolbar #type-filter { width: auto; flex: 0 0 auto; }
+.list-toolbar .filter-row { margin: 0; }
+.list-count { color: var(--muted); font-size: var(--fs-sm); }
+
+/* Tag filter pills. Selected state has to survive on its own — the count
+   badge alone is too quiet to read as "this filter is on". */
+.tag-filter { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.tag-pill {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  border-radius: var(--radius-pill); padding: 3px var(--sp-3);
+  font-family: var(--font-sans); font-size: var(--fs-xs); cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+.tag-pill:hover { border-color: var(--sky); }
+.tag-pill.on { background: var(--sky); border-color: var(--sky); color: #fff; font-weight: var(--fw-semibold); }
+.tag-pill .tag-n { color: var(--muted); font-size: var(--fs-2xs); }
+.tag-pill.on .tag-n { color: rgba(255,255,255,0.85); }
+.btn-link { border: none; background: none; cursor: pointer; font-family: var(--font-sans); padding: 0; }
+
+/* Import / export actions */
+.io-action {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  border-radius: var(--radius-sm); padding: var(--sp-3);
+  font-family: var(--font-sans); margin-bottom: var(--sp-2);
+  transition: border-color var(--transition);
+}
+.io-action:hover { border-color: var(--sky); }
+.io-action strong { display: block; font-size: var(--fs-sm); }
+.io-action span { display: block; font-size: var(--fs-xs); color: var(--muted); margin-top: 1px; }
+.io-status { font-size: var(--fs-xs); color: var(--muted); margin: var(--sp-2) 0 0; }
+.io-status.err { color: var(--red); font-weight: var(--fw-semibold); }
+
+/* Import preview */
+.import-preview { max-height: 300px; overflow-y: auto; margin-bottom: var(--sp-3); }
+.ip-row { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
+.ip-row:last-child { border-bottom: none; }
+.ip-skipped { margin-top: var(--sp-3); padding-top: var(--sp-3); border-top: 1px solid var(--border); font-size: var(--fs-xs); color: var(--amber); }
+
+@media (max-width: 1100px) {
+  /* The rail is filters and actions, not content — below this it reads better
+     stacked under the table than squeezed beside it. */
+  .list-cols { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* Contact/household list rows. Both record types share one avatar treatment —
    only the glyph differs (person vs house) — so the mixed list reads as a
    single roster rather than two kinds of thing interleaved. */
@@ -757,7 +811,8 @@ body .topbar, body .footer { display: none; }
      them here rather than only for the new household rows. */
   .field input[type="text"], .field input[type="email"], .field input[type="date"],
   .field input[type="datetime-local"], .field input[type="search"],
-  .field select, .field textarea { font-size: var(--fs-input); }
+  .field select, .field textarea,
+  .list-toolbar select { font-size: var(--fs-input); }
 
   /* auto-fit's 168px floor leaves room for only one column on a phone, so the
      five tiles became five full-width rows of chrome above the feed. Two up. */
