@@ -26,8 +26,7 @@
      the .row-item already gives — not just the few words of the title. */
   a.lr-link { display: flex; align-items: center; gap: var(--sp-3); flex: 1; min-width: 0; text-decoration: none; color: inherit; }
   a.lr-link:hover .row-title { text-decoration: underline; }
-  /* Category / filename / size. Smaller than .row-sub so the Description stays
-     the most readable line under the title. */
+  /* Category / filename / size — the only line under the title. */
   .lr-meta { color: var(--muted); font-size: var(--fs-xs); margin-top: 3px; }
   /* operations.html defines its own .task-filters-secondary inside its <style>
      block rather than in shared.css, so this page needs its own search row
@@ -145,11 +144,10 @@
     }
     list.innerHTML = rows
       .map((r) => {
-        // The title comes from SharePoint's Title column, falling back to
-        // Description then the filename — so each of those is shown only when
-        // it isn't already serving as the title, or it reads like a bug.
-        const desc = r.description && r.description !== r.title
-          ? `<div class="row-sub">${escapeHtml(r.description)}</div>` : '';
+        // Description is deliberately NOT rendered as its own line — the Title
+        // column is what labels a resource here. It still backs `title` as a
+        // fallback (see the endpoint), so a file with no Title set is labelled
+        // by its description rather than dropping to a bare filename.
         const meta = [r.category, r.name !== r.title ? r.name : '', formatSize(r.size)]
           .filter(Boolean).map(escapeHtml).join(' · ');
         return `<div class="row-item lr-row">
@@ -157,7 +155,6 @@
             ${kindMarker(r.name)}
             <div class="row-main">
               <div class="row-title">${escapeHtml(r.title)}</div>
-              ${desc}
               ${meta ? `<div class="lr-meta">${meta}</div>` : ''}
             </div>
           </a>

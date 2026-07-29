@@ -432,10 +432,15 @@ Client portal is untouched and keeps its own look.
     the same diagnostic role `/api/admin/sharepoint/lists` plays for list ids.
   - Row title comes from the library's **Title** column, falling back to
     Description, then the filename — so a resource with neither filled in still
-    renders a readable link instead of an unlabelled one. Each of those is shown
-    only when it isn't already serving as the title (Description on its own line,
-    filename in the `Category · filename · size` meta line), so a row never
-    repeats itself. Links open SharePoint's own viewer in a new
+    renders a readable link instead of an unlabelled one. Under it sits one
+    `Category · filename · size` line, with the filename omitted when it is
+    already the title so a row never repeats itself.
+  - **Description is not displayed** (asked for explicitly — the Title column is
+    what labels a resource). It is still read, purely to back that title
+    fallback, and is still matched by the search box. Note hiding the column in
+    SharePoint would NOT have achieved this: hiding is a *view* setting, and this
+    reads raw data through Graph, so stored values would still have surfaced.
+    Links open SharePoint's own viewer in a new
     tab (`rel="noopener noreferrer"`), so no per-file embed code or sharing-link
     generation is needed. Reuses `Calendars`-era Graph creds — the existing
     `Sites.ReadWrite.All` application permission already covers a new library, so
