@@ -1273,28 +1273,33 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/learning' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             # Stand-in for the SharePoint "Learning Resources" library. The mock has
-            # no Microsoft Graph behind it, so these are fixed rows chosen to cover
-            # the cases the page has to render: several categories, a video and a
-            # document, a row with no Description (title falls back to the
-            # filename), and one with no Category at all (sorts last, and is
-            # reachable only from the All pill).
+            # no Microsoft Graph behind it, so these are fixed rows. `title` is
+            # already resolved here the way worker.js resolves it (Title column ->
+            # Description -> filename), and the set covers all four combinations of
+            # those two columns being filled in, plus a row with no Category (sorts
+            # last, reachable only from the All pill).
             $res = @(
-                @{ id = 'l1'; name = 'CRM-walkthrough.mp4'; title = 'How to add a new client in the CRM'
-                   description = 'How to add a new client in the CRM'; category = 'Software Training'
+                # Title + Description
+                @{ id = 'l1'; name = 'CRM-walkthrough.mp4'; title = 'Adding a new client in the CRM'
+                   description = 'Step-by-step walkthrough of the intake form and required fields.'
+                   category = 'Software Training'
                    webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/CRM-walkthrough.mp4'
                    size = 48234123; modified = '2026-07-20T14:02:00Z' }
                 @{ id = 'l2'; name = 'Form-ADV-refresher.pdf'; title = 'Annual Form ADV refresher'
-                   description = 'Annual Form ADV refresher'; category = 'Compliance'
+                   description = 'Covers the 2026 filing changes.'; category = 'Compliance'
                    webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/Form-ADV-refresher.pdf'
                    size = 812004; modified = '2026-06-11T09:30:00Z' }
+                # Neither column filled in -> title falls back to the filename
                 @{ id = 'l3'; name = 'new-hire-checklist.docx'; title = 'new-hire-checklist.docx'
                    description = ''; category = 'Onboarding'
                    webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/new-hire-checklist.docx'
                    size = 24500; modified = '2026-05-02T16:45:00Z' }
+                # Title only, no Description
                 @{ id = 'l4'; name = 'quarterly-review-deck.pptx'; title = 'Running a quarterly review meeting'
-                   description = 'Running a quarterly review meeting'; category = 'Onboarding'
+                   description = ''; category = 'Onboarding'
                    webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/quarterly-review-deck.pptx'
                    size = 3300400; modified = '2026-07-01T11:15:00Z' }
+                # Description only, no Title -> title falls back to the description
                 @{ id = 'l5'; name = 'misc-notes.txt'; title = 'Uncategorised scratch notes'
                    description = 'Uncategorised scratch notes'; category = ''
                    webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/misc-notes.txt'

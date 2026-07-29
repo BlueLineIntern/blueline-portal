@@ -26,7 +26,9 @@
      the .row-item already gives — not just the few words of the title. */
   a.lr-link { display: flex; align-items: center; gap: var(--sp-3); flex: 1; min-width: 0; text-decoration: none; color: inherit; }
   a.lr-link:hover .row-title { text-decoration: underline; }
-  .lr-filename { color: var(--muted); font-size: var(--fs-xs); margin-top: 2px; }
+  /* Category / filename / size. Smaller than .row-sub so the Description stays
+     the most readable line under the title. */
+  .lr-meta { color: var(--muted); font-size: var(--fs-xs); margin-top: 3px; }
   /* operations.html defines its own .task-filters-secondary inside its <style>
      block rather than in shared.css, so this page needs its own search row
      rather than borrowing that class name. */
@@ -143,19 +145,20 @@
     }
     list.innerHTML = rows
       .map((r) => {
-        const meta = [r.category, formatSize(r.size)].filter(Boolean).map(escapeHtml).join(' · ');
-        // Show the filename as a second line only when it isn't already the
-        // title — a resource with no Description falls back to its filename,
-        // and printing it twice reads like a bug.
-        const filename = r.description && r.name && r.name !== r.title
-          ? `<div class="lr-filename">${escapeHtml(r.name)}</div>` : '';
+        // The title comes from SharePoint's Title column, falling back to
+        // Description then the filename — so each of those is shown only when
+        // it isn't already serving as the title, or it reads like a bug.
+        const desc = r.description && r.description !== r.title
+          ? `<div class="row-sub">${escapeHtml(r.description)}</div>` : '';
+        const meta = [r.category, r.name !== r.title ? r.name : '', formatSize(r.size)]
+          .filter(Boolean).map(escapeHtml).join(' · ');
         return `<div class="row-item lr-row">
           <a class="lr-link" href="${escapeHtml(r.webUrl)}" target="_blank" rel="noopener noreferrer">
             ${kindMarker(r.name)}
             <div class="row-main">
               <div class="row-title">${escapeHtml(r.title)}</div>
-              ${meta ? `<div class="row-sub">${meta}</div>` : ''}
-              ${filename}
+              ${desc}
+              ${meta ? `<div class="lr-meta">${meta}</div>` : ''}
             </div>
           </a>
         </div>`;

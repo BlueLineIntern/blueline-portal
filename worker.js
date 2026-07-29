@@ -2415,6 +2415,9 @@ function pickField(fields, candidates) {
 
 const LEARNING_CATEGORY_FIELDS = ['Category', 'Category0'];
 const LEARNING_DESCRIPTION_FIELDS = ['Description', 'Description0', '_ExtendedDescription', 'Comments'];
+// A document library already ships a built-in Title column, so a *second*
+// column someone names "Title" would be suffixed — hence both spellings.
+const LEARNING_TITLE_FIELDS = ['Title', 'Title0'];
 
 async function fetchLearningResources(env) {
   if (!env.SHAREPOINT_LEARNING_LIST_ID) return { resources: [], configured: false };
@@ -2445,9 +2448,10 @@ async function fetchLearningResources(env) {
     resources.push({
       id: item.id,
       name,
-      // Falls back to the filename so a resource whose Description column was
-      // left blank still renders a readable link instead of an empty row.
-      title: description || name,
+      // Title is the intended display name. It falls back to Description, then
+      // to the filename, so a resource with neither column filled in still
+      // renders a readable link rather than an empty row.
+      title: pickField(fields, LEARNING_TITLE_FIELDS) || description || name,
       description,
       category: pickField(fields, LEARNING_CATEGORY_FIELDS),
       webUrl,
@@ -2498,7 +2502,11 @@ async function handleAdminLearningFields(request, env, cors) {
     const data = await res.json();
     return json({
       items: (data.value || []).map((i) => ({ id: i.id, fields: i.fields || {} })),
-      resolvedBy: { category: LEARNING_CATEGORY_FIELDS, description: LEARNING_DESCRIPTION_FIELDS },
+      resolvedBy: {
+        title: LEARNING_TITLE_FIELDS,
+        category: LEARNING_CATEGORY_FIELDS,
+        description: LEARNING_DESCRIPTION_FIELDS,
+      },
     }, 200, cors);
   } catch (err) {
     return json({ error: 'Failed to read learning list fields: ' + (err && err.message) }, 500, cors);

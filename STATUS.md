@@ -430,9 +430,12 @@ Client portal is untouched and keeps its own look.
     `pickField()` tries a candidate list. `GET /api/admin/learning/fields` dumps
     the raw field keys of the first few items to identify anything not covered —
     the same diagnostic role `/api/admin/sharepoint/lists` plays for list ids.
-  - Displays category + description (as requested), **falling back to the
-    filename as the title when Description is blank** — otherwise such a row
-    renders as an unlabelled link. Links open SharePoint's own viewer in a new
+  - Row title comes from the library's **Title** column, falling back to
+    Description, then the filename — so a resource with neither filled in still
+    renders a readable link instead of an unlabelled one. Each of those is shown
+    only when it isn't already serving as the title (Description on its own line,
+    filename in the `Category · filename · size` meta line), so a row never
+    repeats itself. Links open SharePoint's own viewer in a new
     tab (`rel="noopener noreferrer"`), so no per-file embed code or sharing-link
     generation is needed. Reuses `Calendars`-era Graph creds — the existing
     `Sites.ReadWrite.All` application permission already covers a new library, so
