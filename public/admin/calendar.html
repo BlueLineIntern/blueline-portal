@@ -176,6 +176,12 @@
       </div>
     </div>
     <div class="field">
+      <label for="d-calendar">Add to Outlook calendar</label>
+      <select id="d-calendar"><option value="">— don't add to Outlook —</option></select>
+      <p class="hint">Mirrors this meeting onto that person's real Outlook calendar. Changing it moves the
+      event; clearing it removes the event. Attendees are never invited — no email is sent to anyone.</p>
+    </div>
+    <div class="field">
       <label for="d-description">Notes</label>
       <textarea id="d-description" rows="3"></textarea>
     </div>
@@ -415,7 +421,7 @@
   function openDrawerNew(dateStr) {
     drawerMode = 'new'; drawerTaskId = null;
     const due = dateStr ? `${dateStr}T09:00` : '';
-    draft = { title: '', description: '', client: '', assignee: SESSION.email, due, category: 'meeting', priority: 'medium', meetingType: '', checklist: [] };
+    draft = { title: '', description: '', client: '', assignee: SESSION.email, due, category: 'meeting', priority: 'medium', meetingType: '', calendarOwner: '', checklist: [] };
     document.getElementById('drawer-title').textContent = 'New Meeting';
     populateDrawer();
     openDrawer();
@@ -429,6 +435,7 @@
     draft = {
       title: t.title || '', description: t.description || '', client: t.client || '', assignee: t.assignee || '',
       due: t.due || '', category: t.category || 'other', priority: t.priority || 'medium', meetingType: t.meetingType || '',
+      calendarOwner: t.calendarOwner || '',
       checklist: (Array.isArray(t.checklist) ? t.checklist : []).map((c) => ({ ...c })),
     };
     document.getElementById('drawer-title').textContent = t.category === 'meeting' ? 'Meeting' : 'Task';
@@ -442,6 +449,7 @@
     fillSelect('d-type', Object.keys(MEETING_TEMPLATES).map((k) => ({ value: k, label: MEETING_TEMPLATES[k] })), draft.meetingType, true);
     fillSelect('d-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), draft.client, true);
     fillSelect('d-assignee', adminList.map((a) => ({ value: a, label: staffLabel(a) })), draft.assignee, true);
+    fillSelect('d-calendar', adminList.map((a) => ({ value: a, label: staffLabel(a) })), draft.calendarOwner, true);
     document.getElementById('d-due').value = draft.due ? String(draft.due).slice(0, 16) : '';
     // categoryOptions marks the right option selected and preserves a custom or
     // legacy value as its own option, so rebuilding can't rewrite the category.
@@ -567,6 +575,7 @@
     draft.meetingType = document.getElementById('d-type').value;
     draft.client = document.getElementById('d-client').value;
     draft.assignee = document.getElementById('d-assignee').value;
+    draft.calendarOwner = document.getElementById('d-calendar').value;
     draft.due = document.getElementById('d-due').value;
     draft.category = document.getElementById('d-category').value;
     draft.priority = document.getElementById('d-priority').value;
@@ -577,6 +586,7 @@
     const payload = {
       title: draft.title, description: draft.description, client: draft.client, assignee: draft.assignee,
       due: draft.due, category: draft.category, priority: draft.priority, meetingType: draft.meetingType,
+      calendarOwner: draft.calendarOwner,
       checklist: draft.checklist,
     };
     try {

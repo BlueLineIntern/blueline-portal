@@ -163,6 +163,12 @@ function New-MockTask($fields) {
         endDue = [string]$fields.endDue
         allDay = [bool]$fields.allDay
         eventStatus = if ($eventStatuses -contains [string]$fields.eventStatus) { [string]$fields.eventStatus } else { '' }
+        # Whose Outlook calendar this mirrors onto. The mock has no Microsoft
+        # Graph behind it, so the value is stored and echoed back (enough to
+        # exercise the picker) but no real calendar event is ever created.
+        calendarOwner = ([string]$fields.calendarOwner).Trim().ToLower()
+        outlookEventId = ''
+        outlookSyncedOwner = ''
         createdBy = $createdBy
         createdAt = $now
         completedAt = $null
@@ -696,6 +702,9 @@ while ($listener.IsListening) {
             if ($body.PSObject.Properties['assignee'] -and -not (Test-AssigneeAllowed $body.assignee)) {
                 Send-Json $ctx 400 @{ error = 'Assignee must be an admin account' }; continue
             }
+            if ($body.PSObject.Properties['calendarOwner'] -and -not (Test-AssigneeAllowed $body.calendarOwner)) {
+                Send-Json $ctx 400 @{ error = 'Calendar owner must be an admin account' }; continue
+            }
             $task = New-MockTask @{
                 title = [string]$body.title; description = [string]$body.description
                 client = ([string]$body.client).Trim().ToLower(); assignee = ([string]$body.assignee).Trim().ToLower()
@@ -707,6 +716,7 @@ while ($listener.IsListening) {
                 documents = $body.documents
                 location = [string]$body.location; endDue = [string]$body.endDue
                 allDay = [bool]$body.allDay; eventStatus = [string]$body.eventStatus
+                calendarOwner = [string]$body.calendarOwner
                 createdBy = $adminEmail
             }
             Send-Json $ctx 200 @{ task = $task }
@@ -721,7 +731,10 @@ while ($listener.IsListening) {
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
             $wasOpen = $task.status -eq 'open'
             $prevAssignee = [string]$task.assignee
-            foreach ($f in @('title', 'description', 'client', 'assignee', 'list', 'due', 'priority', 'category', 'status', 'meetingType', 'repeat', 'location', 'endDue', 'eventStatus')) {
+            if ($body.PSObject.Properties['calendarOwner'] -and -not (Test-AssigneeAllowed $body.calendarOwner)) {
+                Send-Json $ctx 400 @{ error = 'Calendar owner must be an admin account' }; continue
+            }
+            foreach ($f in @('title', 'description', 'client', 'assignee', 'list', 'due', 'priority', 'category', 'status', 'meetingType', 'repeat', 'location', 'endDue', 'eventStatus', 'calendarOwner')) {
                 if ($body.PSObject.Properties[$f]) { $task[$f] = [string]$body.$f }
             }
             if ($body.PSObject.Properties['allDay']) { $task.allDay = [bool]$body.allDay }

@@ -37,6 +37,12 @@
  *   (a long random string; if lost/changed, encrypted data is unrecoverable)
  * Optionally restrict browser origins with: wrangler secret put ALLOWED_ORIGIN
  *   (comma-separated list; defaults to the Worker's own origin only)
+ * Microsoft Graph (SharePoint sync + Outlook calendar push) uses one app
+ *   registration: OUTLOOK_CLIENT_ID / OUTLOOK_CLIENT_SECRET / OUTLOOK_TENANT_ID.
+ *   Pushing meetings to staff Outlook calendars additionally needs the
+ *   Calendars.ReadWrite.All APPLICATION permission with admin consent granted.
+ *   Override the assumed timezone with: wrangler secret put OUTLOOK_TIMEZONE
+ *   (a Windows zone name, e.g. "Central Standard Time"; default Eastern)
  *
  * NOTE: This remains a proof-of-concept-grade system. Admin access now uses
  * per-email login + sessions and writes an audit log, but there is still no
@@ -2879,6 +2885,154 @@ async function deleteTimelineRefs(env, record) {
   }
 }
 
+// ---------- Outlook calendar push ----------
+// A meeting scheduled in this app can be mirrored onto a staff member's real
+// Outlook calendar. Which mailbox it lands in is chosen per meeting
+// (`calendarOwner`), so one advisor can book onto another's calendar. Push-only:
+// Outlook is never read back, and this app stays the source of truth. Reuses the
+// same app registration + client-credentials token as the SharePoint sync
+// (getGraphToken), which needs the Calendars.ReadWrite.All APPLICATION
+// permission with admin consent granted.
+//
+// Deliberately sends NO attendees. Graph emails an invitation to every attendee
+// it's given, so listing the client would fire real mail at them the moment an
+// advisor saves a meeting — never a side effect a save should have. The event is
+// a private calendar entry; inviting people stays a manual step in Outlook.
+//
+// Best-effort like the SharePoint pushes: every failure is caught and logged so
+// a Graph outage can never block saving the meeting itself.
+
+const OUTLOOK_DEFAULT_TIMEZONE = 'Eastern Standard Time';
+const OUTLOOK_DEFAULT_DURATION_MIN = 60;
+
+function outlookConfigured(env) {
+  return !!(env.OUTLOOK_CLIENT_ID && env.OUTLOOK_CLIENT_SECRET && env.OUTLOOK_TENANT_ID);
+}
+
+// Windows zone name (Graph resolves DST itself). Override per deployment with
+// the OUTLOOK_TIMEZONE secret if the firm isn't on Eastern.
+function outlookTimeZone(env) {
+  return env.OUTLOOK_TIMEZONE || OUTLOOK_DEFAULT_TIMEZONE;
+}
+
+// `due`/`endDue` are naive wall-clock strings ("2026-08-03T14:00" or a bare
+// "2026-08-03"), so times are sent as bare local date-times paired with a named
+// zone rather than converted to UTC here. Arithmetic runs through Date in UTC
+// purely to borrow its calendar rollover, then slices back to a naive string —
+// the values never represent real UTC instants.
+function outlookEventTimes(task, tz) {
+  const due = String(task.due || '').trim();
+  const day = due.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+
+  if (task.allDay || !due.includes('T')) {
+    // Graph treats an all-day event's end as EXCLUSIVE, so a single-day event
+    // ends on the following day.
+    const endDay = new Date(`${String(task.endDue || '').slice(0, 10) || day}T00:00:00Z`);
+    if (isNaN(endDay.getTime())) return null;
+    endDay.setUTCDate(endDay.getUTCDate() + 1);
+    return {
+      isAllDay: true,
+      start: { dateTime: `${day}T00:00:00`, timeZone: tz },
+      end: { dateTime: `${endDay.toISOString().slice(0, 10)}T00:00:00`, timeZone: tz },
+    };
+  }
+
+  const start = due.slice(0, 16);
+  let end = String(task.endDue || '').slice(0, 16);
+  if (!end || end <= start) {
+    const d = new Date(`${start}:00Z`);
+    if (isNaN(d.getTime())) return null;
+    d.setUTCMinutes(d.getUTCMinutes() + OUTLOOK_DEFAULT_DURATION_MIN);
+    end = d.toISOString().slice(0, 16);
+  }
+  return {
+    isAllDay: false,
+    start: { dateTime: `${start}:00`, timeZone: tz },
+    end: { dateTime: `${end}:00`, timeZone: tz },
+  };
+}
+
+function outlookEventBody(task, tz) {
+  const times = outlookEventTimes(task, tz);
+  if (!times) return null; // no usable date — nothing to put on a calendar
+  const payload = {
+    subject: String(task.title || '').trim() || '(untitled)',
+    body: { contentType: 'text', content: String(task.description || '') },
+    ...times,
+  };
+  if (task.location) payload.location = { displayName: String(task.location) };
+  return payload;
+}
+
+async function graphCalendarFetch(env, method, path, payload) {
+  const token = await getGraphToken(env);
+  return fetch(`https://graph.microsoft.com/v1.0${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+}
+
+// A 404 is success here: the event is already gone from Outlook.
+async function deleteOutlookEvent(env, owner, eventId) {
+  if (!owner || !eventId) return;
+  const res = await graphCalendarFetch(
+    env, 'DELETE', `/users/${encodeURIComponent(owner)}/events/${encodeURIComponent(eventId)}`
+  );
+  if (!res.ok && res.status !== 404) {
+    console.error('Outlook event delete failed:', res.status, await res.text());
+  }
+}
+
+// Reconcile a task's Outlook event with its current state. Returns the fields
+// the caller must persist ({outlookEventId, outlookSyncedOwner}), or null when
+// there's nothing to change. `outlookSyncedOwner` records which mailbox the
+// stored event id actually lives in, so re-pointing calendarOwner can move it.
+async function syncTaskToOutlook(env, task) {
+  if (!outlookConfigured(env)) return null;
+  try {
+    const owner = String(task.calendarOwner || '').trim().toLowerCase();
+    const prevOwner = String(task.outlookSyncedOwner || '').trim().toLowerCase();
+    const prevId = task.outlookEventId || '';
+    const payload = owner ? outlookEventBody(task, outlookTimeZone(env)) : null;
+
+    // Owner cleared, or the date was removed so it can no longer be an event:
+    // withdraw whatever we previously put on a calendar.
+    if (!payload) {
+      if (prevId) await deleteOutlookEvent(env, prevOwner || owner, prevId);
+      return prevId ? { outlookEventId: '', outlookSyncedOwner: '' } : null;
+    }
+
+    if (prevId && prevOwner && prevOwner !== owner) {
+      // Graph can't move an event between mailboxes, so recreate it in the new
+      // one and drop the old copy.
+      await deleteOutlookEvent(env, prevOwner, prevId);
+    } else if (prevId) {
+      const res = await graphCalendarFetch(
+        env, 'PATCH', `/users/${encodeURIComponent(owner)}/events/${encodeURIComponent(prevId)}`, payload
+      );
+      if (res.ok) return null; // stored ids already correct
+      if (res.status !== 404) {
+        console.error('Outlook event update failed:', res.status, await res.text());
+        return null;
+      }
+      // 404 — someone deleted it in Outlook; fall through and recreate.
+    }
+
+    const res = await graphCalendarFetch(env, 'POST', `/users/${encodeURIComponent(owner)}/events`, payload);
+    if (!res.ok) {
+      console.error('Outlook event create failed:', res.status, await res.text());
+      return null;
+    }
+    const created = await res.json();
+    return { outlookEventId: created.id || '', outlookSyncedOwner: owner };
+  } catch (err) {
+    console.error('Error syncing task to Outlook:', err);
+    return null;
+  }
+}
+
 async function createTask(env, fields) {
   const id = `${invTs()}-${randomHex(4)}`;
   const task = {
@@ -2896,6 +3050,16 @@ async function createTask(env, fields) {
     checklist: sanitizeChecklist(fields.checklist),
     meetingType: fields.meetingType || '',
     documents: sanitizeDocuments(fields.documents),
+    // Event fields. These were previously dropped here (only the update path
+    // saved them), so a meeting created with an end time, location, or all-day
+    // flag lost them until it was edited again.
+    location: fields.location || '',
+    endDue: fields.endDue || '',
+    allDay: !!fields.allDay,
+    eventStatus: EVENT_STATUSES.includes(fields.eventStatus) ? fields.eventStatus : '',
+    calendarOwner: String(fields.calendarOwner || '').trim().toLowerCase(),
+    outlookEventId: '',
+    outlookSyncedOwner: '',
     createdBy: fields.createdBy || 'system',
     createdAt: new Date().toISOString(),
     completedAt: null,
@@ -2910,6 +3074,8 @@ async function createTask(env, fields) {
     });
     if (refs) task.timelineKeys.push(refs.timelineKey, refs.activityKey);
   }
+  const synced = await syncTaskToOutlook(env, task);
+  if (synced) Object.assign(task, synced);
   await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
   return task;
 }
@@ -3014,6 +3180,17 @@ function sanitizeTaskFields(body, allowedAssignees) {
     if (s && !EVENT_STATUSES.includes(s)) return { error: 'Invalid event status' };
     out.eventStatus = s;
   }
+  // Whose Outlook calendar this meeting is mirrored onto. Restricted to admin
+  // accounts — the same set assignee allows — so this can't be pointed at an
+  // arbitrary mailbox in the tenant. Empty means "don't put it on a calendar",
+  // and clearing it withdraws any event already pushed.
+  if (body.calendarOwner !== undefined) {
+    const c = String(body.calendarOwner || '').trim().toLowerCase();
+    if (c && allowedAssignees && !allowedAssignees.has(c)) {
+      return { error: 'Calendar owner must be an admin account' };
+    }
+    out.calendarOwner = c;
+  }
   return { fields: out };
 }
 
@@ -3080,6 +3257,13 @@ async function handleAdminUpdateTask(request, env, cors, id) {
         priority: task.priority,
         category: task.category,
         meetingType: task.meetingType,
+        location: task.location,
+        allDay: task.allDay,
+        // The next occurrence belongs on the same calendar as this one. Its
+        // event id is deliberately NOT carried over — createTask pushes a fresh
+        // event, so copying the id would make the new occurrence overwrite the
+        // completed one's calendar entry.
+        calendarOwner: task.calendarOwner,
         // Carry the prep items forward but unticked — it's a fresh occurrence.
         checklist: (task.checklist || []).map((c) => ({ ...c, done: false })),
         createdBy: adminEmail,
@@ -3097,6 +3281,11 @@ async function handleAdminUpdateTask(request, env, cors, id) {
   }
   if (task.history.length > TASK_HISTORY_MAX) task.history = task.history.slice(-TASK_HISTORY_MAX);
 
+  // Runs after every field change above, so a retitled/rescheduled/reassigned
+  // meeting updates its Outlook event (or moves mailboxes) in one place.
+  const synced = await syncTaskToOutlook(env, task);
+  if (synced) Object.assign(task, synced);
+
   await env.PORTAL_KV.put(`task:${id}`, await encryptJSON(env, task));
   return json({ task, spawned }, 200, cors);
 }
@@ -3111,6 +3300,15 @@ async function handleAdminDeleteTask(request, env, cors, id) {
   }
   await env.PORTAL_KV.delete(`task:${id}`);
   await deleteTimelineRefs(env, task);
+  // Take the mirrored Outlook event down with it, so a deleted meeting doesn't
+  // linger on someone's real calendar.
+  if (task && task.outlookEventId && outlookConfigured(env)) {
+    try {
+      await deleteOutlookEvent(env, task.outlookSyncedOwner || task.calendarOwner, task.outlookEventId);
+    } catch (err) {
+      console.error('Error removing Outlook event for deleted task:', err);
+    }
+  }
   return json({ ok: true }, 200, cors);
 }
 

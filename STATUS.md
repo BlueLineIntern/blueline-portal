@@ -368,7 +368,32 @@ untouched and keeps its own look.
   Deep links: `?view=`, `?date=YYYY-MM-DD`, `?task=<id>` (auto-opens the panel).
   The dashboard **Upcoming Meetings** widget shows client, time, prep readiness,
   and the client's open-task count, linking to the meeting in the calendar.
-  (No hour-grid, recurring meetings, calendar sync, or document upload yet.)
+  (No hour-grid, recurring meetings, or document upload yet.)
+- **Outlook calendar push** (`calendarOwner` on a `task:` record) — a meeting can
+  be mirrored onto a staff member's real Outlook calendar. The **"Add to Outlook
+  calendar"** picker in the meeting panel chooses *which* mailbox per meeting
+  (restricted to admin accounts, so it can't target an arbitrary tenant mailbox),
+  so one advisor can book onto another's calendar. **Push-only** — Outlook is
+  never read back; this app stays the source of truth. `outlookEventId` +
+  `outlookSyncedOwner` are stored on the task so an edit PATCHes the same event,
+  re-pointing the picker moves it (delete + recreate, since Graph can't move an
+  event between mailboxes), clearing the picker deletes it, and deleting the task
+  takes the calendar entry with it. A 404 on update means someone deleted it in
+  Outlook — it's recreated. Sends **no attendees on purpose**: Graph emails an
+  invitation to every attendee, so listing the client would fire real mail at
+  them on save; inviting people stays a manual step in Outlook.
+  - Uses the same app registration + client-credentials token as the SharePoint
+    sync (`OUTLOOK_CLIENT_ID` / `OUTLOOK_CLIENT_SECRET` / `OUTLOOK_TENANT_ID`),
+    which additionally needs the **`Calendars.ReadWrite.All` _application_
+    permission with admin consent granted** in Azure AD. Times are sent as naive
+    wall-clock strings plus a named Windows zone (Graph resolves DST); override
+    the default `Eastern Standard Time` with `wrangler secret put OUTLOOK_TIMEZONE`.
+    Skips silently when the `OUTLOOK_*` secrets are absent, and every failure is
+    caught + logged so a Graph outage can never block saving the meeting.
+  - **Not verifiable against the local mock**: `dev-server.ps1` has no Microsoft
+    Graph behind it, so it stores/echoes `calendarOwner` (enough to exercise the
+    picker and validation) but creates no real event. End-to-end confirmation
+    requires a deploy with the secrets set.
 - `contacts.html` honors `?c=<email>&tab=<tab>`. `operations.html` honors
   `?view=<board|list>`, `?filter=<today|week|overdue|mine>` (board pill), and
   `?f=<quick filter>&cat=<category>&q=<search>` (list; presence of any implies
