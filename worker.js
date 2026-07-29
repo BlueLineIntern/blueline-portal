@@ -1873,6 +1873,105 @@ async function pushNoteToSharePoint(env, note) {
   }
 }
 
+// Push a household's current state to the SharePoint Households list. Unlike
+// note push (which always appends — a note is a permanent, individually
+// meaningful record), this UPSERTS by the SharePoint item id captured on the
+// first successful push and carried on the household record afterward as
+// `sharePointItemId`. The whole point is a disaster-recovery mirror: if the
+// Worker or KV is unavailable, an advisor opening SharePoint directly needs
+// ONE current row per household, not a growing log of every edit.
+//
+// Requires a SharePoint list already created with these columns (Text unless
+// noted): HouseholdId, Members (multi-line), Email, EmailType, AssignedTo,
+// AdvisorRep, ContactType, Tags, Background (multi-line), Status,
+// Archived (Yes/No text), UpdatedAsOf. Title (the list's built-in column)
+// holds the household name. Skips silently if SHAREPOINT_HOUSEHOLDS_LIST_ID
+// isn't configured, so this is safe to ship before that list exists.
+//
+// Best-effort like note push: a failure here must never break saving the
+// household record itself, so every error is caught and logged, never thrown.
+async function pushHouseholdToSharePoint(env, household) {
+  if (!env.SHAREPOINT_HOUSEHOLDS_LIST_ID) return null;
+  try {
+    const token = await getGraphToken(env);
+    // Resolve each member's email to a name where we have one on file, so the
+    // backup is legible to a person during an outage rather than a bare list
+    // of addresses. Missing/undecryptable contacts just fall back to the email.
+    const memberLines = await Promise.all(
+      (household.members || []).map(async (m) => {
+        let display = m.email;
+        try {
+          const c = await decryptToObject(env, await env.PORTAL_KV.get(`contact:${m.email}`));
+          if (c && c.name) display = `${c.name} (${m.email})`;
+        } catch {
+          // undecryptable/missing contact — email alone is still useful
+        }
+        return `${display} — ${m.role}`;
+      })
+    );
+    const fields = {
+      Title: household.name,
+      HouseholdId: household.id,
+      Members: memberLines.join('\n'),
+      Email: household.email || '',
+      EmailType: household.emailType || '',
+      AssignedTo: household.assignedTo || '',
+      AdvisorRep: household.advisorRep || '',
+      ContactType: household.contactType || '',
+      Tags: (household.tags || []).join(', '),
+      Background: household.background || '',
+      Status: household.status || '',
+      Archived: household.archived ? 'Yes' : 'No',
+      UpdatedAsOf: household.updatedAt || household.createdAt || new Date().toISOString(),
+    };
+
+    if (household.sharePointItemId) {
+      const patchUrl = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists/${env.SHAREPOINT_HOUSEHOLDS_LIST_ID}/items/${household.sharePointItemId}/fields`;
+      const patchRes = await fetch(patchUrl, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields),
+      });
+      if (patchRes.ok) return household.sharePointItemId;
+      // The row may have been removed on the SharePoint side independently of
+      // the app (manual cleanup, list rebuilt) — recreate rather than fail.
+      console.error('Failed to update household in SharePoint, recreating:', patchRes.status, await patchRes.text());
+    }
+
+    const createUrl = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists/${env.SHAREPOINT_HOUSEHOLDS_LIST_ID}/items`;
+    const createRes = await fetch(createUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields }),
+    });
+    if (!createRes.ok) {
+      console.error('Failed to create household in SharePoint:', createRes.status, await createRes.text());
+      return null;
+    }
+    const data = await createRes.json();
+    return data.id || null;
+  } catch (err) {
+    console.error('Error pushing household to SharePoint:', err);
+    return null;
+  }
+}
+
+// Remove a household's backup row when the grouping itself is deleted in the
+// app — an intentional delete should not leave a phantom row that reads as a
+// still-current household if someone is looking at SharePoint during a later
+// outage. Best-effort: never throws.
+async function deleteHouseholdFromSharePoint(env, household) {
+  if (!env.SHAREPOINT_HOUSEHOLDS_LIST_ID || !household || !household.sharePointItemId) return;
+  try {
+    const token = await getGraphToken(env);
+    const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists/${env.SHAREPOINT_HOUSEHOLDS_LIST_ID}/items/${household.sharePointItemId}`;
+    const res = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) console.error('Failed to delete household from SharePoint:', res.status, await res.text());
+  } catch (err) {
+    console.error('Error deleting household from SharePoint:', err);
+  }
+}
+
 // ---------- Advisor CRM: contacts ----------
 // contact:<email> holds the CRM fields an advisor manages about a person
 // (status, household, advisor, tags, …), stored encrypted. It exists
@@ -2168,10 +2267,15 @@ async function handleAdminCreateHousehold(request, env, cors) {
     tags: fields.tags || [],
     status: fields.status || 'active',
     archived: false,
+    sharePointItemId: null,
     createdBy: adminEmail,
     createdAt: new Date().toISOString(),
     updatedAt: null,
   };
+  // Best-effort disaster-recovery mirror — see pushHouseholdToSharePoint. Must
+  // run before the KV write so a successful push's item id is captured on the
+  // very first save, not left null until the next edit.
+  record.sharePointItemId = await pushHouseholdToSharePoint(env, record);
   await env.PORTAL_KV.put(`household:${id}`, await encryptJSON(env, record));
   await logAudit(env, adminEmail, 'create-household', { id, name: record.name });
   return json({ household: record }, 200, cors);
@@ -2194,6 +2298,11 @@ async function handleAdminUpdateHousehold(request, env, cors, id) {
     fields.archivedAt = body.archived ? new Date().toISOString() : null;
   }
   const record = { ...existing, ...fields, id, type: 'household', updatedAt: new Date().toISOString() };
+  // record.sharePointItemId carries over from `existing` via the spread above,
+  // so a successful PATCH keeps the same id; a failed one (or a first push if
+  // the list was configured after this household was created) returns a fresh
+  // id here instead.
+  record.sharePointItemId = await pushHouseholdToSharePoint(env, record);
   await env.PORTAL_KV.put(`household:${id}`, await encryptJSON(env, record));
   await logAudit(env, adminEmail, 'update-household', { id });
   return json({ household: record }, 200, cors);
@@ -2202,9 +2311,13 @@ async function handleAdminUpdateHousehold(request, env, cors, id) {
 async function handleAdminDeleteHousehold(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  if (!(await env.PORTAL_KV.get(`household:${id}`))) {
-    return json({ error: 'Household not found' }, 404, cors);
-  }
+  const raw = await env.PORTAL_KV.get(`household:${id}`);
+  if (!raw) return json({ error: 'Household not found' }, 404, cors);
+  // Decrypted so its sharePointItemId is known — an intentional delete here
+  // should remove the SharePoint backup row too, or it reads as a still-live
+  // household if someone checks SharePoint during a later outage.
+  const existing = await decryptToObject(env, raw);
+  await deleteHouseholdFromSharePoint(env, existing);
   // Deleting the grouping never touches the member contacts themselves.
   await env.PORTAL_KV.delete(`household:${id}`);
   await logAudit(env, adminEmail, 'delete-household', { id });
