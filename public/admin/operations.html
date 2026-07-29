@@ -126,18 +126,18 @@
     </div>
 
     <div class="view-toggle" id="view-toggle">
-      <button type="button" data-view="board" class="active">▦ Board</button>
-      <button type="button" data-view="list">☰ List</button>
+      <button type="button" data-view="list" class="active">☰ List</button>
+      <button type="button" data-view="board">▦ Board</button>
     </div>
 
     <p class="panel-status" id="ops-status"></p>
 
-    <div id="board-view">
+    <div id="board-view" class="hidden">
       <div class="filter-row" id="ops-filters"></div>
       <div class="board" id="board"></div>
     </div>
 
-    <div id="list-view" class="hidden">
+    <div id="list-view">
       <div class="filter-row" id="list-filters"></div>
       <div class="task-filters-secondary">
         <input type="search" class="input" id="task-search" placeholder="Search tasks…" />
@@ -302,7 +302,7 @@
   let boardLists = [];   // board columns: [{id, type:'person'|'custom', account?, name?}]
   let listAddType = 'person'; // which add-mode the Lists modal is showing
   let activeFilter = 'all';       // board filter pill
-  let currentView = 'board';      // 'board' | 'list'
+  let currentView = 'list';      // 'board' | 'list'
   let listQuickFilter = 'my-open'; // list quick-filter pill
   let listSearch = '';
   let dragTaskId = null;
@@ -1126,6 +1126,10 @@
   // Deep links. Board (Home stat tiles and queues): ?filter=today|week|overdue|mine.
   // List (dashboard queues / search / old Tasks links, via tasks.html redirect):
   // ?view=list&f=<quick>&cat=<category>&q=<search>.
+  // List opens by default now, so a ?filter= link with no explicit ?view= lands
+  // on list — filter and QUICK_FILTERS share ids for today/week/overdue, so it's
+  // applied there too and the dashboard's "Due Today"/"Overdue" tiles still
+  // filter correctly without needing to force board.
   (function applyUrlParams() {
     const p = new URLSearchParams(location.search);
     const view = p.get('view');
@@ -1133,6 +1137,7 @@
     else if (p.has('f') || p.has('cat') || p.has('q')) currentView = 'list';
     const bf = p.get('filter');
     if (bf && FILTERS.some((x) => x.id === bf)) activeFilter = bf;
+    if (bf && QUICK_FILTERS.some((x) => x.id === bf)) listQuickFilter = bf;
     const f = p.get('f');
     if (f && QUICK_FILTERS.some((x) => x.id === f)) listQuickFilter = f;
     const cat = p.get('cat');
