@@ -233,9 +233,9 @@
     </p>
     <p class="field-note" id="cm-sharepoint-note">
       Contact details (name, status, advisor, phone, work email/phone, address, gender, household, tags)
-      are managed in SharePoint and sync in automatically every 15 minutes. Fields below are shown for
-      reference only — edit them in the SharePoint Contacts list, not here. Only Important Dates can be
-      edited in this app.
+      sync both ways with the SharePoint Contacts list. Editing a field here pushes it to SharePoint, and an
+      edit made directly in SharePoint flows back here — whichever edit happened most recently wins, so an
+      older edit on either side can be silently overwritten if both changed before the next sync.
     </p>
     <div class="field">
       <label for="cm-email">Email</label>
@@ -244,17 +244,17 @@
     <div class="field-row">
       <div class="field">
         <label for="cm-name">Name</label>
-        <input type="text" id="cm-name" disabled />
+        <input type="text" id="cm-name" />
       </div>
       <div class="field">
         <label for="cm-preferredName">Preferred name</label>
-        <input type="text" id="cm-preferredName" disabled />
+        <input type="text" id="cm-preferredName" />
       </div>
     </div>
     <div class="field-row">
       <div class="field">
         <label for="cm-status">Status</label>
-        <select id="cm-status" disabled>
+        <select id="cm-status">
           <option value="prospect">Prospect</option>
           <option value="onboarding">Onboarding</option>
           <option value="active">Active</option>
@@ -263,40 +263,40 @@
       </div>
       <div class="field">
         <label for="cm-advisor">Primary advisor</label>
-        <input type="text" id="cm-advisor" disabled />
+        <input type="text" id="cm-advisor" />
       </div>
     </div>
     <div class="field-row">
       <div class="field">
         <label for="cm-phone">Phone</label>
-        <input type="text" id="cm-phone" disabled />
+        <input type="text" id="cm-phone" />
       </div>
       <div class="field">
         <label for="cm-workPhone">Work phone</label>
-        <input type="text" id="cm-workPhone" disabled />
+        <input type="text" id="cm-workPhone" />
       </div>
     </div>
     <div class="field-row">
       <div class="field">
         <label for="cm-workEmail">Work email</label>
-        <input type="email" id="cm-workEmail" disabled />
+        <input type="email" id="cm-workEmail" />
       </div>
       <div class="field">
         <label for="cm-gender">Gender</label>
-        <input type="text" id="cm-gender" disabled />
+        <input type="text" id="cm-gender" />
       </div>
     </div>
     <div class="field">
       <label for="cm-address">Address</label>
-      <input type="text" id="cm-address" placeholder="e.g. 123 Main St, Springfield" disabled />
+      <input type="text" id="cm-address" placeholder="e.g. 123 Main St, Springfield" />
     </div>
     <div class="field">
       <label for="cm-household">Household</label>
-      <input type="text" id="cm-household" placeholder="e.g. Example Family" disabled />
+      <input type="text" id="cm-household" placeholder="e.g. Example Family" />
     </div>
     <div class="field">
       <label for="cm-tags">Tags (comma-separated)</label>
-      <input type="text" id="cm-tags" placeholder="Business Owner, Estate Planning" disabled />
+      <input type="text" id="cm-tags" placeholder="Business Owner, Estate Planning" />
     </div>
     <div class="field">
       <label>Important dates</label>
@@ -757,11 +757,24 @@
       errEl.textContent = 'Give every important date a purpose, or clear its date.';
       return;
     }
-    // Name, status, advisor, phone, work email/phone, address, gender, household, and tags are
-    // owned by SharePoint and overwritten by the sync every 15 minutes — sending edits to them
-    // from here would just be silently discarded on the next sync, so only send what this app
-    // actually owns.
-    const payload = { importantDates };
+    // These fields now sync both ways with SharePoint (worker.js pushes them
+    // out via pushContactToSharePoint, and the incoming SharePoint pull no
+    // longer clobbers importantDates/archived, which it used to). Sending them
+    // is safe: on the server, whichever edit is actually newer wins.
+    const payload = {
+      importantDates,
+      name: document.getElementById('cm-name').value.trim(),
+      preferredName: document.getElementById('cm-preferredName').value.trim(),
+      status: document.getElementById('cm-status').value,
+      advisor: document.getElementById('cm-advisor').value.trim(),
+      phone: document.getElementById('cm-phone').value.trim(),
+      workPhone: document.getElementById('cm-workPhone').value.trim(),
+      workEmail: document.getElementById('cm-workEmail').value.trim(),
+      gender: document.getElementById('cm-gender').value.trim(),
+      address: document.getElementById('cm-address').value.trim(),
+      household: document.getElementById('cm-household').value.trim(),
+      tags: document.getElementById('cm-tags').value.split(',').map((t) => t.trim()).filter(Boolean),
+    };
     try {
       await api(`/api/admin/contacts/${encodeURIComponent(email)}`, {
         method: 'POST',

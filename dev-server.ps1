@@ -965,9 +965,10 @@ while ($listener.IsListening) {
             $merged = @{}
             foreach ($rec in $contacts.Values) {
                 $merged[$rec.email] = [ordered]@{
-                    email = $rec.email; name = $rec.name; status = $rec.status
+                    email = $rec.email; name = $rec.name; preferredName = $rec.preferredName; status = $rec.status
                     archived = [bool]$rec.archived
                     household = $rec.household; advisor = $rec.advisor; phone = $rec.phone
+                    workEmail = $rec.workEmail; workPhone = $rec.workPhone; address = $rec.address; gender = $rec.gender
                     tags = @($rec.tags); importantDates = @($rec.importantDates)
                     createdAt = $rec.createdAt; updatedAt = $rec.updatedAt
                     hasAccount = $false; modules = @{}; modulesError = $false; assignments = $null
@@ -977,9 +978,10 @@ while ($listener.IsListening) {
                 $entry = $merged[$u.email]
                 if (-not $entry) {
                     $entry = [ordered]@{
-                        email = $u.email; name = ''; status = 'active'
+                        email = $u.email; name = ''; preferredName = ''; status = 'active'
                         archived = $false
                         household = ''; advisor = ''; phone = ''
+                        workEmail = ''; workPhone = ''; address = ''; gender = ''
                         tags = @(); importantDates = @()
                         createdAt = $null; updatedAt = $null
                         hasAccount = $false; modules = @{}; modulesError = $false; assignments = $null
@@ -1022,15 +1024,16 @@ while ($listener.IsListening) {
             if ($body.PSObject.Properties['status'] -and $contactStatuses -notcontains [string]$body.status) {
                 Send-Json $ctx 400 @{ error = 'Invalid status' }; continue
             }
-            if ($body.PSObject.Properties['advisor'] -and [string]$body.advisor -and -not $adminPasswords.ContainsKey(([string]$body.advisor).Trim().ToLower())) {
-                Send-Json $ctx 400 @{ error = 'Advisor must be an admin account' }; continue
-            }
             $rec = $contacts[$target]
             if (-not $rec) {
-                $rec = [ordered]@{ email = $target; name = ''; status = 'prospect'; household = ''; advisor = ''; phone = ''
+                $rec = [ordered]@{ email = $target; name = ''; preferredName = ''; status = 'prospect'; household = ''
+                    advisor = ''; phone = ''; workEmail = ''; workPhone = ''; address = ''; gender = ''
                     tags = @(); importantDates = @(); createdAt = (Get-Date).ToString('o'); updatedAt = $null }
             }
-            foreach ($f in @('name', 'status', 'household', 'advisor', 'phone')) {
+            # advisor is a free-typed name (e.g. "Fred Sabin"), not tied to an
+            # admin account email -- mirrors worker.js's sanitizeContactFields,
+            # which never validates it against $adminPasswords.
+            foreach ($f in @('name', 'preferredName', 'status', 'household', 'advisor', 'phone', 'workEmail', 'workPhone', 'address', 'gender')) {
                 if ($body.PSObject.Properties[$f]) { $rec[$f] = ([string]$body.$f).Trim() }
             }
             if ($body.PSObject.Properties['tags']) { $rec.tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() }) }
