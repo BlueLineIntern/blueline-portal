@@ -1791,12 +1791,62 @@ async function getGraphToken(env) {
   return data.access_token;
 }
 
+// Scalar contact fields SharePoint owns and can overwrite the app with, in
+// either direction of sync. importantDates, archived/archivedAt/archivedBy,
+// and sharePointItemId are deliberately NOT in this list — they exist only in
+// the app (SharePoint has no columns for them), so pulling must never let a
+// bare object literal without them stand in for the whole record, and pushing
+// must never send them anywhere.
+function contactFieldsFromSharePoint(fields) {
+  return {
+    name: String(fields.Name || '').trim().slice(0, 200),
+    preferredName: String(fields.PreferredName || '').trim().slice(0, 200),
+    status: ['prospect', 'onboarding', 'active', 'inactive'].includes(String(fields.Status || '').trim().toLowerCase())
+      ? String(fields.Status).trim().toLowerCase()
+      : 'prospect',
+    household: String(fields.Household || '').trim().slice(0, 200),
+    advisor: String(fields.Advisor || '').trim().slice(0, 200),
+    phone: String(fields.Phone || '').trim().slice(0, 50),
+    workEmail: String(fields.WorkEmail || '').trim().toLowerCase().slice(0, 200),
+    workPhone: String(fields.WorkPhone || '').trim().slice(0, 50),
+    address: String(fields.Address || '').trim().slice(0, 300),
+    gender: String(fields.Gender || '').trim().slice(0, 40),
+    tags: Array.isArray(fields.Tags)
+      ? fields.Tags.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim().slice(0, 40)).slice(0, 20)
+      : [],
+  };
+}
+
+function contactFieldsToSharePoint(record) {
+  return {
+    Email: record.email,
+    Name: record.name || '',
+    PreferredName: record.preferredName || '',
+    Status: record.status || 'prospect',
+    Household: record.household || '',
+    Advisor: record.advisor || '',
+    Phone: record.phone || '',
+    WorkEmail: record.workEmail || '',
+    WorkPhone: record.workPhone || '',
+    Address: record.address || '',
+    Gender: record.gender || '',
+    Tags: record.tags || [],
+  };
+}
+
+// Pull-with-merge, both ways per record: whichever side has the newer
+// Modified/updatedAt wins for the SharePoint-owned scalar fields. This used
+// to be an unconditional replace with a bare object literal that had no
+// importantDates/archived/sharePointItemId at all -- meaning every contact's
+// important dates and archived flag were being erased on every run of this
+// (previously every-minute) sync, regardless of which side had actually
+// changed. Fixed here rather than as separate work, since a correct two-way
+// merge needs the same "don't clobber app-owned fields" logic either way.
 async function syncSharePointContacts(env) {
   const token = await getGraphToken(env);
   const siteId = env.SHAREPOINT_SITE_ID;
   const listId = env.SHAREPOINT_LIST_ID;
 
-  // Fetch all items from the Contacts list.
   const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?expand=fields`;
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
@@ -1805,44 +1855,135 @@ async function syncSharePointContacts(env) {
   const data = await response.json();
 
   let synced = 0;
+  let skippedNewerLocal = 0;
   if (data.value && Array.isArray(data.value)) {
     for (const item of data.value) {
       const fields = item.fields || {};
       const email = fields.Email && String(fields.Email).trim().toLowerCase();
       if (!email) continue; // Skip items without an email
 
+      const spModified = fields.Modified ? new Date(fields.Modified) : null;
+      const existing = await decryptToObject(env, await env.PORTAL_KV.get(`contact:${email}`));
+
+      // An app-side edit newer than what SharePoint has on file hasn't been
+      // pushed yet (or the push failed) -- pulling now would throw that edit
+      // away. Skip; the next push attempt (or a manual retry) reconciles it.
+      if (existing && existing.updatedAt && spModified) {
+        const localUpdated = new Date(existing.updatedAt);
+        if (localUpdated.getTime() >= spModified.getTime()) {
+          skippedNewerLocal += 1;
+          continue;
+        }
+      }
+
       const contact = {
+        ...(existing || { createdAt: fields.Created ? new Date(fields.Created).toISOString() : new Date().toISOString() }),
         email,
-        name: String(fields.Name || '').trim().slice(0, 200),
-        preferredName: String(fields.PreferredName || '').trim().slice(0, 200),
-        status: ['prospect', 'onboarding', 'active', 'inactive'].includes(
-          String(fields.Status || '').trim().toLowerCase()
-        )
-          ? String(fields.Status).trim().toLowerCase()
-          : 'prospect',
-        household: String(fields.Household || '').trim().slice(0, 200),
-        advisor: String(fields.Advisor || '').trim().slice(0, 200),
-        phone: String(fields.Phone || '').trim().slice(0, 50),
-        workEmail: String(fields.WorkEmail || '').trim().toLowerCase().slice(0, 200),
-        workPhone: String(fields.WorkPhone || '').trim().slice(0, 50),
-        address: String(fields.Address || '').trim().slice(0, 300),
-        gender: String(fields.Gender || '').trim().slice(0, 40),
-        tags: Array.isArray(fields.Tags)
-          ? fields.Tags.filter((t) => typeof t === 'string' && t.trim())
-              .map((t) => t.trim().slice(0, 40))
-              .slice(0, 20)
-          : [],
-        createdAt: fields.Created ? new Date(fields.Created).toISOString() : null,
-        updatedAt: fields.Modified ? new Date(fields.Modified).toISOString() : null,
+        ...contactFieldsFromSharePoint(fields),
+        sharePointItemId: item.id,
+        updatedAt: spModified ? spModified.toISOString() : new Date().toISOString(),
       };
 
-      // Upsert into KV encrypted under contact:<email>
       await env.PORTAL_KV.put(`contact:${email}`, await encryptJSON(env, contact));
       synced += 1;
     }
   }
 
-  return { synced, timestamp: new Date().toISOString() };
+  return { synced, skippedNewerLocal, timestamp: new Date().toISOString() };
+}
+
+// Push a locally-edited contact out to SharePoint, with the same "most recent
+// edit wins" rule the pull side uses: if SharePoint's Modified stamp for this
+// contact is already newer than what the app knew about when the edit was
+// made, the just-made app edit is discarded in favor of adopting SharePoint's
+// version (returned to the caller so the API response reflects what actually
+// got saved, rather than silently pretending the edit succeeded). Otherwise
+// the app's edit is pushed. Best-effort: any failure returns the record
+// unchanged so a SharePoint outage never blocks saving a contact.
+async function pushContactToSharePoint(env, record) {
+  if (!env.SHAREPOINT_LIST_ID) return record;
+  try {
+    const token = await getGraphToken(env);
+    const siteId = env.SHAREPOINT_SITE_ID;
+    const listId = env.SHAREPOINT_LIST_ID;
+
+    // Fast path: the item id from a previous sync/push. Falls back to a
+    // lookup by email for a contact that arrived via the original pull-only
+    // sync (or whose stored id has since gone stale) — email is already this
+    // app's natural key for a contact, so it's a reliable fallback match.
+    let item = null;
+    if (record.sharePointItemId) {
+      const res = await fetch(
+        `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${record.sharePointItemId}?expand=fields`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.ok) item = await res.json();
+    }
+    if (!item) {
+      const escaped = record.email.replace(/'/g, "''");
+      const res = await fetch(
+        `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?expand=fields&$filter=fields/Email eq '${escaped}'`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.ok) {
+        const found = await res.json();
+        item = (found.value || [])[0] || null;
+      }
+    }
+
+    if (item) {
+      const spModified = item.fields.Modified ? new Date(item.fields.Modified) : null;
+      const ourKnown = record.updatedAt ? new Date(record.updatedAt) : null;
+      // >1s guards against ordinary clock/formatting rounding reading as a
+      // conflict on every single push.
+      if (spModified && ourKnown && spModified.getTime() - ourKnown.getTime() > 1000) {
+        return {
+          ...record,
+          ...contactFieldsFromSharePoint(item.fields),
+          sharePointItemId: item.id,
+          updatedAt: spModified.toISOString(),
+        };
+      }
+      const patchRes = await fetch(
+        `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${item.id}/fields`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(contactFieldsToSharePoint(record)),
+        }
+      );
+      if (!patchRes.ok) {
+        console.error('Failed to push contact to SharePoint:', patchRes.status, await patchRes.text());
+        return record;
+      }
+      const updated = await patchRes.json().catch(() => ({}));
+      return { ...record, sharePointItemId: item.id, updatedAt: updated.Modified || new Date().toISOString() };
+    }
+
+    // No SharePoint item for this email yet — create one. Closes the gap
+    // where a brand-new "+ New Person" contact never reached SharePoint at all.
+    const createRes = await fetch(
+      `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: contactFieldsToSharePoint(record) }),
+      }
+    );
+    if (!createRes.ok) {
+      console.error('Failed to create contact in SharePoint:', createRes.status, await createRes.text());
+      return record;
+    }
+    const created = await createRes.json().catch(() => ({}));
+    return {
+      ...record,
+      sharePointItemId: created.id || null,
+      updatedAt: (created.fields && created.fields.Modified) || new Date().toISOString(),
+    };
+  } catch (err) {
+    console.error('Error pushing contact to SharePoint:', err);
+    return record;
+  }
 }
 
 // Push one note out to the SharePoint Notes list. The app is the source of
@@ -1890,10 +2031,71 @@ async function pushNoteToSharePoint(env, note) {
 //
 // Best-effort like note push: a failure here must never break saving the
 // household record itself, so every error is caught and logged, never thrown.
+// Scalar household fields that round-trip safely from SharePoint. Members is
+// deliberately excluded: on push it's written as a human-readable string like
+// "Jane Smith (jane@example.com) — Head" for legibility during an outage, and
+// reliably parsing arbitrary free-typed edits back into structured {email,
+// role} pairs is a different, fragility-prone feature (a slightly reworded
+// line, a removed dash, a typo'd role all become silent data loss). Members
+// stays app-owned: editable here, mirrored outward, never read back.
+function householdFieldsFromSharePoint(fields) {
+  return {
+    name: String(fields.Title || '').trim().slice(0, 200) || undefined,
+    email: String(fields.Email || '').trim().toLowerCase().slice(0, 200),
+    emailType: HOUSEHOLD_EMAIL_TYPES.includes(String(fields.EmailType || '').trim().toLowerCase())
+      ? String(fields.EmailType).trim().toLowerCase()
+      : '',
+    assignedTo: String(fields.AssignedTo || '').trim().toLowerCase().slice(0, 200),
+    advisorRep: String(fields.AdvisorRep || '').trim().slice(0, 200),
+    contactType: String(fields.ContactType || '').trim().slice(0, 60),
+    tags: String(fields.Tags || '')
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, 20),
+    background: String(fields.Background || '').trim().slice(0, 5000),
+    status: CONTACT_STATUSES.includes(String(fields.Status || '').trim().toLowerCase())
+      ? String(fields.Status).trim().toLowerCase()
+      : 'active',
+    archived: String(fields.Archived || '').trim().toLowerCase() === 'yes',
+  };
+}
+
+// Push a household's current state to SharePoint, upserting by the stored
+// item id, with the same "most recent edit wins" rule as contacts: if
+// SharePoint's Modified stamp is already newer than what the app knew about,
+// the app edit just made is discarded in favor of adopting SharePoint's
+// scalar fields (Members excepted — see householdFieldsFromSharePoint)
+// instead of overwriting SharePoint with now-stale app data.
 async function pushHouseholdToSharePoint(env, household) {
-  if (!env.SHAREPOINT_HOUSEHOLDS_LIST_ID) return null;
+  if (!env.SHAREPOINT_HOUSEHOLDS_LIST_ID) return household;
   try {
     const token = await getGraphToken(env);
+    const siteId = env.SHAREPOINT_SITE_ID;
+    const listId = env.SHAREPOINT_HOUSEHOLDS_LIST_ID;
+
+    let item = null;
+    if (household.sharePointItemId) {
+      const res = await fetch(
+        `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${household.sharePointItemId}?expand=fields`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.ok) item = await res.json();
+    }
+
+    if (item) {
+      const spModified = item.fields.Modified ? new Date(item.fields.Modified) : null;
+      const ourKnown = household.updatedAt ? new Date(household.updatedAt) : null;
+      if (spModified && ourKnown && spModified.getTime() - ourKnown.getTime() > 1000) {
+        return {
+          ...household,
+          ...Object.fromEntries(Object.entries(householdFieldsFromSharePoint(item.fields)).filter(([, v]) => v !== undefined)),
+          sharePointItemId: item.id,
+          updatedAt: spModified.toISOString(),
+        };
+      }
+    }
+
     // Resolve each member's email to a name where we have one on file, so the
     // backup is legible to a person during an outage rather than a bare list
     // of addresses. Missing/undecryptable contacts just fall back to the email.
@@ -1922,23 +2124,25 @@ async function pushHouseholdToSharePoint(env, household) {
       Background: household.background || '',
       Status: household.status || '',
       Archived: household.archived ? 'Yes' : 'No',
-      UpdatedAsOf: household.updatedAt || household.createdAt || new Date().toISOString(),
     };
 
-    if (household.sharePointItemId) {
-      const patchUrl = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists/${env.SHAREPOINT_HOUSEHOLDS_LIST_ID}/items/${household.sharePointItemId}/fields`;
+    if (item) {
+      const patchUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${item.id}/fields`;
       const patchRes = await fetch(patchUrl, {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(fields),
       });
-      if (patchRes.ok) return household.sharePointItemId;
+      if (patchRes.ok) {
+        const updated = await patchRes.json().catch(() => ({}));
+        return { ...household, sharePointItemId: item.id, updatedAt: updated.Modified || new Date().toISOString() };
+      }
       // The row may have been removed on the SharePoint side independently of
       // the app (manual cleanup, list rebuilt) — recreate rather than fail.
       console.error('Failed to update household in SharePoint, recreating:', patchRes.status, await patchRes.text());
     }
 
-    const createUrl = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists/${env.SHAREPOINT_HOUSEHOLDS_LIST_ID}/items`;
+    const createUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`;
     const createRes = await fetch(createUrl, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -1946,14 +2150,64 @@ async function pushHouseholdToSharePoint(env, household) {
     });
     if (!createRes.ok) {
       console.error('Failed to create household in SharePoint:', createRes.status, await createRes.text());
-      return null;
+      return household;
     }
-    const data = await createRes.json();
-    return data.id || null;
+    const created = await createRes.json().catch(() => ({}));
+    return {
+      ...household,
+      sharePointItemId: created.id || null,
+      updatedAt: (created.fields && created.fields.Modified) || new Date().toISOString(),
+    };
   } catch (err) {
     console.error('Error pushing household to SharePoint:', err);
-    return null;
+    return household;
   }
+}
+
+// Pull households from SharePoint, applying only to existing app records
+// matched by HouseholdId and only when SharePoint's Modified is newer than
+// the app's own updatedAt (mirrors syncSharePointContacts' rule). A row with
+// no HouseholdId, or one that doesn't match any household in the app, is
+// skipped rather than adopted as a new household: app-generated ids (hh-…)
+// have no natural counterpart a freshly-typed SharePoint row could carry, so
+// there is no safe way to originate a brand-new household from SharePoint
+// alone the way a brand-new contact can originate from an email match.
+async function syncSharePointHouseholds(env) {
+  if (!env.SHAREPOINT_HOUSEHOLDS_LIST_ID) return { synced: 0, skipped: 0, skippedNewerLocal: 0, timestamp: new Date().toISOString() };
+  const token = await getGraphToken(env);
+  const siteId = env.SHAREPOINT_SITE_ID;
+  const listId = env.SHAREPOINT_HOUSEHOLDS_LIST_ID;
+  const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?expand=fields`;
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw new Error('Failed to fetch SharePoint household items: ' + response.statusText);
+  const data = await response.json();
+
+  let synced = 0;
+  let skipped = 0;
+  let skippedNewerLocal = 0;
+  for (const item of data.value || []) {
+    const fields = item.fields || {};
+    const hhId = String(fields.HouseholdId || '').trim();
+    if (!hhId) { skipped += 1; continue; }
+    const existing = await decryptToObject(env, await env.PORTAL_KV.get(`household:${hhId}`));
+    if (!existing) { skipped += 1; continue; } // no app-side counterpart to apply this row to
+
+    const spModified = fields.Modified ? new Date(fields.Modified) : null;
+    if (existing.updatedAt && spModified) {
+      const localUpdated = new Date(existing.updatedAt);
+      if (localUpdated.getTime() >= spModified.getTime()) { skippedNewerLocal += 1; continue; }
+    }
+
+    const record = {
+      ...existing,
+      ...householdFieldsFromSharePoint(fields),
+      sharePointItemId: item.id,
+      updatedAt: spModified ? spModified.toISOString() : new Date().toISOString(),
+    };
+    await env.PORTAL_KV.put(`household:${hhId}`, await encryptJSON(env, record));
+    synced += 1;
+  }
+  return { synced, skipped, skippedNewerLocal, timestamp: new Date().toISOString() };
 }
 
 // Remove a household's backup row when the grouping itself is deleted in the
@@ -2137,7 +2391,12 @@ async function handleAdminUpsertContact(request, env, cors, targetEmail) {
     status: 'prospect',
     createdAt: new Date().toISOString(),
   };
-  const record = { ...existing, ...fields, email, updatedAt: new Date().toISOString() };
+  let record = { ...existing, ...fields, email, updatedAt: new Date().toISOString() };
+  // Best-effort two-way mirror — see pushContactToSharePoint. May return the
+  // record adopted from a newer SharePoint edit instead of what was just
+  // submitted here; either way, what's persisted and returned is the true
+  // final state, not necessarily this request's own input.
+  record = await pushContactToSharePoint(env, record);
   await env.PORTAL_KV.put(`contact:${email}`, await encryptJSON(env, record));
   await logAudit(env, adminEmail, 'update-contact', { client: email });
   return json({ contact: record }, 200, cors);
@@ -2252,7 +2511,7 @@ async function handleAdminCreateHousehold(request, env, cors) {
   if (error) return json({ error }, 400, cors);
   if (!fields.name) return json({ error: 'Household name is required' }, 400, cors);
   const id = `hh-${randomHex(6)}`;
-  const record = {
+  let record = {
     id,
     type: 'household',
     name: fields.name,
@@ -2272,10 +2531,11 @@ async function handleAdminCreateHousehold(request, env, cors) {
     createdAt: new Date().toISOString(),
     updatedAt: null,
   };
-  // Best-effort disaster-recovery mirror — see pushHouseholdToSharePoint. Must
-  // run before the KV write so a successful push's item id is captured on the
-  // very first save, not left null until the next edit.
-  record.sharePointItemId = await pushHouseholdToSharePoint(env, record);
+  // Best-effort two-way mirror — see pushHouseholdToSharePoint. Runs before the
+  // KV write so a successful push's item id (and, on a first-ever save, there
+  // is nothing to conflict with) is captured immediately rather than left
+  // null until the next edit.
+  record = await pushHouseholdToSharePoint(env, record);
   await env.PORTAL_KV.put(`household:${id}`, await encryptJSON(env, record));
   await logAudit(env, adminEmail, 'create-household', { id, name: record.name });
   return json({ household: record }, 200, cors);
@@ -2297,12 +2557,13 @@ async function handleAdminUpdateHousehold(request, env, cors, id) {
     fields.archived = !!body.archived;
     fields.archivedAt = body.archived ? new Date().toISOString() : null;
   }
-  const record = { ...existing, ...fields, id, type: 'household', updatedAt: new Date().toISOString() };
-  // record.sharePointItemId carries over from `existing` via the spread above,
-  // so a successful PATCH keeps the same id; a failed one (or a first push if
-  // the list was configured after this household was created) returns a fresh
-  // id here instead.
-  record.sharePointItemId = await pushHouseholdToSharePoint(env, record);
+  let record = { ...existing, ...fields, id, type: 'household', updatedAt: new Date().toISOString() };
+  // sharePointItemId carries over from `existing` via the spread above. Push
+  // may return this record unchanged (pushed successfully), with a fresh
+  // sharePointItemId (first push, or the prior one went stale), or merged
+  // with newer scalar fields adopted from SharePoint if SharePoint had moved
+  // since our last known state — see pushHouseholdToSharePoint.
+  record = await pushHouseholdToSharePoint(env, record);
   await env.PORTAL_KV.put(`household:${id}`, await encryptJSON(env, record));
   await logAudit(env, adminEmail, 'update-household', { id });
   return json({ household: record }, 200, cors);
@@ -2993,6 +3254,14 @@ async function handleScheduled(env) {
   } catch (err) {
     console.error('Scheduled SharePoint sync failed:', err);
   }
+  // Separate try/catch: a contacts sync failure must not skip the household
+  // pull, and vice versa — they're independent lists with independent risk.
+  try {
+    const result = await syncSharePointHouseholds(env);
+    console.log('Scheduled SharePoint household sync completed:', result);
+  } catch (err) {
+    console.error('Scheduled SharePoint household sync failed:', err);
+  }
 }
 
 export default {
@@ -3075,6 +3344,18 @@ export default {
           return json(result, 200, cors);
         } catch (err) {
           console.error('SharePoint sync failed:', err);
+          return json({ error: 'Sync failed: ' + (err && err.message) }, 500, cors);
+        }
+      }
+      if (url.pathname === '/api/admin/households/sync' && request.method === 'POST') {
+        const adminEmail = await getAdminEmail(request, env);
+        if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        try {
+          const result = await syncSharePointHouseholds(env);
+          await logAudit(env, adminEmail, 'sync-sharepoint-households', result);
+          return json(result, 200, cors);
+        } catch (err) {
+          console.error('SharePoint household sync failed:', err);
           return json({ error: 'Sync failed: ' + (err && err.message) }, 500, cors);
         }
       }
