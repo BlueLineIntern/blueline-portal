@@ -557,6 +557,25 @@ body .topbar, body .footer { display: none; }
   border-radius: var(--radius-sm); background: var(--panel); color: var(--text);
 }
 
+/* Contact/household list rows. Both record types share one avatar treatment —
+   only the glyph differs (person vs house) — so the mixed list reads as a
+   single roster rather than two kinds of thing interleaved. */
+.name-cell { display: flex; align-items: center; gap: var(--sp-3); }
+.row-avatar {
+  width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+  background: var(--gray-bg); color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.row-avatar svg { width: 17px; height: 17px; }
+.name-main { min-width: 0; }
+.name-link { color: var(--sky-dark); font-weight: var(--fw-semibold); text-decoration: none; }
+.name-link:hover { text-decoration: underline; }
+/* "(Work)" beside a number/address — a qualifier, not the value itself. */
+.cell-qual { color: var(--muted); font-size: var(--fs-xs); }
+/* Separates a primary and work value stacked in one cell without the extra
+   leading a <div> per line would add. */
+.cell-gap { height: 2px; }
+
 /* Important-date rows in the contact modal: purpose, date, recurs-annually.
    The purpose flexes and the date sizes to content, so a long label never
    squeezes the date field into an unusable sliver. */

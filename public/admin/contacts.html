@@ -74,11 +74,9 @@
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Status</th>
-                <th>Advisor</th>
+                <th>Phone</th>
+                <th>Email</th>
                 <th>Tags</th>
-                <th>Assessments</th>
-                <th>Last Activity</th>
               </tr>
             </thead>
             <tbody id="contacts-body"></tbody>
@@ -424,9 +422,29 @@
       .toLowerCase().includes(q);
   }
 
+  // Tag chips, capped so one heavily-tagged row can't set the column's width.
+  function tagCells(tags) {
+    const list = tags || [];
+    if (!list.length) return '<span class="cell-missing">—</span>';
+    return list.slice(0, 3).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join(' ')
+      + (list.length > 3 ? ` <span class="cell-missing">+${list.length - 3}</span>` : '');
+  }
+
+  // Only the work variants get a "(Work)" qualifier. The app has no field
+  // saying what kind of number/address the primary one is, so labelling it
+  // "(Personal)" would be inventing a fact the record doesn't carry.
+  function contactPoints(primary, work) {
+    const lines = [];
+    if (primary) lines.push(escapeHtml(primary));
+    if (work) lines.push(`${escapeHtml(work)} <span class="cell-qual">(Work)</span>`);
+    return lines.length ? lines.join('<div class="cell-gap"></div>') : '<span class="cell-missing">—</span>';
+  }
+
   // Households sort in among the people by display name rather than being
   // bucketed separately: the advisor looks up "the Smiths" the same way they
   // look up a person, so one alphabetical list is the fewest places to look.
+  // Both row types use the same avatar treatment — only the glyph differs —
+  // so the two read as one list rather than two interleaved kinds of thing.
   function householdRowHtml(h) {
     const memberNames = (h.members || [])
       .map((m) => {
@@ -436,15 +454,19 @@
       .slice(0, 3)
       .join(', ');
     const extra = (h.members || []).length > 3 ? ` +${h.members.length - 3}` : '';
-    const tags = (h.tags || []).slice(0, 3).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join(' ');
     return `<tr class="row-click household-row" data-hh="${escapeHtml(h.id)}">
-      <td><strong>${escapeHtml(h.name)}</strong> <span class="badge badge-navy">Household</span>
-        <div class="cell-sub">${memberNames ? memberNames + extra : '<span class="cell-missing">no members yet</span>'}</div></td>
-      <td>${statusBadge(h.status)}${h.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}</td>
-      <td>${h.assignedTo ? escapeHtml(staffLabel(h.assignedTo)) : '<span class="cell-missing">—</span>'}</td>
-      <td>${tags || '<span class="cell-missing">—</span>'}</td>
+      <td>
+        <div class="name-cell">
+          <span class="row-avatar">${icon('home')}</span>
+          <div class="name-main">
+            <a class="name-link" href="#">${escapeHtml(h.name)}</a>${h.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}
+            <div class="cell-sub">${memberNames ? memberNames + extra : '<span class="cell-missing">no members yet</span>'}</div>
+          </div>
+        </div>
+      </td>
       <td><span class="cell-missing">—</span></td>
-      <td>${h.updatedAt || h.createdAt ? escapeHtml(relTime(h.updatedAt || h.createdAt)) : '<span class="cell-missing">—</span>'}</td>
+      <td>${h.email ? escapeHtml(h.email) : '<span class="cell-missing">—</span>'}</td>
+      <td>${tagCells(h.tags)}</td>
     </tr>`;
   }
 
@@ -460,23 +482,27 @@
       // Archived contacts are hidden unless explicitly toggled into view.
       .filter((c) => (showArchived ? c.archived : !c.archived) && (!q || contactMatches(c, q)))
       .map((c) => {
-        const p = clientProgress(c);
-        const act = lastActivity(c);
-        const tags = (c.tags || []).slice(0, 3).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join(' ')
-          + ((c.tags || []).length > 3 ? ` <span class="cell-missing">+${c.tags.length - 3}</span>` : '');
-        // A person who belongs to a household record shows it here; falls back
-        // to the SharePoint free-text household tag, then the email.
+        // A person who belongs to a household record shows it under their
+        // name; falls back to the SharePoint free-text household tag. No
+        // longer falls back to the email — that now has its own column, and
+        // repeating it here just duplicated the same string twice per row.
         const hh = allHouseholds.find((h) => (h.members || []).some((m) => m.email === c.email));
-        const sub = hh ? escapeHtml(hh.name) : escapeHtml(c.household || c.email);
+        const sub = hh ? escapeHtml(hh.name) : escapeHtml(c.household || '');
         return {
           sortKey: String(c.name || c.email).toLowerCase(),
           html: `<tr class="row-click contact-row" data-email="${escapeHtml(c.email)}">
-          <td><strong>${escapeHtml(c.name || '—')}</strong><div class="cell-sub">${sub}</div></td>
-          <td>${statusBadge(c.status)}${c.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}</td>
-          <td>${c.advisor ? escapeHtml(c.advisor) : '<span class="cell-missing">—</span>'}</td>
-          <td>${tags || '<span class="cell-missing">—</span>'}</td>
-          <td>${c.hasAccount ? `${p.done} / ${p.total}` : '<span class="cell-missing">no portal account</span>'}</td>
-          <td>${act ? escapeHtml(relTime(act)) : '<span class="cell-missing">—</span>'}</td>
+          <td>
+            <div class="name-cell">
+              <span class="row-avatar">${icon('user')}</span>
+              <div class="name-main">
+                <a class="name-link" href="#">${escapeHtml(c.name || c.email)}</a>${c.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}
+                ${sub ? `<div class="cell-sub">${sub}</div>` : ''}
+              </div>
+            </div>
+          </td>
+          <td>${contactPoints(c.phone, c.workPhone)}</td>
+          <td>${contactPoints(c.email, c.workEmail)}</td>
+          <td>${tagCells(c.tags)}</td>
         </tr>`,
         };
       });
@@ -484,7 +510,7 @@
     const total = allContacts.length + allHouseholds.length;
     body.innerHTML = all.length
       ? all.map((r) => r.html).join('')
-      : `<tr><td colspan="6" class="empty">${total ? 'Nothing matches.' : 'No contacts yet — add your first with New Person or New Household.'}</td></tr>`;
+      : `<tr><td colspan="4" class="empty">${total ? 'Nothing matches.' : 'No contacts yet — add your first with New Person or New Household.'}</td></tr>`;
     body.querySelectorAll('.contact-row').forEach((tr) => {
       tr.addEventListener('click', () => openProfile(tr.dataset.email));
     });
