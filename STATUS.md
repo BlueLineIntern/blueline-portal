@@ -231,8 +231,8 @@ The admin side is now a Wealthbox-inspired CRM. `admin.html` = login + MFA only
 (redirects into `/admin/` on success); pages share `admin/shared.css` (modern
 sans-serif design tokens, sidebar shell) + `admin/shared.js` (session guard,
 authenticated `api()` wrapper, shell injection). Pages: Dashboard, Contacts,
-Tasks, Onboarding, Settings (audit log + admin accounts). Client portal is
-untouched and keeps its own look.
+Tasks, Calendar, Onboarding, Learning, Settings (audit log + admin accounts).
+Client portal is untouched and keeps its own look.
 
 - **Contacts** (`contact:<email>` KV, **encrypted**): status
   (prospect/onboarding/active/inactive), household label, primary advisor (must
@@ -406,6 +406,37 @@ untouched and keeps its own look.
     requires a deploy with the secrets set. The reconcile logic itself (create /
     PATCH / delete sets, legacy migration, 404 recreate) is covered by unit tests
     run against the real source with a stubbed Graph layer.
+- **Learning** (`learning.html`, sidebar "Learning") lists staff training videos
+  and documents from a SharePoint **document library** ("Learning Resources"),
+  via `GET /api/admin/learning`. Staff-facing only — nothing here is exposed to
+  the client portal.
+  - **Read-only and NOT synced into KV**, unlike contacts/households: nothing is
+    edited in the app, so SharePoint stays the single copy and there's no two-way
+    merge to get wrong. Each request hits Graph directly, so a file uploaded in
+    SharePoint appears on the next refresh with no sync step to wait for.
+  - A document library is a list underneath, so this reads the same
+    `/sites/{id}/lists/{id}/items` endpoint as the contact/household syncs, with
+    `driveItem` expanded for each file's own `webUrl`. Folders and any item
+    without a `webUrl` are skipped. Needs `SHAREPOINT_LEARNING_LIST_ID`; when
+    unset the endpoint returns `configured: false` and the page says which
+    setting is missing rather than showing an empty library.
+  - **Categories are data-driven**: the filter pills are built from the distinct
+    `Category` values actually present, so adding a Choice value in SharePoint
+    surfaces it with no code change. Requested explicitly — the alternative
+    (hard-coded list) would need a deploy per new category.
+  - **Column internal names are guessed defensively.** SharePoint doesn't always
+    match a column's internal name to its display name (a collision with a
+    built-in gets suffixed, e.g. `Description` → `Description0`), so
+    `pickField()` tries a candidate list. `GET /api/admin/learning/fields` dumps
+    the raw field keys of the first few items to identify anything not covered —
+    the same diagnostic role `/api/admin/sharepoint/lists` plays for list ids.
+  - Displays category + description (as requested), **falling back to the
+    filename as the title when Description is blank** — otherwise such a row
+    renders as an unlabelled link. Links open SharePoint's own viewer in a new
+    tab (`rel="noopener noreferrer"`), so no per-file embed code or sharing-link
+    generation is needed. Reuses `Calendars`-era Graph creds — the existing
+    `Sites.ReadWrite.All` application permission already covers a new library, so
+    no extra Azure grant was required.
 - `contacts.html` honors `?c=<email>&tab=<tab>`. `operations.html` honors
   `?view=<board|list>`, `?filter=<today|week|overdue|mine>` (board pill), and
   `?f=<quick filter>&cat=<category>&q=<search>` (list; presence of any implies

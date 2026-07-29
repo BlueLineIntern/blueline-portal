@@ -2383,6 +2383,128 @@ async function deleteHouseholdFromSharePoint(env, household) {
   }
 }
 
+// ---------- Learning resources (SharePoint document library) ----------
+// Staff training material — videos and documents — kept in a SharePoint
+// document library ("Learning Resources") and listed read-only in the admin
+// Learning tab. A document library IS a list underneath, so this reads through
+// the same /lists/{id}/items endpoint the contact and household syncs use, with
+// driveItem expanded to get each file's own webUrl.
+//
+// Read-only and NOT synced into KV, unlike contacts/households: nothing here is
+// edited in the app, so SharePoint stays the single copy and there is no
+// two-way merge to get wrong. Each request goes straight to Graph, which also
+// means a file uploaded in SharePoint shows up on the next refresh with no sync
+// step to wait for.
+//
+// Links open SharePoint's own viewer in a new tab rather than embedding a
+// player, so no per-file embed code or sharing-link generation is needed.
+
+// SharePoint decides a column's *internal* name when it's created, and it does
+// not always match the display name — a display name that collides with a
+// built-in field gets suffixed ("Description" -> "Description0"), and spaces
+// become escaped sequences. Rather than hard-code one guess, try the plausible
+// internal names in order. /api/admin/learning/fields dumps the real ones if a
+// library ends up with something not covered here.
+function pickField(fields, candidates) {
+  for (const key of candidates) {
+    const val = fields[key];
+    if (val !== undefined && val !== null && String(val).trim()) return String(val).trim();
+  }
+  return '';
+}
+
+const LEARNING_CATEGORY_FIELDS = ['Category', 'Category0'];
+const LEARNING_DESCRIPTION_FIELDS = ['Description', 'Description0', '_ExtendedDescription', 'Comments'];
+
+async function fetchLearningResources(env) {
+  if (!env.SHAREPOINT_LEARNING_LIST_ID) return { resources: [], configured: false };
+
+  const token = await getGraphToken(env);
+  // driveItem carries the file's real webUrl, size and folder/file marker;
+  // fields carries the custom Category/Description columns.
+  const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}`
+    + `/lists/${env.SHAREPOINT_LEARNING_LIST_ID}/items?expand=fields,driveItem&$top=200`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error('Graph API error ' + res.status + ': ' + (await res.text()).slice(0, 300));
+  const data = await res.json();
+
+  const resources = [];
+  for (const item of data.value || []) {
+    const fields = item.fields || {};
+    const drive = item.driveItem || {};
+    // A document library's items include its folders. Keep files only —
+    // a folder has no webUrl worth linking and no content to open.
+    if (drive.folder) continue;
+    if (!drive.file && !fields.FileLeafRef) continue;
+
+    const name = String(drive.name || fields.FileLeafRef || '').trim();
+    const webUrl = drive.webUrl || item.webUrl || '';
+    if (!webUrl) continue; // nothing to link to
+
+    const description = pickField(fields, LEARNING_DESCRIPTION_FIELDS);
+    resources.push({
+      id: item.id,
+      name,
+      // Falls back to the filename so a resource whose Description column was
+      // left blank still renders a readable link instead of an empty row.
+      title: description || name,
+      description,
+      category: pickField(fields, LEARNING_CATEGORY_FIELDS),
+      webUrl,
+      size: typeof drive.size === 'number' ? drive.size : null,
+      modified: drive.lastModifiedDateTime || fields.Modified || null,
+    });
+  }
+
+  // Category, then title — so the flat list still reads as grouped when no
+  // category filter is applied.
+  resources.sort((a, b) =>
+    (a.category || '￿').localeCompare(b.category || '￿') || a.title.localeCompare(b.title));
+
+  return { resources, configured: true };
+}
+
+async function handleAdminLearning(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  try {
+    const { resources, configured } = await fetchLearningResources(env);
+    // Categories come from the data rather than a hard-coded list, so adding a
+    // new Choice value in SharePoint surfaces it here with no code change.
+    const categories = [...new Set(resources.map((r) => r.category).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+    return json({ resources, categories, configured }, 200, cors);
+  } catch (err) {
+    console.error('Failed to fetch learning resources:', err);
+    return json({ error: 'Failed to load learning resources: ' + (err && err.message) }, 500, cors);
+  }
+}
+
+// Diagnostic twin of /api/admin/sharepoint/lists: dumps the raw field keys of
+// the first few items so a Category/Description column whose internal name
+// isn't in the candidate lists above can be identified without guessing.
+async function handleAdminLearningFields(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!env.SHAREPOINT_LEARNING_LIST_ID) {
+    return json({ error: 'SHAREPOINT_LEARNING_LIST_ID is not set' }, 400, cors);
+  }
+  try {
+    const token = await getGraphToken(env);
+    const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}`
+      + `/lists/${env.SHAREPOINT_LEARNING_LIST_ID}/items?expand=fields&$top=3`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error('Graph API error ' + res.status + ': ' + (await res.text()).slice(0, 300));
+    const data = await res.json();
+    return json({
+      items: (data.value || []).map((i) => ({ id: i.id, fields: i.fields || {} })),
+      resolvedBy: { category: LEARNING_CATEGORY_FIELDS, description: LEARNING_DESCRIPTION_FIELDS },
+    }, 200, cors);
+  } catch (err) {
+    return json({ error: 'Failed to read learning list fields: ' + (err && err.message) }, 500, cors);
+  }
+}
+
 // ---------- Advisor CRM: contacts ----------
 // contact:<email> holds the CRM fields an advisor manages about a person
 // (status, household, advisor, tags, …), stored encrypted. It exists
@@ -3786,6 +3908,14 @@ export default {
         } catch (err) {
           return json({ error: 'Failed to list SharePoint lists: ' + (err && err.message) }, 500, cors);
         }
+      }
+      // Learning resources. Exact-match paths, so the /fields diagnostic can't
+      // be swallowed by the list route regardless of declaration order.
+      if (url.pathname === '/api/admin/learning' && request.method === 'GET') {
+        return await handleAdminLearning(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/learning/fields' && request.method === 'GET') {
+        return await handleAdminLearningFields(request, env, cors);
       }
       // Archive/unarchive must be matched before the generic upsert route below,
       // whose `(.+)` would otherwise swallow the "/archive" suffix into the email.

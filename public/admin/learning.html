@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
+<title>Learning — BlueLine Admin</title>
+<link rel="stylesheet" href="/assets/style.css" />
+<link rel="stylesheet" href="/admin/shared.css" />
+<style>
+  /* File-type marker on each row. Deliberately a letterform rather than an icon
+     set: the extension itself is the clearest signal of what will open, and it
+     needs no new SVG per format the library grows into. */
+  .lr-kind {
+    flex-shrink: 0; width: 38px; height: 38px; border-radius: var(--radius-sm);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: var(--fw-semibold); letter-spacing: 0.02em;
+    text-transform: uppercase; background: var(--gray-bg); color: var(--muted);
+  }
+  .lr-kind-video { background: var(--violet-bg); color: var(--violet); }
+  .lr-kind-doc { background: var(--sky-bg); color: var(--sky-dark); }
+  .lr-kind-sheet { background: var(--green-bg); color: var(--green); }
+  .lr-kind-slides { background: var(--amber-bg); color: var(--amber); }
+  .row-item.lr-row { align-items: center; gap: var(--sp-3); }
+  /* The whole row is the link, so the hit target matches the hover highlight
+     the .row-item already gives — not just the few words of the title. */
+  a.lr-link { display: flex; align-items: center; gap: var(--sp-3); flex: 1; min-width: 0; text-decoration: none; color: inherit; }
+  a.lr-link:hover .row-title { text-decoration: underline; }
+  .lr-filename { color: var(--muted); font-size: var(--fs-xs); margin-top: 2px; }
+  /* operations.html defines its own .task-filters-secondary inside its <style>
+     block rather than in shared.css, so this page needs its own search row
+     rather than borrowing that class name. */
+  .lr-searchrow { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .lr-searchrow input { min-width: 260px; }
+  .lr-setup { line-height: 1.6; }
+  .lr-setup code {
+    font-family: var(--font-mono, monospace); font-size: var(--fs-xs);
+    background: var(--gray-bg); padding: 1px 5px; border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar-root"></aside>
+  <main class="content">
+    <div class="page-head">
+      <div>
+        <h1>Learning</h1>
+        <p class="sub">Training videos and documents from the SharePoint <strong>Learning Resources</strong>
+        library. Links open in SharePoint in a new tab. Upload a file there and it appears here on the next
+        refresh — nothing needs to be added on this side.</p>
+      </div>
+      <div class="page-actions">
+        <button type="button" class="btn btn-ghost btn-small" id="lr-refresh">↻ Refresh</button>
+      </div>
+    </div>
+
+    <div class="filter-row" id="lr-filters"></div>
+
+    <div class="lr-searchrow">
+      <input type="search" class="input" id="lr-search" placeholder="Search learning resources…" />
+    </div>
+
+    <p class="panel-status" id="lr-status"></p>
+
+    <div class="panel"><div class="row-list" id="lr-list"></div></div>
+  </main>
+</div>
+
+<script src="/admin/shared.js"></script>
+<script>
+  initShell('learning');
+
+  let allResources = [];
+  let categories = [];
+  let activeCategory = 'all';
+
+  // Extension -> the badge class and label shown in the row's square marker.
+  // Anything unrecognised still renders, just with its bare extension.
+  const KIND_BY_EXT = {
+    mp4: ['video', 'MP4'], mov: ['video', 'MOV'], m4v: ['video', 'M4V'],
+    avi: ['video', 'AVI'], wmv: ['video', 'WMV'], webm: ['video', 'WEBM'],
+    pdf: ['doc', 'PDF'], doc: ['doc', 'DOC'], docx: ['doc', 'DOC'], txt: ['doc', 'TXT'],
+    xls: ['sheet', 'XLS'], xlsx: ['sheet', 'XLS'], csv: ['sheet', 'CSV'],
+    ppt: ['slides', 'PPT'], pptx: ['slides', 'PPT'],
+  };
+
+  function extOf(name) {
+    const m = String(name || '').match(/\.([a-z0-9]+)$/i);
+    return m ? m[1].toLowerCase() : '';
+  }
+
+  function kindMarker(name) {
+    const ext = extOf(name);
+    const [kind, label] = KIND_BY_EXT[ext] || ['', ext || '?'];
+    return `<div class="lr-kind ${kind ? 'lr-kind-' + kind : ''}">${escapeHtml(label)}</div>`;
+  }
+
+  function formatSize(bytes) {
+    if (typeof bytes !== 'number' || bytes <= 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    let n = bytes;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+    return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+  }
+
+  function visibleResources() {
+    const q = document.getElementById('lr-search').value.trim().toLowerCase();
+    return allResources.filter((r) => {
+      if (activeCategory !== 'all' && r.category !== activeCategory) return false;
+      if (!q) return true;
+      return [r.title, r.description, r.name, r.category].some((v) => String(v || '').toLowerCase().includes(q));
+    });
+  }
+
+  function renderFilters() {
+    // "All" plus whatever categories the library actually contains — the list is
+    // data-driven, so a new Choice value in SharePoint needs no change here.
+    const pills = [{ id: 'all', label: 'All' }].concat(categories.map((c) => ({ id: c, label: c })));
+    const wrap = document.getElementById('lr-filters');
+    wrap.innerHTML = pills
+      .map((p) => {
+        const count = p.id === 'all' ? allResources.length : allResources.filter((r) => r.category === p.id).length;
+        const active = activeCategory === p.id ? 'active' : '';
+        return `<button type="button" class="filter-pill ${active}" data-cat="${escapeHtml(p.id)}">${escapeHtml(p.label)} (${count})</button>`;
+      })
+      .join('');
+    wrap.querySelectorAll('.filter-pill').forEach((b) =>
+      b.addEventListener('click', () => { activeCategory = b.dataset.cat; render(); })
+    );
+  }
+
+  function renderList() {
+    const list = document.getElementById('lr-list');
+    const rows = visibleResources();
+    if (!rows.length) {
+      const empty = allResources.length
+        ? 'Nothing matches that filter.'
+        : 'No resources yet — upload a video or document to the Learning Resources library in SharePoint.';
+      list.innerHTML = `<p class="empty">${empty}</p>`;
+      return;
+    }
+    list.innerHTML = rows
+      .map((r) => {
+        const meta = [r.category, formatSize(r.size)].filter(Boolean).map(escapeHtml).join(' · ');
+        // Show the filename as a second line only when it isn't already the
+        // title — a resource with no Description falls back to its filename,
+        // and printing it twice reads like a bug.
+        const filename = r.description && r.name && r.name !== r.title
+          ? `<div class="lr-filename">${escapeHtml(r.name)}</div>` : '';
+        return `<div class="row-item lr-row">
+          <a class="lr-link" href="${escapeHtml(r.webUrl)}" target="_blank" rel="noopener noreferrer">
+            ${kindMarker(r.name)}
+            <div class="row-main">
+              <div class="row-title">${escapeHtml(r.title)}</div>
+              ${meta ? `<div class="row-sub">${meta}</div>` : ''}
+              ${filename}
+            </div>
+          </a>
+        </div>`;
+      })
+      .join('');
+  }
+
+  function render() {
+    renderFilters();
+    renderList();
+  }
+
+  async function loadData({ showStatus = false } = {}) {
+    const statusEl = document.getElementById('lr-status');
+    if (showStatus) statusEl.textContent = 'Refreshing…';
+    try {
+      const data = await api('/api/admin/learning');
+      allResources = data.resources || [];
+      categories = data.categories || [];
+      // An unset list id is a setup step, not a failure — say which one rather
+      // than showing an empty list that looks like an empty library.
+      if (!data.configured) {
+        document.getElementById('lr-filters').innerHTML = '';
+        document.getElementById('lr-list').innerHTML = `<p class="empty lr-setup">
+          Not connected yet. The <code>SHAREPOINT_LEARNING_LIST_ID</code> setting needs the
+          Learning Resources library's list id before resources can be listed.</p>`;
+        statusEl.textContent = '';
+        return;
+      }
+      render();
+      statusEl.textContent = showStatus ? `Last updated ${new Date().toLocaleTimeString()}` : '';
+    } catch (err) {
+      statusEl.textContent = `Failed to load: ${err.message}`;
+    }
+  }
+
+  document.getElementById('lr-refresh').addEventListener('click', () => loadData({ showStatus: true }));
+  document.getElementById('lr-search').addEventListener('input', renderList);
+
+  loadData();
+</script>
+</body>
+</html>
