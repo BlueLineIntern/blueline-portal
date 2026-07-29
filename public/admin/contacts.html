@@ -65,18 +65,21 @@
         </div>
       </div>
 
+      <!-- Outside .list-cols so the table panel starts at the same y as the
+           rail's first panel; inside .list-main it pushed the table down by
+           its own height and the two columns no longer lined up. -->
+      <div class="list-toolbar">
+        <select id="type-filter" class="input" title="Show people, households, or both">
+          <option value="all" selected>All contacts</option>
+          <option value="people">People</option>
+          <option value="households">Households</option>
+        </select>
+        <span class="list-count" id="list-count"></span>
+        <div class="filter-row" id="status-filters"></div>
+      </div>
+
       <div class="list-cols">
         <div class="list-main">
-          <div class="list-toolbar">
-            <select id="type-filter" class="input" title="Show people, households, or both">
-              <option value="all" selected>All contacts</option>
-              <option value="people">People</option>
-              <option value="households">Households</option>
-            </select>
-            <span class="list-count" id="list-count"></span>
-            <div class="filter-row" id="status-filters"></div>
-          </div>
-
           <div class="panel">
             <p class="panel-status" id="list-status"></p>
             <div class="table-scroll">
@@ -107,37 +110,16 @@
           </div>
 
           <div class="panel">
-            <div class="panel-head"><h2>Import / Export</h2></div>
+            <div class="panel-head"><h2>Export</h2></div>
             <div class="rail-body">
-              <button type="button" class="io-action" id="import-btn">
-                <strong>Import</strong>
-                <span>CSV — matched to existing contacts by email</span>
-              </button>
-              <!-- Hidden: the visible control above is the styled trigger. -->
-              <input type="file" id="import-file" accept=".csv,text/csv" class="hidden" />
               <button type="button" class="io-action" id="export-btn">
-                <strong>Export</strong>
-                <span>Download what's currently listed as CSV</span>
+                <strong>Export CSV</strong>
+                <span>Downloads exactly what's listed, filters included</span>
               </button>
               <p class="io-status" id="io-status"></p>
             </div>
           </div>
         </aside>
-      </div>
-    </div>
-
-    <!-- Import preview: a bulk write is not something to fire blind, so the
-         parsed file is shown as create-vs-update counts before anything runs. -->
-    <div class="modal-backdrop hidden" id="import-modal-backdrop">
-      <div class="modal">
-        <h2>Import contacts</h2>
-        <p class="field-note" id="import-summary"></p>
-        <div class="import-preview" id="import-preview"></div>
-        <p class="form-error" id="import-error"></p>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-ghost" id="import-cancel">Cancel</button>
-          <button type="button" class="btn btn-primary" id="import-confirm">Import</button>
-        </div>
       </div>
     </div>
 
@@ -713,144 +695,6 @@
     a.remove();
     URL.revokeObjectURL(url);
     setIoStatus(`Exported ${people.length + households.length} row${people.length + households.length === 1 ? '' : 's'}.`);
-  });
-
-  // Minimal RFC 4180 parser — handles quoted fields containing commas and
-  // escaped quotes, which a naive split(',') gets wrong on real exports.
-  function parseCsv(text) {
-    const rows = [];
-    let row = [];
-    let cell = '';
-    let quoted = false;
-    for (let i = 0; i < text.length; i += 1) {
-      const ch = text[i];
-      if (quoted) {
-        if (ch === '"') {
-          if (text[i + 1] === '"') { cell += '"'; i += 1; }
-          else quoted = false;
-        } else cell += ch;
-      } else if (ch === '"') quoted = true;
-      else if (ch === ',') { row.push(cell); cell = ''; }
-      else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
-      else if (ch !== '\r') cell += ch;
-    }
-    if (cell || row.length) { row.push(cell); rows.push(row); }
-    return rows.filter((r) => r.some((v) => String(v).trim()));
-  }
-
-  let importQueue = [];
-
-  document.getElementById('import-btn').addEventListener('click', () => {
-    document.getElementById('import-file').click();
-  });
-
-  document.getElementById('import-file').addEventListener('change', async (ev) => {
-    const file = ev.target.files && ev.target.files[0];
-    ev.target.value = ''; // re-selecting the same file must still fire change
-    if (!file) return;
-    setIoStatus('');
-    try {
-      const rows = parseCsv(await file.text());
-      if (rows.length < 2) throw new Error('That file has no data rows.');
-      const header = rows[0].map((h) => h.trim().toLowerCase());
-      const col = (name) => header.indexOf(name.toLowerCase());
-      const emailIdx = col('Email');
-      if (emailIdx === -1) throw new Error('No "Email" column found — it is what each row is matched on.');
-
-      const seen = new Set();
-      importQueue = [];
-      const skipped = [];
-      rows.slice(1).forEach((r, i) => {
-        const type = (col('Type') === -1 ? 'person' : String(r[col('Type')] || 'person')).trim().toLowerCase();
-        const email = String(r[emailIdx] || '').trim().toLowerCase();
-        // Households are keyed by generated id, not email, so a spreadsheet
-        // row has nothing to match one on — importing them would create
-        // duplicates rather than update. People only.
-        if (type === 'household') { skipped.push(`Row ${i + 2}: households can't be imported`); return; }
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { skipped.push(`Row ${i + 2}: missing or invalid email`); return; }
-        if (seen.has(email)) { skipped.push(`Row ${i + 2}: ${email} appears more than once`); return; }
-        seen.add(email);
-        const val = (name) => (col(name) === -1 ? undefined : String(r[col(name)] || '').trim());
-        const fields = { email };
-        [['Name', 'name'], ['PreferredName', 'preferredName'], ['Advisor', 'advisor'], ['Phone', 'phone'],
-         ['WorkPhone', 'workPhone'], ['WorkEmail', 'workEmail'], ['Gender', 'gender'],
-         ['Address', 'address'], ['Household', 'household']].forEach(([c2, k]) => {
-          const v = val(c2);
-          if (v !== undefined) fields[k] = v;
-        });
-        const status = val('Status');
-        if (status) {
-          const s = status.toLowerCase();
-          if (['prospect', 'onboarding', 'active', 'inactive'].includes(s)) fields.status = s;
-          else skipped.push(`Row ${i + 2}: unknown status "${status}" ignored`);
-        }
-        const tags = val('Tags');
-        if (tags !== undefined) fields.tags = tags.split(/[;,]/).map((t) => t.trim()).filter(Boolean);
-        importQueue.push(fields);
-      });
-
-      const existing = new Set(allContacts.map((c) => c.email));
-      const creates = importQueue.filter((r) => !existing.has(r.email)).length;
-      const updates = importQueue.length - creates;
-      document.getElementById('import-summary').textContent =
-        `${file.name}: ${creates} new contact${creates === 1 ? '' : 's'}, ${updates} existing to update.` +
-        (skipped.length ? ` ${skipped.length} row${skipped.length === 1 ? '' : 's'} skipped.` : '');
-      document.getElementById('import-preview').innerHTML =
-        (importQueue.length
-          ? `<div class="ip-list">${importQueue.slice(0, 12).map((r) => {
-              const isNew = !existing.has(r.email);
-              return `<div class="ip-row"><span class="badge ${isNew ? 'badge-sky' : 'badge-gray'}">${isNew ? 'new' : 'update'}</span>
-                ${escapeHtml(r.name || '(no name)')} <span class="cell-qual">${escapeHtml(r.email)}</span></div>`;
-            }).join('')}${importQueue.length > 12 ? `<div class="ip-row cell-missing">…and ${importQueue.length - 12} more</div>` : ''}</div>`
-          : '<p class="empty">Nothing importable in this file.</p>') +
-        (skipped.length ? `<div class="ip-skipped">${skipped.slice(0, 8).map((s) => escapeHtml(s)).join('<br>')}${skipped.length > 8 ? `<br>…and ${skipped.length - 8} more` : ''}</div>` : '');
-      document.getElementById('import-error').textContent = '';
-      document.getElementById('import-confirm').disabled = !importQueue.length;
-      document.getElementById('import-modal-backdrop').classList.remove('hidden');
-    } catch (err) {
-      setIoStatus(`Could not read that file: ${err.message}`, true);
-    }
-  });
-
-  const closeImport = () => document.getElementById('import-modal-backdrop').classList.add('hidden');
-  document.getElementById('import-cancel').addEventListener('click', closeImport);
-  document.getElementById('import-modal-backdrop').addEventListener('click', (e) => {
-    if (e.target === e.currentTarget) closeImport();
-  });
-
-  document.getElementById('import-confirm').addEventListener('click', async (ev) => {
-    const btn = ev.currentTarget;
-    btn.disabled = true;
-    const errEl = document.getElementById('import-error');
-    errEl.textContent = '';
-    let done = 0;
-    const failures = [];
-    // Sequential rather than parallel: each save also pushes to SharePoint,
-    // and firing a hundred concurrent Graph calls is a good way to get rate
-    // limited into partial, hard-to-reason-about state.
-    for (const row of importQueue) {
-      const { email, ...fields } = row;
-      try {
-        await api(`/api/admin/contacts/${encodeURIComponent(email)}`, {
-          method: 'POST',
-          body: JSON.stringify(fields),
-        });
-        done += 1;
-        btn.textContent = `Importing… ${done}/${importQueue.length}`;
-      } catch (err) {
-        failures.push(`${email}: ${err.message}`);
-      }
-    }
-    btn.textContent = 'Import';
-    btn.disabled = false;
-    if (failures.length) {
-      errEl.innerHTML = `Imported ${done} of ${importQueue.length}. Failed:<br>${failures.slice(0, 5).map((f) => escapeHtml(f)).join('<br>')}`;
-      setIoStatus(`Imported ${done} of ${importQueue.length} — ${failures.length} failed.`, true);
-    } else {
-      closeImport();
-      setIoStatus(`Imported ${done} contact${done === 1 ? '' : 's'}.`);
-    }
-    await loadData();
   });
 
   // ---------- Create / edit contact modal ----------
