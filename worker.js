@@ -1968,16 +1968,24 @@ async function pushContactToSharePoint(env, record) {
           updatedAt: spModified.toISOString(),
         };
       }
+      const outgoing = contactFieldsToSharePoint(record);
       const patchRes = await fetch(
         `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${item.id}/fields`,
         {
           method: 'PATCH',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(contactFieldsToSharePoint(record)),
+          body: JSON.stringify(outgoing),
         }
       );
       if (!patchRes.ok) {
-        console.error('Failed to push contact to SharePoint:', patchRes.status, await patchRes.text());
+        // Graph's "invalidRequest" 400 never names the offending field — most
+        // often it means one of these values doesn't match the column's real
+        // type (a Choice column rejecting a value outside its defined options,
+        // a Person/Lookup column rejecting a plain string, a Managed Metadata
+        // column rejecting a plain string tag). Logging what was actually SENT
+        // alongside the response is the only way to narrow that down without
+        // guessing at the SharePoint list's schema, which this code can't see.
+        console.error('Failed to push contact to SharePoint:', patchRes.status, await patchRes.text(), 'payload:', JSON.stringify(outgoing));
         return record;
       }
       const updated = await patchRes.json().catch(() => ({}));
@@ -1986,16 +1994,17 @@ async function pushContactToSharePoint(env, record) {
 
     // No SharePoint item for this email yet — create one. Closes the gap
     // where a brand-new "+ New Person" contact never reached SharePoint at all.
+    const createFields = contactFieldsToSharePoint(record);
     const createRes = await fetch(
       `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`,
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: contactFieldsToSharePoint(record) }),
+        body: JSON.stringify({ fields: createFields }),
       }
     );
     if (!createRes.ok) {
-      console.error('Failed to create contact in SharePoint:', createRes.status, await createRes.text());
+      console.error('Failed to create contact in SharePoint:', createRes.status, await createRes.text(), 'payload:', JSON.stringify(createFields));
       return record;
     }
     const created = await createRes.json().catch(() => ({}));
