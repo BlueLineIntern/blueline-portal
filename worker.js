@@ -1907,6 +1907,88 @@ async function syncSharePointContacts(env) {
 // got saved, rather than silently pretending the edit succeeded). Otherwise
 // the app's edit is pushed. Best-effort: any failure returns the record
 // unchanged so a SharePoint outage never blocks saving a contact.
+//
+// Title/Email are never candidates for exclusion below: Title satisfies
+// SharePoint's built-in required column, Email is this app's identity key.
+const CONTACT_OPTIONAL_SP_FIELDS = [
+  'Name', 'PreferredName', 'Status', 'Household', 'Advisor',
+  'Phone', 'WorkEmail', 'WorkPhone', 'Address', 'Gender', 'Tags',
+];
+const SP_EXCLUDED_FIELDS_KEY = 'sharepoint:contact-fields:excluded';
+
+// This app has no visibility into the Contacts list's actual column types —
+// unlike the Households list, which this app defined from scratch, the
+// Contacts list already existed. A field this app treats as plain text may
+// really be a SharePoint Choice column (rejects a value outside its defined
+// options), a Person/Group lookup (rejects a plain string), or Managed
+// Metadata (rejects a plain string tag) — and Graph's 400 on a bad value
+// never says which field. Rather than requiring a person to go check column
+// types by hand every time this happens, isolate the offending field(s) by
+// bisection and remember them, so the push still gets everything else
+// through instead of failing outright on one bad column.
+//
+// `send(fieldsObj)` performs the actual HTTP call and returns {ok}. Returns
+// the subset of `candidates` that SharePoint accepts together with `base`.
+async function isolateAcceptedFields(send, base, candidates, allFields) {
+  if (candidates.length === 0) return [];
+  const attempt = { ...base };
+  for (const key of candidates) attempt[key] = allFields[key];
+  const result = await send(attempt);
+  if (result.ok) return candidates; // whole slice works together
+  if (candidates.length === 1) return []; // this one field is the problem
+  const mid = Math.ceil(candidates.length / 2);
+  const left = await isolateAcceptedFields(send, base, candidates.slice(0, mid), allFields);
+  const right = await isolateAcceptedFields(send, base, candidates.slice(mid), allFields);
+  return left.concat(right);
+}
+
+// Sends as much of `allFields` as SharePoint will accept. Tries everything
+// first (so a schema fix on SharePoint's side is picked up automatically and
+// clears the cached exclusion list); on failure, retries with the last-known
+// bad fields already stripped; if that still fails, re-isolates from scratch
+// (something new broke, or something old got fixed) and persists the result.
+// Returns {ok, sentFields, excludedFields}.
+async function sendContactFieldsResilient(env, send, allFields) {
+  const base = { Title: allFields.Title, Email: allFields.Email };
+  const optional = Object.fromEntries(CONTACT_OPTIONAL_SP_FIELDS.map((k) => [k, allFields[k]]));
+
+  const full = { ...base, ...optional };
+  let result = await send(full);
+  if (result.ok) {
+    await env.PORTAL_KV.delete(SP_EXCLUDED_FIELDS_KEY).catch(() => {});
+    return { ok: true, sentFields: full, excludedFields: [] };
+  }
+
+  let cachedExcluded = [];
+  try {
+    cachedExcluded = JSON.parse((await env.PORTAL_KV.get(SP_EXCLUDED_FIELDS_KEY)) || '[]');
+  } catch {
+    cachedExcluded = [];
+  }
+  if (cachedExcluded.length) {
+    const reduced = { ...base };
+    CONTACT_OPTIONAL_SP_FIELDS.filter((k) => !cachedExcluded.includes(k)).forEach((k) => (reduced[k] = allFields[k]));
+    result = await send(reduced);
+    if (result.ok) return { ok: true, sentFields: reduced, excludedFields: cachedExcluded };
+  }
+
+  // Fresh isolation: something changed since the cache was built (a newly
+  // broken column, or a previously-broken one that's now fixed).
+  const accepted = await isolateAcceptedFields(send, base, CONTACT_OPTIONAL_SP_FIELDS, optional);
+  const excluded = CONTACT_OPTIONAL_SP_FIELDS.filter((k) => !accepted.includes(k));
+  await env.PORTAL_KV.put(SP_EXCLUDED_FIELDS_KEY, JSON.stringify(excluded)).catch(() => {});
+  if (excluded.length) {
+    console.error(
+      'SharePoint rejected these contact fields — likely a column type mismatch (Choice/Person/Managed Metadata) on the Contacts list. Excluding them from future pushes until the schema changes:',
+      excluded.join(', ')
+    );
+  }
+  const finalFields = { ...base };
+  accepted.forEach((k) => (finalFields[k] = allFields[k]));
+  const finalResult = await send(finalFields);
+  return { ok: finalResult.ok, sentFields: finalFields, excludedFields: excluded };
+}
+
 async function pushContactToSharePoint(env, record) {
   if (!env.SHAREPOINT_LIST_ID) return record;
   try {
@@ -1968,50 +2050,74 @@ async function pushContactToSharePoint(env, record) {
           updatedAt: spModified.toISOString(),
         };
       }
-      const outgoing = contactFieldsToSharePoint(record);
-      const patchRes = await fetch(
-        `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${item.id}/fields`,
-        {
+      const allFields = contactFieldsToSharePoint(record);
+      let lastErr = null;
+      const patchUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${item.id}/fields`;
+      const sendPatch = async (fieldsObj) => {
+        const res = await fetch(patchUrl, {
           method: 'PATCH',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(outgoing),
-        }
-      );
-      if (!patchRes.ok) {
-        // Graph's "invalidRequest" 400 never names the offending field — most
-        // often it means one of these values doesn't match the column's real
-        // type (a Choice column rejecting a value outside its defined options,
-        // a Person/Lookup column rejecting a plain string, a Managed Metadata
-        // column rejecting a plain string tag). Logging what was actually SENT
-        // alongside the response is the only way to narrow that down without
-        // guessing at the SharePoint list's schema, which this code can't see.
-        console.error('Failed to push contact to SharePoint:', patchRes.status, await patchRes.text(), 'payload:', JSON.stringify(outgoing));
+          body: JSON.stringify(fieldsObj),
+        });
+        if (!res.ok) lastErr = { status: res.status, text: await res.text() };
+        return { ok: res.ok };
+      };
+      const { ok, sentFields } = await sendContactFieldsResilient(env, sendPatch, allFields);
+      if (!ok) {
+        console.error('Failed to push contact to SharePoint even with reduced fields:', lastErr && lastErr.status, lastErr && lastErr.text, 'attempted:', JSON.stringify(sentFields));
         return record;
       }
-      const updated = await patchRes.json().catch(() => ({}));
-      return { ...record, sharePointItemId: item.id, updatedAt: updated.Modified || new Date().toISOString() };
+      return { ...record, sharePointItemId: item.id, updatedAt: new Date().toISOString() };
     }
 
     // No SharePoint item for this email yet — create one. Closes the gap
     // where a brand-new "+ New Person" contact never reached SharePoint at all.
-    const createFields = contactFieldsToSharePoint(record);
-    const createRes = await fetch(
-      `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`,
-      {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: createFields }),
-      }
-    );
+    //
+    // Unlike the update path above, this can't reuse sendContactFieldsResilient
+    // directly for the CREATE call itself — POST mints a new row every time
+    // it's called, so bisecting a bad field by repeating the create would
+    // leave a duplicate row behind for every attempt. Instead: create once
+    // with only Title/Email (always required, essentially guaranteed to be
+    // accepted), then push everything else onto that single row via PATCH —
+    // which, unlike POST, is safe to retry as many times as isolation needs.
+    const allFields = contactFieldsToSharePoint(record);
+    const base = { Title: allFields.Title, Email: allFields.Email };
+    const createUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`;
+    const createRes = await fetch(createUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: base }),
+    });
     if (!createRes.ok) {
-      console.error('Failed to create contact in SharePoint:', createRes.status, await createRes.text(), 'payload:', JSON.stringify(createFields));
+      console.error('Failed to create contact in SharePoint:', createRes.status, await createRes.text(), 'payload:', JSON.stringify(base));
       return record;
     }
     const created = await createRes.json().catch(() => ({}));
+    const newId = created.id || null;
+    if (!newId) {
+      console.error('Contact created in SharePoint but no item id came back; cannot push its other fields onto it yet — the next edit will find it by email and retry.');
+      return { ...record, updatedAt: new Date().toISOString() };
+    }
+
+    let lastErr = null;
+    const patchUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${newId}/fields`;
+    const sendPatch = async (fieldsObj) => {
+      const res = await fetch(patchUrl, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(fieldsObj),
+      });
+      if (!res.ok) lastErr = { status: res.status, text: await res.text() };
+      return { ok: res.ok };
+    };
+    const { ok, sentFields } = await sendContactFieldsResilient(env, sendPatch, allFields);
+    if (!ok) {
+      console.error('Created the contact in SharePoint, but could not push its other fields even reduced:', lastErr && lastErr.status, lastErr && lastErr.text, 'attempted:', JSON.stringify(sentFields));
+    }
     return {
       ...record,
-      sharePointItemId: created.id || null,
-      updatedAt: (created.fields && created.fields.Modified) || new Date().toISOString(),
+      sharePointItemId: newId,
+      updatedAt: new Date().toISOString(),
     };
   } catch (err) {
     console.error('Error pushing contact to SharePoint:', err);
