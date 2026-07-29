@@ -53,6 +53,29 @@ $taskCategories = @(
 )
 $taskRepeats = @('', 'daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'yearly')
 $eventStatuses = @('', 'unconfirmed', 'confirmed', 'cancelled')
+$households = @{}   # id -> household record (worker stores these encrypted in KV)
+$script:householdCounter = 0
+$householdRoles = @('head', 'spouse', 'partner', 'child', 'dependent', 'other')
+
+# Mirror worker.js sanitizeHouseholdFields' member handling: valid emails only,
+# a known role, and no one listed twice.
+function ConvertTo-HouseholdMembers($raw) {
+    $out = @()
+    $seen = @{}
+    foreach ($m in @($raw)) {
+        if (-not $m) { continue }
+        $email = ([string]$m.email).Trim().ToLower()
+        if (-not $email) { continue }
+        if ($email -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$') { return @{ error = "Member `"$email`" is not a valid email" } }
+        if ($seen.ContainsKey($email)) { return @{ error = 'A person can only appear once in a household' } }
+        $seen[$email] = $true
+        $role = ([string]$m.role).Trim().ToLower()
+        if ($householdRoles -notcontains $role) { $role = 'other' }
+        $out += @{ email = $email; role = $role }
+        if ($out.Count -ge 20) { break }
+    }
+    return @{ members = $out }
+}
 
 # Assignees are admin accounts only (board lists are a separate grouping).
 function Test-AssigneeAllowed($a) {
@@ -853,6 +876,89 @@ while ($listener.IsListening) {
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $notifSeen[$adminEmail] = (Get-Date).ToString('o')
             Send-Json $ctx 200 @{ seen = $notifSeen[$adminEmail] }
+        }
+        # ---- Households (mirror of worker.js handleAdminListHouseholds etc.) ----
+        elseif ($path -eq '/api/admin/households' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            Send-Json $ctx 200 @{ households = @($households.Values) }
+        }
+        elseif ($path -eq '/api/admin/households' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
+            $name = ([string]$body.name).Trim()
+            if (-not $name) { Send-Json $ctx 400 @{ error = 'Household name is required' }; continue }
+            $mem = ConvertTo-HouseholdMembers $body.members
+            if ($mem.error) { Send-Json $ctx 400 @{ error = $mem.error }; continue }
+            # worker.js rejects an unknown status rather than coercing it, so
+            # this must too — silently defaulting here would let a bad value
+            # pass locally and 400 only in production.
+            if ($body.PSObject.Properties['status'] -and $contactStatuses -notcontains ([string]$body.status)) {
+                Send-Json $ctx 400 @{ error = 'Invalid status' }; continue
+            }
+            $script:householdCounter++
+            $id = 'hh-{0:d6}' -f $script:householdCounter
+            $rec = [ordered]@{
+                id = $id; type = 'household'; name = $name
+                members = @($mem.members)
+                email = ([string]$body.email).Trim().ToLower()
+                emailType = ([string]$body.emailType).Trim().ToLower()
+                emailPrimary = if ($body.PSObject.Properties['emailPrimary']) { [bool]$body.emailPrimary } else { $true }
+                assignedTo = ([string]$body.assignedTo).Trim().ToLower()
+                advisorRep = ([string]$body.advisorRep).Trim()
+                contactType = ([string]$body.contactType).Trim()
+                background = ([string]$body.background).Trim()
+                tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() })
+                status = if ($contactStatuses -contains ([string]$body.status)) { [string]$body.status } else { 'active' }
+                archived = $false
+                createdBy = $adminEmail
+                createdAt = (Get-Date).ToString('o'); updatedAt = $null
+            }
+            $households[$id] = $rec
+            Write-Audit $adminEmail 'create-household' @{ id = $id; name = $name }
+            Send-Json $ctx 200 @{ household = $rec }
+        }
+        elseif ($path -match '^/api/admin/households/(hh-[a-z0-9]+)$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $id = $Matches[1]
+            if (-not $households.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Household not found' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
+            $rec = $households[$id]
+            if ($body.PSObject.Properties['name']) {
+                $n = ([string]$body.name).Trim()
+                if (-not $n) { Send-Json $ctx 400 @{ error = 'Household name is required' }; continue }
+                $rec.name = $n
+            }
+            if ($body.PSObject.Properties['members']) {
+                $mem = ConvertTo-HouseholdMembers $body.members
+                if ($mem.error) { Send-Json $ctx 400 @{ error = $mem.error }; continue }
+                $rec.members = @($mem.members)
+            }
+            if ($body.PSObject.Properties['status'] -and $contactStatuses -notcontains ([string]$body.status)) {
+                Send-Json $ctx 400 @{ error = 'Invalid status' }; continue
+            }
+            foreach ($f in @('email', 'emailType', 'assignedTo', 'advisorRep', 'contactType', 'background', 'status')) {
+                if ($body.PSObject.Properties[$f]) { $rec[$f] = ([string]$body.$f).Trim() }
+            }
+            if ($body.PSObject.Properties['emailPrimary']) { $rec.emailPrimary = [bool]$body.emailPrimary }
+            if ($body.PSObject.Properties['archived']) { $rec.archived = [bool]$body.archived }
+            if ($body.PSObject.Properties['tags']) { $rec.tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() }) }
+            $rec.updatedAt = (Get-Date).ToString('o')
+            $households[$id] = $rec
+            Write-Audit $adminEmail 'update-household' @{ id = $id }
+            Send-Json $ctx 200 @{ household = $rec }
+        }
+        elseif ($path -match '^/api/admin/households/(hh-[a-z0-9]+)$' -and $method -eq 'DELETE') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $id = $Matches[1]
+            if (-not $households.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Household not found' }; continue }
+            $households.Remove($id)
+            Write-Audit $adminEmail 'delete-household' @{ id = $id }
+            Send-Json $ctx 200 @{ ok = $true }
         }
         elseif ($path -eq '/api/admin/contacts' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }

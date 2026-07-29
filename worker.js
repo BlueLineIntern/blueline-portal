@@ -2070,6 +2070,147 @@ async function handleAdminArchiveContact(request, env, cors, targetEmail, archiv
   return json({ contact: record }, 200, cors);
 }
 
+// ---------- Advisor CRM: households ----------
+// A household groups people who are advised together (a couple, a family).
+// It is a first-class record rather than the free-text `household` tag that
+// rides along on a contact: it holds its own name, members with roles, and its
+// own status, and it is owned by this app rather than SharePoint — the sync has
+// no household entity to overwrite it from.
+//
+// Keyed by generated id, NOT by email: a household has no mailbox of its own,
+// and its members' addresses already key their own contact records. The
+// optional email here is a shared address (thesmiths@…), not an identity.
+const HOUSEHOLD_ROLES = ['head', 'spouse', 'partner', 'child', 'dependent', 'other'];
+const HOUSEHOLD_EMAIL_TYPES = ['', 'work', 'home', 'other'];
+
+function sanitizeHouseholdFields(body) {
+  const out = {};
+  if (body.name !== undefined) {
+    const n = String(body.name || '').trim();
+    if (!n) return { error: 'Household name is required' };
+    out.name = n.slice(0, 200);
+  }
+  if (body.members !== undefined) {
+    if (!Array.isArray(body.members)) return { error: 'Members must be a list' };
+    const seen = new Set();
+    const members = [];
+    for (const m of body.members) {
+      if (!m) continue;
+      const email = String(m.email || '').trim().toLowerCase();
+      if (!email) continue;
+      if (!isValidEmail(email)) return { error: `Member "${email}" is not a valid email` };
+      // One row per person: two roles for the same member is contradictory
+      // rather than additive, and the UI has no way to show both.
+      if (seen.has(email)) return { error: 'A person can only appear once in a household' };
+      seen.add(email);
+      const role = String(m.role || '').trim().toLowerCase();
+      members.push({ email, role: HOUSEHOLD_ROLES.includes(role) ? role : 'other' });
+      if (members.length >= 20) break;
+    }
+    out.members = members;
+  }
+  if (body.email !== undefined) {
+    const e = String(body.email || '').trim().toLowerCase();
+    if (e && !isValidEmail(e)) return { error: 'Household email is not valid' };
+    out.email = e.slice(0, 200);
+  }
+  if (body.emailType !== undefined) {
+    const t = String(body.emailType || '').trim().toLowerCase();
+    if (!HOUSEHOLD_EMAIL_TYPES.includes(t)) return { error: 'Invalid email type' };
+    out.emailType = t;
+  }
+  if (body.emailPrimary !== undefined) out.emailPrimary = !!body.emailPrimary;
+  if (body.assignedTo !== undefined) out.assignedTo = String(body.assignedTo || '').trim().toLowerCase().slice(0, 200);
+  if (body.advisorRep !== undefined) out.advisorRep = String(body.advisorRep || '').trim().slice(0, 200);
+  if (body.contactType !== undefined) out.contactType = String(body.contactType || '').trim().slice(0, 60);
+  if (body.background !== undefined) out.background = String(body.background || '').trim().slice(0, 5000);
+  if (body.status !== undefined) {
+    if (!CONTACT_STATUSES.includes(body.status)) return { error: 'Invalid status' };
+    out.status = body.status;
+  }
+  if (Array.isArray(body.tags)) {
+    out.tags = body.tags
+      .filter((t) => typeof t === 'string' && t.trim())
+      .map((t) => t.trim().slice(0, 40))
+      .slice(0, 20);
+  }
+  return { fields: out };
+}
+
+async function handleAdminListHouseholds(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const { items, errors } = await readAllEncrypted(env, 'household:');
+  return json({ households: items, decryptErrors: errors }, 200, cors);
+}
+
+async function handleAdminCreateHousehold(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const { fields, error } = sanitizeHouseholdFields(body);
+  if (error) return json({ error }, 400, cors);
+  if (!fields.name) return json({ error: 'Household name is required' }, 400, cors);
+  const id = `hh-${randomHex(6)}`;
+  const record = {
+    id,
+    type: 'household',
+    name: fields.name,
+    members: fields.members || [],
+    email: fields.email || '',
+    emailType: fields.emailType || '',
+    emailPrimary: fields.emailPrimary !== undefined ? fields.emailPrimary : true,
+    assignedTo: fields.assignedTo || '',
+    advisorRep: fields.advisorRep || '',
+    contactType: fields.contactType || '',
+    background: fields.background || '',
+    tags: fields.tags || [],
+    status: fields.status || 'active',
+    archived: false,
+    createdBy: adminEmail,
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+  };
+  await env.PORTAL_KV.put(`household:${id}`, await encryptJSON(env, record));
+  await logAudit(env, adminEmail, 'create-household', { id, name: record.name });
+  return json({ household: record }, 200, cors);
+}
+
+async function handleAdminUpdateHousehold(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`household:${id}`);
+  if (!raw) return json({ error: 'Household not found' }, 404, cors);
+  const existing = await decryptToObject(env, raw);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const { fields, error } = sanitizeHouseholdFields(body);
+  if (error) return json({ error }, 400, cors);
+  // Archive is a soft-delete toggle, handled here rather than as its own route
+  // because a household has no portal account to keep consistent.
+  if (body.archived !== undefined) {
+    fields.archived = !!body.archived;
+    fields.archivedAt = body.archived ? new Date().toISOString() : null;
+  }
+  const record = { ...existing, ...fields, id, type: 'household', updatedAt: new Date().toISOString() };
+  await env.PORTAL_KV.put(`household:${id}`, await encryptJSON(env, record));
+  await logAudit(env, adminEmail, 'update-household', { id });
+  return json({ household: record }, 200, cors);
+}
+
+async function handleAdminDeleteHousehold(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!(await env.PORTAL_KV.get(`household:${id}`))) {
+    return json({ error: 'Household not found' }, 404, cors);
+  }
+  // Deleting the grouping never touches the member contacts themselves.
+  await env.PORTAL_KV.delete(`household:${id}`);
+  await logAudit(env, adminEmail, 'delete-household', { id });
+  return json({ ok: true }, 200, cors);
+}
+
 // ---------- Advisor CRM: timeline, tasks, notes ----------
 // Timeline entries are the client relationship history (kept forever, keyed
 // per client); each write is mirrored to a global activity: feed (13-month TTL
@@ -2794,6 +2935,23 @@ export default {
       }
       if (url.pathname === '/api/admin/contacts' && request.method === 'GET') {
         return await handleAdminContacts(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/households' && request.method === 'GET') {
+        return await handleAdminListHouseholds(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/households' && request.method === 'POST') {
+        return await handleAdminCreateHousehold(request, env, cors);
+      }
+      {
+        // Declared before the /contacts/:email routes below would ever see it;
+        // the id shape (hh-…) can't collide with an email anyway.
+        const hhMatch = url.pathname.match(/^\/api\/admin\/households\/(hh-[a-f0-9]+)$/);
+        if (hhMatch && request.method === 'POST') {
+          return await handleAdminUpdateHousehold(request, env, cors, hhMatch[1]);
+        }
+        if (hhMatch && request.method === 'DELETE') {
+          return await handleAdminDeleteHousehold(request, env, cors, hhMatch[1]);
+        }
       }
       if (url.pathname === '/api/admin/contacts/sync' && request.method === 'POST') {
         const adminEmail = await getAdminEmail(request, env);

@@ -576,6 +576,24 @@ body .topbar, body .footer { display: none; }
 }
 .id-del:hover { border-color: var(--red); color: var(--red); }
 
+/* Household member rows: who is in the household and what role they hold.
+   The person picker flexes; the role stays a fixed readable width. */
+.hm-members { display: flex; flex-direction: column; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.hm-member { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.hm-member .hm-m-email { flex: 1 1 180px; min-width: 0; }
+.hm-member .hm-m-role { flex: 0 0 130px; }
+.hm-email-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.hm-email-row input[type="email"] { flex: 1 1 200px; min-width: 0; }
+.hm-email-row select { flex: 0 0 110px; }
+.hm-primary {
+  display: inline-flex; align-items: center; gap: var(--sp-1);
+  font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; cursor: pointer;
+}
+.hm-primary input { width: 15px; height: 15px; accent-color: var(--sky); cursor: pointer; }
+/* Delete sits hard left of the action row so it can't be hit while reaching
+   for Save; the browser confirm is the real guard. */
+#hm-delete-btn { margin-right: auto; color: var(--red); }
+
 /* Note composer. The advisor names the client with an @mention, so a note can
    be filed from Home without first navigating into the profile. */
 .composer { margin-bottom: var(--sp-5); position: relative; }
@@ -713,7 +731,14 @@ body .topbar, body .footer { display: none; }
   .cf-field input[type="text"], .cf-field input[type="date"], .cf-field input[type="time"],
   .cf-field input[type="datetime-local"], .cf-field select, .cf-field textarea,
   .cf-check select, .composer textarea,
-  .id-row input[type="text"], .id-row input[type="date"] { font-size: var(--fs-input); }
+  .id-row input[type="text"], .id-row input[type="date"],
+  .hm-member select, .hm-email-row input[type="email"], .hm-email-row select,
+  /* Modal fields were already below the floor before households existed —
+     every .field control in the contact modal sat at 14px. Fixed for all of
+     them here rather than only for the new household rows. */
+  .field input[type="text"], .field input[type="email"], .field input[type="date"],
+  .field input[type="datetime-local"], .field input[type="search"],
+  .field select, .field textarea { font-size: var(--fs-input); }
 
   /* auto-fit's 168px floor leaves room for only one column on a phone, so the
      five tiles became five full-width rows of chrome above the feed. Two up. */

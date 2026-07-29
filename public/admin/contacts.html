@@ -60,7 +60,8 @@
         </div>
         <div class="page-actions">
           <input type="search" class="input search-input" id="contact-search" placeholder="Search name, email, household, tag…" />
-          <button type="button" class="btn btn-primary" id="new-contact-btn">+ New Contact</button>
+          <button type="button" class="btn btn-ghost" id="new-household-btn">+ New Household</button>
+          <button type="button" class="btn btn-primary" id="new-contact-btn">+ New Person</button>
         </div>
       </div>
 
@@ -150,10 +151,86 @@
   </main>
 </div>
 
+<!-- Create/edit household modal -->
+<div class="modal-backdrop hidden" id="household-modal-backdrop">
+  <div class="modal">
+    <h2 id="hm-title">Add a new Household</h2>
+    <p class="field-note" id="hm-switch-note">
+      — or — add a new <a href="#" id="hm-switch-person">Person</a>.
+      Households are managed here, not in SharePoint, so nothing on this form is
+      overwritten by the sync.
+    </p>
+    <div class="field">
+      <label for="hm-name">Name</label>
+      <input type="text" id="hm-name" placeholder="Household Name" />
+    </div>
+    <div class="field">
+      <label>Members</label>
+      <div class="hm-members" id="hm-members"></div>
+      <button type="button" class="btn btn-ghost btn-small" id="hm-member-add">+ Add member</button>
+    </div>
+    <div class="field">
+      <label for="hm-email">Email address</label>
+      <div class="hm-email-row">
+        <input type="email" id="hm-email" placeholder="shared@example.com" />
+        <select id="hm-emailType">
+          <option value="">— type —</option>
+          <option value="work">Work</option>
+          <option value="home">Home</option>
+          <option value="other">Other</option>
+        </select>
+        <label class="hm-primary"><input type="checkbox" id="hm-emailPrimary" checked /> Primary?</label>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="hm-assignedTo">Assigned to</label>
+        <select id="hm-assignedTo"></select>
+      </div>
+      <div class="field">
+        <label for="hm-advisorRep">Investment advisors rep</label>
+        <input type="text" id="hm-advisorRep" />
+      </div>
+    </div>
+    <div class="field">
+      <label for="hm-tags">Tags (comma-separated)</label>
+      <input type="text" id="hm-tags" placeholder="client, friend" />
+    </div>
+    <div class="field">
+      <label for="hm-background">Background information</label>
+      <textarea id="hm-background" rows="3"></textarea>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="hm-contactType">Contact type</label>
+        <input type="text" id="hm-contactType" placeholder="e.g. Client" />
+      </div>
+      <div class="field">
+        <label for="hm-status">Status</label>
+        <select id="hm-status">
+          <option value="prospect">Prospect</option>
+          <option value="onboarding">Onboarding</option>
+          <option value="active" selected>Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </div>
+    </div>
+    <p class="form-error" id="hm-error"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="hm-delete-btn">Delete</button>
+      <button type="button" class="btn btn-ghost" id="hm-cancel-btn">Cancel</button>
+      <button type="button" class="btn btn-primary" id="hm-save-btn">Add Household</button>
+    </div>
+  </div>
+</div>
+
 <!-- Create/edit contact modal -->
 <div class="modal-backdrop hidden" id="contact-modal-backdrop">
   <div class="modal">
     <h2 id="contact-modal-title">New Contact</h2>
+    <p class="field-note" id="cm-switch-note">
+      — or — add a new <a href="#" id="cm-switch-household">Household</a>.
+    </p>
     <p class="field-note" id="cm-sharepoint-note">
       Contact details (name, status, advisor, phone, work email/phone, address, gender, household, tags)
       are managed in SharePoint and sync in automatically every 15 minutes. Fields below are shown for
@@ -240,6 +317,7 @@
   initShell('contacts');
 
   let allContacts = [];
+  let allHouseholds = [];
   let allOnboardings = [];
   let adminList = []; // admin account emails — the only valid task assignees
   let selectedEmail = '';
@@ -294,11 +372,15 @@
     const statusEl = document.getElementById('list-status');
     if (showStatus) statusEl.textContent = 'Refreshing…';
     try {
-      const [contactsData, onbData] = await Promise.all([
+      const [contactsData, onbData, hhData] = await Promise.all([
         api('/api/admin/contacts'),
         api('/api/admin/onboarding').catch(() => ({ records: [] })),
+        // Households are additive to this page: if the endpoint is unavailable
+        // the person list must still render rather than the whole page failing.
+        api('/api/admin/households').catch(() => ({ households: [] })),
       ]);
       allContacts = contactsData.contacts || [];
+      allHouseholds = hhData.households || [];
       adminList = contactsData.admins || [];
       // staffLabel() checks this before falling back to a capitalized email
       // guess — populate it from names stored on admins added through Settings.
@@ -337,9 +419,41 @@
     return `${c.name} ${c.email} ${c.household} ${(c.tags || []).join(' ')}`.toLowerCase().includes(q);
   }
 
+  function householdMatches(h, q) {
+    return `${h.name} ${h.email} ${(h.tags || []).join(' ')} ${(h.members || []).map((m) => m.email).join(' ')}`
+      .toLowerCase().includes(q);
+  }
+
+  // Households sort in among the people by display name rather than being
+  // bucketed separately: the advisor looks up "the Smiths" the same way they
+  // look up a person, so one alphabetical list is the fewest places to look.
+  function householdRowHtml(h) {
+    const memberNames = (h.members || [])
+      .map((m) => {
+        const c = allContacts.find((x) => x.email === m.email);
+        return escapeHtml((c && c.name) || m.email);
+      })
+      .slice(0, 3)
+      .join(', ');
+    const extra = (h.members || []).length > 3 ? ` +${h.members.length - 3}` : '';
+    const tags = (h.tags || []).slice(0, 3).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join(' ');
+    return `<tr class="row-click household-row" data-hh="${escapeHtml(h.id)}">
+      <td><strong>${escapeHtml(h.name)}</strong> <span class="badge badge-navy">Household</span>
+        <div class="cell-sub">${memberNames ? memberNames + extra : '<span class="cell-missing">no members yet</span>'}</div></td>
+      <td>${statusBadge(h.status)}${h.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}</td>
+      <td>${h.assignedTo ? escapeHtml(staffLabel(h.assignedTo)) : '<span class="cell-missing">—</span>'}</td>
+      <td>${tags || '<span class="cell-missing">—</span>'}</td>
+      <td><span class="cell-missing">—</span></td>
+      <td>${h.updatedAt || h.createdAt ? escapeHtml(relTime(h.updatedAt || h.createdAt)) : '<span class="cell-missing">—</span>'}</td>
+    </tr>`;
+  }
+
   function renderContacts() {
     const body = document.getElementById('contacts-body');
     const q = searchText.trim().toLowerCase();
+    const householdRows = allHouseholds
+      .filter((h) => (showArchived ? h.archived : !h.archived) && (!q || householdMatches(h, q)))
+      .map((h) => ({ sortKey: String(h.name || '').toLowerCase(), html: householdRowHtml(h) }));
     const rows = allContacts
       .slice()
       .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)))
@@ -350,20 +464,35 @@
         const act = lastActivity(c);
         const tags = (c.tags || []).slice(0, 3).map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join(' ')
           + ((c.tags || []).length > 3 ? ` <span class="cell-missing">+${c.tags.length - 3}</span>` : '');
-        return `<tr class="row-click contact-row" data-email="${escapeHtml(c.email)}">
-          <td><strong>${escapeHtml(c.name || '—')}</strong><div class="cell-sub">${escapeHtml(c.household || c.email)}</div></td>
+        // A person who belongs to a household record shows it here; falls back
+        // to the SharePoint free-text household tag, then the email.
+        const hh = allHouseholds.find((h) => (h.members || []).some((m) => m.email === c.email));
+        const sub = hh ? escapeHtml(hh.name) : escapeHtml(c.household || c.email);
+        return {
+          sortKey: String(c.name || c.email).toLowerCase(),
+          html: `<tr class="row-click contact-row" data-email="${escapeHtml(c.email)}">
+          <td><strong>${escapeHtml(c.name || '—')}</strong><div class="cell-sub">${sub}</div></td>
           <td>${statusBadge(c.status)}${c.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}</td>
           <td>${c.advisor ? escapeHtml(c.advisor) : '<span class="cell-missing">—</span>'}</td>
           <td>${tags || '<span class="cell-missing">—</span>'}</td>
           <td>${c.hasAccount ? `${p.done} / ${p.total}` : '<span class="cell-missing">no portal account</span>'}</td>
           <td>${act ? escapeHtml(relTime(act)) : '<span class="cell-missing">—</span>'}</td>
-        </tr>`;
+        </tr>`,
+        };
       });
-    body.innerHTML = rows.length
-      ? rows.join('')
-      : `<tr><td colspan="6" class="empty">${allContacts.length ? 'No contacts match.' : 'No contacts yet — add your first with New Contact.'}</td></tr>`;
+    const all = householdRows.concat(rows).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+    const total = allContacts.length + allHouseholds.length;
+    body.innerHTML = all.length
+      ? all.map((r) => r.html).join('')
+      : `<tr><td colspan="6" class="empty">${total ? 'Nothing matches.' : 'No contacts yet — add your first with New Person or New Household.'}</td></tr>`;
     body.querySelectorAll('.contact-row').forEach((tr) => {
       tr.addEventListener('click', () => openProfile(tr.dataset.email));
+    });
+    body.querySelectorAll('.household-row').forEach((tr) => {
+      tr.addEventListener('click', () => {
+        const hh = allHouseholds.find((h) => h.id === tr.dataset.hh);
+        if (hh) openHouseholdModal(hh);
+      });
     });
   }
 
@@ -447,6 +576,163 @@
     ev.target.closest('.id-row').remove();
     // Removing the last row would leave nothing to type into.
     if (!wrap.querySelector('.id-row')) wrap.innerHTML = dateRowHtml(null);
+  });
+
+  // ---------- Households ----------
+  // A household is its own record (household:<id>), not the free-text
+  // `household` tag that rides on a contact. It has no email identity — members
+  // are referenced by their own contact email — so it is keyed by generated id.
+
+  const HOUSEHOLD_ROLES = [
+    ['head', 'Head'], ['spouse', 'Spouse'], ['partner', 'Partner'],
+    ['child', 'Child'], ['dependent', 'Dependent'], ['other', 'Other'],
+  ];
+  let modalHouseholdId = null; // null = creating; id = editing that household
+
+  function memberRowHtml(m, index) {
+    const email = m ? m.email || '' : '';
+    // Default the first row to Head and the second to Spouse, which is the
+    // overwhelmingly common shape and saves two clicks on the usual case.
+    const role = m && m.role ? m.role : (index === 0 ? 'head' : index === 1 ? 'spouse' : 'other');
+    const opts = HOUSEHOLD_ROLES
+      .map(([v, l]) => `<option value="${v}"${v === role ? ' selected' : ''}>${l}</option>`)
+      .join('');
+    const known = allContacts.filter((c) => !c.archived);
+    const picked = email && !known.some((c) => c.email === email);
+    return `<div class="hm-member">
+      <select class="hm-m-email">
+        <option value="">Find contact name…</option>
+        ${picked ? `<option value="${escapeHtml(email)}" selected>${escapeHtml(email)} (not in contacts)</option>` : ''}
+        ${known.map((c) => `<option value="${escapeHtml(c.email)}"${c.email === email ? ' selected' : ''}>${escapeHtml(c.name || c.email)}</option>`).join('')}
+      </select>
+      <select class="hm-m-role">${opts}</select>
+      <button type="button" class="id-del hm-m-del" title="Remove this member">&times;</button>
+    </div>`;
+  }
+
+  function renderMemberRows(list) {
+    const wrap = document.getElementById('hm-members');
+    const rows = list && list.length ? list : [null, null]; // head + spouse to start
+    wrap.innerHTML = rows.map((m, i) => memberRowHtml(m, i)).join('');
+  }
+
+  function readMemberRows() {
+    return [...document.querySelectorAll('#hm-members .hm-member')]
+      .map((row) => ({
+        email: row.querySelector('.hm-m-email').value.trim().toLowerCase(),
+        role: row.querySelector('.hm-m-role').value,
+      }))
+      .filter((m) => m.email); // blank rows are just unfilled slots, not members
+  }
+
+  function openHouseholdModal(hh) {
+    modalHouseholdId = hh ? hh.id : null;
+    document.getElementById('hm-title').textContent = hh ? 'Edit Household' : 'Add a new Household';
+    document.getElementById('hm-save-btn').textContent = hh ? 'Save Household' : 'Add Household';
+    // Switching to the Person form only makes sense while creating; when editing
+    // an existing household there is nothing to switch to.
+    document.getElementById('hm-switch-note').classList.toggle('hidden', !!hh);
+    document.getElementById('hm-delete-btn').classList.toggle('hidden', !hh);
+    document.getElementById('hm-name').value = hh ? hh.name || '' : '';
+    renderMemberRows(hh ? hh.members || [] : []);
+    document.getElementById('hm-email').value = hh ? hh.email || '' : '';
+    document.getElementById('hm-emailType').value = hh ? hh.emailType || '' : '';
+    document.getElementById('hm-emailPrimary').checked = hh ? hh.emailPrimary !== false : true;
+    document.getElementById('hm-assignedTo').innerHTML =
+      '<option value="">— unassigned —</option>' +
+      adminList.map((a) => `<option value="${escapeHtml(a)}"${hh && hh.assignedTo === a ? ' selected' : ''}>${escapeHtml(staffLabel(a))}</option>`).join('');
+    document.getElementById('hm-advisorRep').value = hh ? hh.advisorRep || '' : '';
+    document.getElementById('hm-tags').value = hh ? (hh.tags || []).join(', ') : '';
+    document.getElementById('hm-background').value = hh ? hh.background || '' : '';
+    document.getElementById('hm-contactType').value = hh ? hh.contactType || '' : '';
+    document.getElementById('hm-status').value = hh ? hh.status || 'active' : 'active';
+    document.getElementById('hm-error').textContent = '';
+    document.getElementById('household-modal-backdrop').classList.remove('hidden');
+  }
+
+  function closeHouseholdModal() {
+    document.getElementById('household-modal-backdrop').classList.add('hidden');
+  }
+
+  document.getElementById('hm-member-add').addEventListener('click', () => {
+    const wrap = document.getElementById('hm-members');
+    wrap.insertAdjacentHTML('beforeend', memberRowHtml(null, wrap.children.length));
+  });
+
+  document.getElementById('hm-members').addEventListener('click', (ev) => {
+    if (!ev.target.classList.contains('hm-m-del')) return;
+    const wrap = document.getElementById('hm-members');
+    ev.target.closest('.hm-member').remove();
+    if (!wrap.querySelector('.hm-member')) wrap.innerHTML = memberRowHtml(null, 0);
+  });
+
+  document.getElementById('new-household-btn').addEventListener('click', () => openHouseholdModal(null));
+  document.getElementById('hm-cancel-btn').addEventListener('click', closeHouseholdModal);
+  document.getElementById('household-modal-backdrop').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeHouseholdModal();
+  });
+  document.getElementById('hm-switch-person').addEventListener('click', (e) => {
+    e.preventDefault();
+    closeHouseholdModal();
+    openContactModal(null);
+  });
+  document.getElementById('cm-switch-household').addEventListener('click', (e) => {
+    e.preventDefault();
+    closeContactModal();
+    openHouseholdModal(null);
+  });
+
+  document.getElementById('hm-save-btn').addEventListener('click', async (ev) => {
+    const errEl = document.getElementById('hm-error');
+    errEl.textContent = '';
+    const name = document.getElementById('hm-name').value.trim();
+    if (!name) { errEl.textContent = 'Give the household a name.'; return; }
+    const members = readMemberRows();
+    // Caught here as well as server-side so the advisor sees which row to fix
+    // rather than a generic failure after a round trip.
+    const dupe = members.map((m) => m.email).find((e, i, a) => a.indexOf(e) !== i);
+    if (dupe) { errEl.textContent = `${dupe} is listed twice — each person can only appear once.`; return; }
+    const payload = {
+      name,
+      members,
+      email: document.getElementById('hm-email').value.trim(),
+      emailType: document.getElementById('hm-emailType').value,
+      emailPrimary: document.getElementById('hm-emailPrimary').checked,
+      assignedTo: document.getElementById('hm-assignedTo').value,
+      advisorRep: document.getElementById('hm-advisorRep').value.trim(),
+      tags: document.getElementById('hm-tags').value.split(',').map((t) => t.trim()).filter(Boolean),
+      background: document.getElementById('hm-background').value.trim(),
+      contactType: document.getElementById('hm-contactType').value.trim(),
+      status: document.getElementById('hm-status').value,
+    };
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      await api(modalHouseholdId ? `/api/admin/households/${encodeURIComponent(modalHouseholdId)}` : '/api/admin/households', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      closeHouseholdModal();
+      await loadData();
+    } catch (err) {
+      errEl.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('hm-delete-btn').addEventListener('click', async () => {
+    if (!modalHouseholdId) return;
+    // Deleting the grouping leaves every member's own contact record intact,
+    // which is worth saying out loud before confirming.
+    if (!confirm('Delete this household? The people in it are kept as contacts.')) return;
+    try {
+      await api(`/api/admin/households/${encodeURIComponent(modalHouseholdId)}`, { method: 'DELETE' });
+      closeHouseholdModal();
+      await loadData();
+    } catch (err) {
+      document.getElementById('hm-error').textContent = err.message;
+    }
   });
 
   document.getElementById('new-contact-btn').addEventListener('click', () => openContactModal(null));
