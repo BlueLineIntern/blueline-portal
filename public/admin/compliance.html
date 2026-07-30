@@ -431,20 +431,46 @@
   }
 
   // ---------- Dashboard ----------
-  // Mirrors the workbook's Dashboard tab (status counts, by owner, by
-  // reviewer) and adds an Overdue tile — the one number that says whether the
-  // firm is behind, which the spreadsheet couldn't show without a live date.
+  // Open work sliced by calendar period, plus Overdue — the one number that says
+  // whether the firm is behind, which the spreadsheet couldn't show without a
+  // live date. The by-owner/by-reviewer tables below carry the Open/Closed/Total
+  // breakdown, so aggregate Closed and Total tiles would only repeat them.
   function renderDashboard() {
-    const total = allItems.length;
-    const closed = allItems.filter(isClosed).length;
-    const open = total - closed;
+    const openItems = allItems.filter((it) => !isClosed(it));
     const overdue = allItems.filter((it) => dueBits(it).overdue).length;
 
+    // dueDate is always YYYY-MM-DD, so comparing the strings is chronological.
+    // Deliberately not via Date: `new Date(iso)` reads a date-only string as UTC
+    // midnight and lands on the previous day in Eastern, which would put a
+    // boundary date (the 1st, or Dec 31) in the wrong bucket.
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const qFirst = Math.floor(month / 3) * 3;
+    const pad = (n) => String(n).padStart(2, '0');
+    const iso = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
+    // Day 0 of the next month is the last day of this one, leap years included.
+    const lastDay = (y, m) => new Date(y, m + 1, 0).getDate();
+
+    // Each bucket is containment in the calendar period, NOT "due by then", so
+    // the labels stay literally true — an item that slipped from a previous
+    // month is not counted as due this month; Overdue is what surfaces it.
+    // The periods nest, so quarter >= month and year >= quarter by definition.
+    const periods = [
+      { label: 'Open this month', from: iso(year, month, 1), to: iso(year, month, lastDay(year, month)) },
+      { label: 'Open this quarter', from: iso(year, qFirst, 1), to: iso(year, qFirst + 2, lastDay(year, qFirst + 2)) },
+      { label: 'Open this year', from: `${year}-01-01`, to: `${year}-12-31` },
+    ];
+    const countIn = (p) => openItems.filter((it) => {
+      const d = String(it.dueDate || '');
+      return d >= p.from && d <= p.to;
+    }).length;
+
     document.getElementById('dash-tiles').innerHTML = `
-      <div class="cmp-tile"><div class="n">${open}</div><div class="l">Open</div></div>
-      <div class="cmp-tile"><div class="n">${closed}</div><div class="l">Closed</div></div>
-      <div class="cmp-tile"><div class="n">${total}</div><div class="l">Total items</div></div>
-      <div class="cmp-tile ${overdue ? 'alert' : ''}"><div class="n">${overdue}</div><div class="l">Overdue</div></div>`;
+      <div class="cmp-tile ${overdue ? 'alert' : ''}"><div class="n">${overdue}</div><div class="l">Overdue</div></div>
+      ${periods.map((p) => `
+        <div class="cmp-tile"><div class="n">${countIn(p)}</div><div class="l">${p.label}</div></div>`).join('')}
+      <div class="cmp-tile"><div class="n">${openItems.length}</div><div class="l">Open (all dates)</div></div>`;
 
     const table = (rows, roleLabel) => `
       <thead><tr><th>${roleLabel}</th><th>Open</th><th>Closed</th><th>Total</th></tr></thead>
