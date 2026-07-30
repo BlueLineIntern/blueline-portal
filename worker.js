@@ -2859,53 +2859,6 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
   return json({ item: withComplianceStatus(next), created }, 200, cors);
 }
 
-// Put back any row from the source workbook that is no longer present — the
-// undo for an accidental delete. Seeding only ever happens when the KV blob is
-// absent (see getComplianceItems), so without this a deleted row is gone for
-// good even though the app still ships the workbook export it came from.
-//
-// Strictly ADDITIVE: an item that still exists is left completely alone, so
-// sign-offs, edits and generated occurrences all survive. That means this
-// restores deleted rows but does NOT revert a row someone edited in the app —
-// reverting edits would silently throw away deliberate changes.
-async function handleAdminComplianceRestore(request, env, cors) {
-  const adminEmail = await getAdminEmail(request, env);
-  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  const items = await getComplianceItems(env);
-
-  const haveId = new Set(items.map((x) => x.id));
-  const nameDate = (item, dueDate) => `${String(item).trim().toLowerCase()}|${dueDate}`;
-  const haveNameDate = new Set(items.map((x) => nameDate(x.item, x.dueDate)));
-
-  const restored = [];
-  for (const row of COMPLIANCE_SEED) {
-    // Matched on the seed's own stable id first. The name+date guard is the
-    // backstop for a row re-created by hand or regenerated as an occurrence
-    // under a different id, so running this twice can't double anything up.
-    if (haveId.has(row.id)) continue;
-    const key = nameDate(row.item, row.dueDate);
-    if (haveNameDate.has(key)) continue;
-    haveNameDate.add(key);
-    restored.push({
-      ...row,
-      ownerCompleted: '', ownerCompletedBy: '',
-      reviewerCompleted: '', reviewerCompletedBy: '',
-      createdAt: new Date().toISOString(),
-      createdBy: `restore:${adminEmail}`,
-      updatedAt: null,
-    });
-  }
-
-  if (restored.length) {
-    items.push(...restored);
-    await saveComplianceItems(env, items);
-    await logAudit(env, adminEmail, 'compliance-restore', {
-      restored: restored.length, ids: restored.map((x) => x.id),
-    });
-  }
-  return json({ restored: restored.length, total: items.length }, 200, cors);
-}
-
 async function handleAdminComplianceDelete(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -4347,10 +4300,6 @@ export default {
       }
       if (url.pathname === '/api/admin/compliance' && request.method === 'POST') {
         return await handleAdminComplianceCreate(request, env, cors);
-      }
-      // Also ahead of the /:id routes, or "restore" would be read as an item id.
-      if (url.pathname === '/api/admin/compliance/restore' && request.method === 'POST') {
-        return await handleAdminComplianceRestore(request, env, cors);
       }
       const complianceMatch = url.pathname.match(/^\/api\/admin\/compliance\/(.+)$/);
       if (complianceMatch && request.method === 'POST') {

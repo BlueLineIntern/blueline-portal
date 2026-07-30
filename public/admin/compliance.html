@@ -133,8 +133,6 @@
       <div class="page-actions">
         <button type="button" class="btn btn-primary btn-small" id="cmp-new">+ Add item</button>
         <button type="button" class="btn btn-ghost btn-small" id="cmp-refresh">↻ Refresh</button>
-        <button type="button" class="btn btn-ghost btn-small" id="cmp-restore"
-                title="Put back any item from the source workbook that has been deleted. Never changes an item that still exists.">⟲ Restore deleted</button>
       </div>
     </div>
 
@@ -706,37 +704,11 @@
     }
   }
 
-  // Puts back workbook items that have been deleted. Additive only, so it is
-  // safe to press twice — the confirm spells that out because "restore" could
-  // otherwise read as "reset everything", which this deliberately is not.
-  async function restoreDeleted() {
-    const ok = confirm('Put back any compliance item from the source workbook that has been deleted?\n\n'
-      + 'Items that still exist are left untouched — sign-offs and edits are not affected.');
-    if (!ok) return;
-    const btn = document.getElementById('cmp-restore');
-    btn.disabled = true;
-    setStatus('Restoring…');
-    try {
-      // Explicit empty body: a bodyless POST carries no Content-Length, which
-      // the PowerShell dev mock rejects with a 411 before the handler is reached.
-      const res = await api('/api/admin/compliance/restore', { method: 'POST', body: '{}' });
-      await loadData();
-      setStatus(res.restored
-        ? `Restored ${res.restored} item${res.restored === 1 ? '' : 's'} — ${res.total} total.`
-        : 'Nothing to restore — every workbook item is already present.');
-    } catch (err) {
-      setStatus(`Could not restore: ${err.message}`);
-    } finally {
-      btn.disabled = false;
-    }
-  }
-
   document.querySelectorAll('#view-toggle button').forEach((b) =>
     b.addEventListener('click', () => { currentView = b.dataset.view; render(); })
   );
   document.getElementById('cmp-refresh').addEventListener('click', () => loadData({ showStatus: true }));
   document.getElementById('cmp-new').addEventListener('click', openDrawerNew);
-  document.getElementById('cmp-restore').addEventListener('click', restoreDeleted);
   document.getElementById('tr-search').addEventListener('input', renderTracker);
   document.getElementById('d-save').addEventListener('click', saveDrawer);
   document.getElementById('d-delete').addEventListener('click', () => deleteItem());
