@@ -63,8 +63,6 @@
   .cmp-tile .l { font-size: var(--fs-sm); color: var(--muted); margin-top: 4px; }
   .cmp-tile.alert .n { color: var(--due-over-fg); }
   .cmp-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-4); }
-  .cmp-bar { height: 8px; border-radius: var(--radius-pill); background: var(--gray-bg); overflow: hidden; margin-top: var(--sp-2); }
-  .cmp-bar > div { height: 100%; background: var(--green); }
 
   /* Calendar: due dates only, no times — a month grid of item names. */
   .cal-bar { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-4); flex-wrap: wrap; }
@@ -426,7 +424,7 @@
   }
 
   // ---------- Dashboard ----------
-  // Mirrors the workbook's Dashboard tab (status counts, % closed, by owner, by
+  // Mirrors the workbook's Dashboard tab (status counts, by owner, by
   // reviewer) and adds an Overdue tile — the one number that says whether the
   // firm is behind, which the spreadsheet couldn't show without a live date.
   function renderDashboard() {
@@ -434,17 +432,12 @@
     const closed = allItems.filter(isClosed).length;
     const open = total - closed;
     const overdue = allItems.filter((it) => dueBits(it).overdue).length;
-    const pct = total ? Math.round((closed / total) * 100) : 0;
 
     document.getElementById('dash-tiles').innerHTML = `
       <div class="cmp-tile"><div class="n">${open}</div><div class="l">Open</div></div>
       <div class="cmp-tile"><div class="n">${closed}</div><div class="l">Closed</div></div>
       <div class="cmp-tile"><div class="n">${total}</div><div class="l">Total items</div></div>
-      <div class="cmp-tile ${overdue ? 'alert' : ''}"><div class="n">${overdue}</div><div class="l">Overdue</div></div>
-      <div class="cmp-tile">
-        <div class="n">${pct}%</div><div class="l">Complete</div>
-        <div class="cmp-bar"><div style="width:${pct}%"></div></div>
-      </div>`;
+      <div class="cmp-tile ${overdue ? 'alert' : ''}"><div class="n">${overdue}</div><div class="l">Overdue</div></div>`;
 
     const table = (rows, roleLabel) => `
       <thead><tr><th>${roleLabel}</th><th>Open</th><th>Closed</th><th>Total</th></tr></thead>
@@ -519,8 +512,8 @@
       .join('');
   }
 
-  // Says plainly what picking a repeating frequency will do, so a series of
-  // twelve rows is never a surprise.
+  // Says plainly what picking a repeating frequency will do, so it's never a
+  // surprise that only one row appears now and the next one waits for sign-off.
   function updateFreqHint(it) {
     const freq = document.getElementById('d-frequency').value;
     const repeats = REPEATING.has(String(freq).trim().toLowerCase());
@@ -531,8 +524,8 @@
     }
     const word = String(freq).toLowerCase();
     el.textContent = it && it.seriesId
-      ? `Repeats ${word}. Each due date is its own row, signed off separately.`
-      : `Repeats ${word} — saving creates a row for each due date through the next 12 months.`;
+      ? `Repeats ${word}. The next due date appears once this one is signed off.`
+      : `Repeats ${word} — saving creates just this one due date. The next one appears once it's signed off.`;
   }
 
   function populateDrawer(it) {
@@ -637,9 +630,9 @@
         })).created || 0;
       }
       closeDrawer();
-      // Reload rather than patching in place: a repeating frequency generates a
-      // whole series of dated rows server-side, and the client has no way to know
-      // what they are.
+      // Reload rather than patching in place: saving a signed-off occurrence can
+      // generate its successor server-side, and the client has no way to know
+      // what that row is.
       await loadData();
       setStatus(created > 1 ? `Saved — ${created} due dates created.` : '');
     } catch (err) {

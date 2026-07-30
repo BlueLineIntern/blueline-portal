@@ -2537,6 +2537,12 @@ const COMPLIANCE_REVIEWERS = ['Frank', 'Jennifer', 'N/A'];
 // occurrence is ticked off independently, which is what compliance evidence
 // needs. The alternative (one row plus a rule, expanded at render time) would
 // have nowhere to record who signed off which quarter.
+//
+// Occurrences are generated ONE AT A TIME, on completion, not in a batch up
+// front. Saving a new monthly item creates exactly one row (the entered due
+// date); the next month's row only appears once that one is fully signed off,
+// and so on indefinitely. This avoids a save instantly flooding the tracker
+// with up to a year of not-yet-due rows.
 const COMPLIANCE_FREQUENCIES = ['One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually'];
 
 // Steps keyed by lowercased label. "One time" is deliberately absent — no step
@@ -2552,9 +2558,8 @@ const COMPLIANCE_FREQ_STEPS = {
   'annual': { months: 12 },
 };
 
-// How far ahead occurrences are kept generated, and a hard cap so a weekly item
-// can never run away if the horizon is ever widened.
-const COMPLIANCE_HORIZON_MONTHS = 12;
+// Hard cap on how many steps ahead we'll search for the next occurrence date,
+// so a corrupted seriesStart can never turn into a runaway loop.
 const COMPLIANCE_MAX_OCCURRENCES = 200;
 
 function complianceFreqStep(frequency) {
@@ -2580,24 +2585,18 @@ function isoAddMonths(iso, months) {
   return `${ty}-${String(tm + 1).padStart(2, '0')}-${String(Math.min(d, lastDay)).padStart(2, '0')}`;
 }
 
-// Every due date for a series from `startIso` up to and including `untilIso`.
-// Each occurrence is stepped from the START rather than from the previous one, so
-// a monthly series beginning Jan 31 runs Jan 31, Feb 28, Mar 31 — stepping from
+// The next due date after `afterIso` in a series starting at `startIso`. Each
+// occurrence is stepped from the START rather than from the previous one, so a
+// monthly series beginning Jan 31 runs Jan 31, Feb 28, Mar 31 — stepping from
 // the previous date would clamp once and then stay stuck on the 28th.
-function complianceOccurrenceDates(startIso, frequency, untilIso) {
+function complianceNextOccurrenceDate(startIso, frequency, afterIso) {
   const step = complianceFreqStep(frequency);
-  if (!step) return [startIso];
-  const dates = [];
-  for (let i = 0; i < COMPLIANCE_MAX_OCCURRENCES; i++) {
+  if (!step) return null;
+  for (let i = 1; i <= COMPLIANCE_MAX_OCCURRENCES; i++) {
     const iso = step.days ? isoAddDays(startIso, step.days * i) : isoAddMonths(startIso, step.months * i);
-    if (iso > untilIso) break;
-    dates.push(iso);
+    if (iso > afterIso) return iso;
   }
-  return dates.length ? dates : [startIso];
-}
-
-function complianceHorizon() {
-  return isoAddMonths(new Date().toISOString().slice(0, 10), COMPLIANCE_HORIZON_MONTHS);
+  return null;
 }
 
 function complianceOccurrenceFrom(template, dueDate, seriesId) {
@@ -2614,37 +2613,30 @@ function complianceOccurrenceFrom(template, dueDate, seriesId) {
   };
 }
 
-// Keep every active series stocked with occurrences out to the horizon, so a
-// monthly item keeps appearing next month without anyone regenerating anything.
+// Advance a series by exactly one occurrence, and only once the given item —
+// the latest occurrence in its series — is fully signed off (CLOSED). This is
+// what makes recurrence a drip feed instead of a batch: a monthly item never
+// has more than one open (not-yet-due) row waiting at a time.
 //
-// Only extends FORWARD of a series' latest existing date — never backfills — so
-// deleting one occurrence doesn't resurrect it on the next load. Also skips any
-// date already taken by an item of the same name, which is what stops a seeded
-// quarterly item (already materialised four times by the workbook) from gaining
-// duplicates if someone turns it into a series.
-function extendComplianceSeries(items) {
-  const until = complianceHorizon();
-  const taken = new Set(items.map((x) => `${String(x.item).trim().toLowerCase()}|${x.dueDate}`));
-  const bySeries = new Map();
-  for (const it of items) {
-    if (!it.seriesId || !complianceFreqStep(it.frequency)) continue;
-    const cur = bySeries.get(it.seriesId);
-    if (!cur || String(it.dueDate) > String(cur.dueDate)) bySeries.set(it.seriesId, it);
-  }
+// Only fires off the latest existing date in the series — never backfills —
+// and skips a date already taken by an item of the same name, which is what
+// stops a seeded quarterly item (already materialised four times by the
+// workbook) from gaining a duplicate if someone turns it into a series.
+function complianceAdvanceSeries(items, item) {
+  if (!item.seriesId || !complianceFreqStep(item.frequency)) return null;
+  if (complianceStatus(item) !== 'CLOSED') return null;
+  const isLatest = !items.some((x) => x.seriesId === item.seriesId && String(x.dueDate) > String(item.dueDate));
+  if (!isLatest) return null;
 
-  const added = [];
-  for (const [seriesId, latest] of bySeries) {
-    const start = latest.seriesStart || latest.dueDate;
-    for (const date of complianceOccurrenceDates(start, latest.frequency, until)) {
-      if (date <= latest.dueDate) continue;
-      const key = `${String(latest.item).trim().toLowerCase()}|${date}`;
-      if (taken.has(key)) continue;
-      taken.add(key);
-      added.push(complianceOccurrenceFrom(latest, date, seriesId));
-    }
-  }
-  if (added.length) items.push(...added);
-  return added.length;
+  const start = item.seriesStart || item.dueDate;
+  const nextDate = complianceNextOccurrenceDate(start, item.frequency, item.dueDate);
+  if (!nextDate) return null;
+  const key = `${String(item.item).trim().toLowerCase()}|${nextDate}`;
+  if (items.some((x) => `${String(x.item).trim().toLowerCase()}|${x.dueDate}` === key)) return null;
+
+  const occurrence = complianceOccurrenceFrom(item, nextDate, item.seriesId);
+  items.push(occurrence);
+  return occurrence;
 }
 
 // Status is DERIVED, never stored — the workbook's own Instructions tab is
@@ -2754,10 +2746,6 @@ async function handleAdminComplianceList(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const items = await getComplianceItems(env);
-  // Top up recurring series on read, so a monthly item keeps showing up next
-  // month with no cron and no manual regeneration. Persisted only when something
-  // was actually added, so the common case stays a pure read.
-  if (extendComplianceSeries(items)) await saveComplianceItems(env, items);
   return json({
     items: complianceSort(items).map(withComplianceStatus),
     owners: COMPLIANCE_OWNERS,
@@ -2776,10 +2764,10 @@ async function handleAdminComplianceCreate(request, env, cors) {
 
   const items = await getComplianceItems(env);
   const step = complianceFreqStep(fields.frequency);
-  // A recurring item is created as a whole series in one go, rather than one row
-  // that grows later, so it lands on the tracker and calendar for every due date
-  // immediately. seriesStart is kept so occurrences are always stepped from the
-  // original date (see complianceOccurrenceDates).
+  // Only the one row the user actually entered is created here, even for a
+  // recurring frequency. seriesId/seriesStart mark it as the head of a series;
+  // the next occurrence is generated later, once this one is signed off (see
+  // complianceAdvanceSeries).
   const seriesId = step ? `cs-${invTs()}-${randomHex(3)}` : '';
   const base = {
     id: `cx-${invTs()}-${randomHex(3)}`,
@@ -2797,17 +2785,7 @@ async function handleAdminComplianceCreate(request, env, cors) {
   };
   items.push(base);
   let created = 1;
-  if (step) {
-    const taken = new Set(items.map((x) => `${String(x.item).trim().toLowerCase()}|${x.dueDate}`));
-    for (const date of complianceOccurrenceDates(fields.dueDate, fields.frequency, complianceHorizon())) {
-      if (date === base.dueDate) continue;
-      const key = `${String(base.item).trim().toLowerCase()}|${date}`;
-      if (taken.has(key)) continue;
-      taken.add(key);
-      items.push(complianceOccurrenceFrom(base, date, seriesId));
-      created += 1;
-    }
-  }
+  if (complianceAdvanceSeries(items, base)) created = 2;
   await saveComplianceItems(env, items);
   await logAudit(env, adminEmail, 'compliance-create', { id: base.id, item: base.item, occurrences: created });
   return json({ item: withComplianceStatus(base), created }, 200, cors);
@@ -2838,9 +2816,8 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
 
   // Setting a recurring frequency on a one-off item promotes it to a series, so
   // "make this monthly" works on the 128 seeded items too and not only on newly
-  // added ones. extendComplianceSeries does the generating, and its same-name
-  // dedupe is what stops a seeded quarterly item — already materialised four
-  // times by the workbook — from picking up duplicates.
+  // added ones. No occurrence is generated yet — that only happens once this
+  // item is signed off (see complianceAdvanceSeries below).
   let created = 0;
   if (fields.frequency !== undefined && complianceFreqStep(next.frequency) && !next.seriesId) {
     next.seriesId = `cs-${invTs()}-${randomHex(3)}`;
@@ -2853,7 +2830,9 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
     next.seriesId = '';
     next.seriesStart = '';
   }
-  if (next.seriesId) created = extendComplianceSeries(items);
+  // Completing this occurrence (owner + reviewer sign-off, or owner alone when
+  // no reviewer is required) drips the next due date into existence.
+  if (complianceAdvanceSeries(items, next)) created = 1;
 
   await saveComplianceItems(env, items);
   return json({ item: withComplianceStatus(next), created }, 200, cors);
@@ -2867,10 +2846,10 @@ async function handleAdminComplianceDelete(request, env, cors, id) {
   if (idx < 0) return json({ error: 'Compliance item not found' }, 404, cors);
   const target = items[idx];
 
-  // ?series=1 removes every occurrence of a recurring item. Without it, deleting
-  // a monthly item would mean deleting twelve rows by hand — and because
-  // extendComplianceSeries only ever appends after the latest date, removing just
-  // the last occurrence would simply be regenerated on the next load.
+  // ?series=1 removes every occurrence of a recurring item ever generated.
+  // Without it, deleting just the single open (undated-future) occurrence is
+  // enough — completed occurrences already have their successor materialised,
+  // so nothing regenerates behind you.
   const wholeSeries = new URL(request.url).searchParams.get('series') === '1' && !!target.seriesId;
   let removedCount = 1;
   if (wholeSeries) {

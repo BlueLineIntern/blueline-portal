@@ -72,8 +72,9 @@ function Import-ComplianceSeed {
 
 # Mirror worker.js recurrence. Recurring items are MATERIALISED: one record per
 # due date, each with its own sign-offs, as the source workbook already did.
+# Occurrences drip one at a time, on completion, rather than in a batch up
+# front — see Update-ComplianceSeries below.
 $complianceFrequencies = @('One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually')
-$complianceHorizonMonths = 12
 $complianceMaxOccurrences = 200
 
 # Returns @{days=N} / @{months=N}, or $null when the frequency does not repeat.
@@ -90,26 +91,20 @@ function Get-ComplianceFreqStep($frequency) {
     }
 }
 
-# Occurrences are stepped from the SERIES START, not from the previous date, so a
-# monthly series beginning Jan 31 runs Jan 31, Feb 28, Mar 31 rather than sticking
-# on the 28th once it clamps. .NET AddMonths already clamps to the month length.
-function Get-ComplianceOccurrenceDates($startIso, $frequency, $untilIso) {
+# The next due date after $afterIso in a series starting at $startIso. Stepped
+# from the SERIES START, not from the previous date, so a monthly series
+# beginning Jan 31 runs Jan 31, Feb 28, Mar 31 rather than sticking on the 28th
+# once it clamps. .NET AddMonths already clamps to the month length.
+function Get-ComplianceNextOccurrenceDate($startIso, $frequency, $afterIso) {
     $step = Get-ComplianceFreqStep $frequency
-    if (-not $step) { return , @($startIso) }
+    if (-not $step) { return $null }
     $start = [datetime]::ParseExact($startIso, 'yyyy-MM-dd', $null)
-    $until = [datetime]::ParseExact($untilIso, 'yyyy-MM-dd', $null)
-    $out = [System.Collections.ArrayList]::new()
-    for ($i = 0; $i -lt $complianceMaxOccurrences; $i++) {
+    $after = [datetime]::ParseExact($afterIso, 'yyyy-MM-dd', $null)
+    for ($i = 1; $i -le $complianceMaxOccurrences; $i++) {
         $d = if ($step.days) { $start.AddDays($step.days * $i) } else { $start.AddMonths($step.months * $i) }
-        if ($d -gt $until) { break }
-        $null = $out.Add($d.ToString('yyyy-MM-dd'))
+        if ($d -gt $after) { return $d.ToString('yyyy-MM-dd') }
     }
-    if ($out.Count -eq 0) { return , @($startIso) }
-    return , @($out.ToArray())
-}
-
-function Get-ComplianceHorizon {
-    return (Get-Date).Date.AddMonths($complianceHorizonMonths).ToString('yyyy-MM-dd')
+    return $null
 }
 
 function New-ComplianceOccurrence($template, $dueDate, $seriesId) {
@@ -126,36 +121,27 @@ function New-ComplianceOccurrence($template, $dueDate, $seriesId) {
     return $o
 }
 
-# Mirror worker.js extendComplianceSeries: top up active series to the horizon.
-# Only appends AFTER a series' latest date (so a deleted occurrence is not
-# resurrected) and skips dates already used by an item of the same name (so a
-# seeded quarterly item, already materialised by the workbook, gains no
-# duplicates). Returns how many were added.
-function Update-ComplianceSeries {
-    $until = Get-ComplianceHorizon
-    $taken = @{}
-    foreach ($x in $complianceItems) { $taken["$(([string]$x.item).Trim().ToLower())|$($x.dueDate)"] = $true }
-    $latest = @{}
-    foreach ($x in $complianceItems) {
-        if (-not $x.seriesId) { continue }
-        if (-not (Get-ComplianceFreqStep $x.frequency)) { continue }
-        $cur = $latest[$x.seriesId]
-        if ((-not $cur) -or ([string]$x.dueDate -gt [string]$cur.dueDate)) { $latest[$x.seriesId] = $x }
-    }
-    $added = 0
-    foreach ($sid in @($latest.Keys)) {
-        $tpl = $latest[$sid]
-        $start = if ($tpl.seriesStart) { $tpl.seriesStart } else { $tpl.dueDate }
-        foreach ($date in (Get-ComplianceOccurrenceDates $start $tpl.frequency $until)) {
-            if ([string]$date -le [string]$tpl.dueDate) { continue }
-            $key = "$(([string]$tpl.item).Trim().ToLower())|$date"
-            if ($taken.ContainsKey($key)) { continue }
-            $taken[$key] = $true
-            $null = $complianceItems.Add((New-ComplianceOccurrence $tpl $date $sid))
-            $added++
-        }
-    }
-    return $added
+# Mirror worker.js complianceAdvanceSeries: advance a series by exactly one
+# occurrence, and only once $it — the latest occurrence in its series — is
+# fully signed off (CLOSED). Returns 1 if an occurrence was added, else 0.
+function Update-ComplianceSeries($it) {
+    if (-not $it.seriesId) { return 0 }
+    if (-not (Get-ComplianceFreqStep $it.frequency)) { return 0 }
+    if ((Get-ComplianceStatus $it) -ne 'CLOSED') { return 0 }
+    $isLatest = -not ($complianceItems | Where-Object {
+        $_.seriesId -eq $it.seriesId -and [string]$_.dueDate -gt [string]$it.dueDate
+    })
+    if (-not $isLatest) { return 0 }
+
+    $start = if ($it.seriesStart) { $it.seriesStart } else { $it.dueDate }
+    $nextDate = Get-ComplianceNextOccurrenceDate $start $it.frequency $it.dueDate
+    if (-not $nextDate) { return 0 }
+    $key = "$(([string]$it.item).Trim().ToLower())|$nextDate"
+    $taken = $complianceItems | Where-Object { "$(([string]$_.item).Trim().ToLower())|$($_.dueDate)" -eq $key }
+    if ($taken) { return 0 }
+
+    $null = $complianceItems.Add((New-ComplianceOccurrence $it $nextDate $it.seriesId))
+    return 1
 }
 
 # Mirror worker.js complianceStatus/complianceReviewerRequired: status is DERIVED
@@ -1411,7 +1397,6 @@ while ($listener.IsListening) {
         }
         elseif ($path -eq '/api/admin/compliance' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $null = Update-ComplianceSeries
             # Soonest due first, matching worker.js complianceSort.
             $sorted = @($complianceItems | Sort-Object -Property @{Expression={[string]$_.dueDate}}, @{Expression={[string]$_.item}})
             $payload = @($sorted | ForEach-Object { ConvertTo-CompliancePayload $_ })
@@ -1444,10 +1429,10 @@ while ($listener.IsListening) {
                 createdAt = (Get-Date).ToString('o'); createdBy = $adminEmail; updatedAt = $null
             }
             $null = $complianceItems.Add($new)
-            # A recurring item is created as a whole series at once, so it appears
-            # on every due date immediately rather than growing later.
+            # Only this one row is created, even for a recurring frequency. The
+            # next occurrence appears once this one is signed off.
             $created = 1
-            if ($step) { $created += Update-ComplianceSeries }
+            if (Update-ComplianceSeries $new) { $created = 2 }
             Write-Audit $adminEmail 'compliance-create' @{ id = $new.id; item = $new.item; occurrences = $created }
             Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $new); created = $created }
         }
@@ -1504,7 +1489,7 @@ while ($listener.IsListening) {
                     $it.seriesId = ''; $it.seriesStart = ''
                 }
             }
-            if ($it.seriesId) { $created = Update-ComplianceSeries }
+            $created = Update-ComplianceSeries $it
             Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $it); created = $created }
         }
         elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'DELETE') {
@@ -1513,9 +1498,9 @@ while ($listener.IsListening) {
             $cid = [Uri]::UnescapeDataString($Matches[1])
             $it = $complianceItems | Where-Object { $_.id -eq $cid } | Select-Object -First 1
             if (-not $it) { Send-Json $ctx 404 @{ error = 'Compliance item not found' }; continue }
-            # ?series=1 drops every occurrence of a repeating item — otherwise
-            # clearing a monthly item means deleting twelve rows by hand, and
-            # deleting only the last one would just be regenerated on next load.
+            # ?series=1 drops every occurrence of a repeating item ever generated.
+            # Without it, deleting the single open occurrence is enough — a
+            # completed one already has its successor materialised.
             $wholeSeries = ($ctx.Request.QueryString['series'] -eq '1') -and [bool]$it.seriesId
             $removed = 1
             if ($wholeSeries) {
