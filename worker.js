@@ -2622,11 +2622,23 @@ function complianceOccurrenceFrom(template, dueDate, seriesId) {
 // and skips a date already taken by an item of the same name, which is what
 // stops a seeded quarterly item (already materialised four times by the
 // workbook) from gaining a duplicate if someone turns it into a series.
+// The other occurrences of the same recurring obligation. A series created in
+// the app is grouped by seriesId, but the 128 seeded rows have no seriesId at
+// all — there, same item NAME is the only thing tying occurrences together
+// (which is exactly how the workbook expressed a quarterly item: four rows
+// sharing a name).
+function complianceSeriesPeers(items, item) {
+  if (item.seriesId) return items.filter((x) => x.seriesId === item.seriesId);
+  const name = String(item.item).trim().toLowerCase();
+  return items.filter((x) => String(x.item).trim().toLowerCase() === name);
+}
+
 function complianceAdvanceSeries(items, item) {
-  if (!item.seriesId || !complianceFreqStep(item.frequency)) return null;
+  if (!complianceFreqStep(item.frequency)) return null;
   if (complianceStatus(item) !== 'CLOSED') return null;
-  const isLatest = !items.some((x) => x.seriesId === item.seriesId && String(x.dueDate) > String(item.dueDate));
-  if (!isLatest) return null;
+  // Only the newest occurrence advances, so closing an old backlog row doesn't
+  // graft an extra date onto a series that has already moved past it.
+  if (complianceSeriesPeers(items, item).some((x) => String(x.dueDate) > String(item.dueDate))) return null;
 
   const start = item.seriesStart || item.dueDate;
   const nextDate = complianceNextOccurrenceDate(start, item.frequency, item.dueDate);
@@ -2634,6 +2646,15 @@ function complianceAdvanceSeries(items, item) {
   const key = `${String(item.item).trim().toLowerCase()}|${nextDate}`;
   if (items.some((x) => `${String(x.item).trim().toLowerCase()}|${x.dueDate}` === key)) return null;
 
+  // Promote to a real series on the way out. A seeded row carries a frequency
+  // ("Annual") but no seriesId, and without this it could never recur — signing
+  // it off would close it and nothing would replace it. Done only once we know
+  // an occurrence is actually being created, so a no-op advance leaves the
+  // record untouched.
+  if (!item.seriesId) {
+    item.seriesId = `cs-${invTs()}-${randomHex(3)}`;
+    item.seriesStart = item.seriesStart || item.dueDate;
+  }
   const occurrence = complianceOccurrenceFrom(item, nextDate, item.seriesId);
   items.push(occurrence);
   return occurrence;

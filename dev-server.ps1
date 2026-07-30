@@ -121,17 +121,23 @@ function New-ComplianceOccurrence($template, $dueDate, $seriesId) {
     return $o
 }
 
+# Mirror worker.js complianceSeriesPeers: seriesId groups an app-created series,
+# but seeded rows have none — there the item NAME is what ties occurrences
+# together, as it did in the workbook.
+function Get-ComplianceSeriesPeers($it) {
+    if ($it.seriesId) { return @($complianceItems | Where-Object { $_.seriesId -eq $it.seriesId }) }
+    $name = ([string]$it.item).Trim().ToLower()
+    return @($complianceItems | Where-Object { ([string]$_.item).Trim().ToLower() -eq $name })
+}
+
 # Mirror worker.js complianceAdvanceSeries: advance a series by exactly one
 # occurrence, and only once $it — the latest occurrence in its series — is
 # fully signed off (CLOSED). Returns 1 if an occurrence was added, else 0.
 function Update-ComplianceSeries($it) {
-    if (-not $it.seriesId) { return 0 }
     if (-not (Get-ComplianceFreqStep $it.frequency)) { return 0 }
     if ((Get-ComplianceStatus $it) -ne 'CLOSED') { return 0 }
-    $isLatest = -not ($complianceItems | Where-Object {
-        $_.seriesId -eq $it.seriesId -and [string]$_.dueDate -gt [string]$it.dueDate
-    })
-    if (-not $isLatest) { return 0 }
+    $later = Get-ComplianceSeriesPeers $it | Where-Object { [string]$_.dueDate -gt [string]$it.dueDate }
+    if ($later) { return 0 }
 
     $start = if ($it.seriesStart) { $it.seriesStart } else { $it.dueDate }
     $nextDate = Get-ComplianceNextOccurrenceDate $start $it.frequency $it.dueDate
@@ -140,6 +146,13 @@ function Update-ComplianceSeries($it) {
     $taken = $complianceItems | Where-Object { "$(([string]$_.item).Trim().ToLower())|$($_.dueDate)" -eq $key }
     if ($taken) { return 0 }
 
+    # Promote to a real series on the way out: a seeded row carries a frequency
+    # but no seriesId, and without this it could never recur.
+    if (-not $it.seriesId) {
+        $script:cmpCounter++
+        $it['seriesId'] = 'cs-{0:d4}' -f $script:cmpCounter
+        if (-not $it.seriesStart) { $it['seriesStart'] = $it.dueDate }
+    }
     $null = $complianceItems.Add((New-ComplianceOccurrence $it $nextDate $it.seriesId))
     return 1
 }
