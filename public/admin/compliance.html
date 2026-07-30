@@ -85,6 +85,18 @@
   .cal-item.over { background: var(--due-over-bg); color: var(--due-over-fg); }
   .cal-item.done { background: var(--gray-bg); color: var(--muted); text-decoration: line-through; }
 
+  /* Every control in the drawer is pinned to its column width. shared.css sets no
+     width on .field controls, and a grid/flex child defaults to min-width:auto —
+     so a <select> sized itself to its longest option ("required by a governing
+     document") and pushed out past the drawer edge while the inputs beside it
+     stayed narrower. min-width:0 lets the column shrink; width:100% makes all
+     the boxes agree. */
+  .drawer .field { min-width: 0; }
+  .drawer .field input,
+  .drawer .field select,
+  .drawer .field textarea { width: 100%; max-width: 100%; }
+  .drawer .field textarea { resize: vertical; }
+
   .drawer-section { margin-top: 22px; }
   .drawer-section > h3 { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--muted); margin-bottom: 10px; }
   .dl { display: grid; grid-template-columns: 128px 1fr; gap: 7px var(--sp-3); font-size: var(--fs-sm); }
@@ -208,7 +220,7 @@
         <label for="d-mandated">Mandated</label>
         <select id="d-mandated">
           <option value="no">No — best practice</option>
-          <option value="yes">Yes — required by a governing document</option>
+          <option value="yes">Yes — required</option>
         </select>
       </div>
     </div>
