@@ -415,8 +415,15 @@
       const res = await api(`/api/admin/compliance/${encodeURIComponent(it.id)}`, {
         method: 'POST', body: JSON.stringify({ [field]: next }),
       });
-      Object.assign(it, res.item);
-      render();
+      // Completing the last sign-off can materialize a successor row server-side
+      // (see complianceAdvanceSeries in worker.js); a full reload is the only way
+      // the client picks that new row up, so don't just patch this one in place.
+      if (res.created) {
+        await loadData();
+      } else {
+        Object.assign(it, res.item);
+        render();
+      }
     } catch (err) {
       btn.classList.remove('pending');
       setStatus(`Could not save: ${err.message}`);
