@@ -1449,6 +1449,43 @@ while ($listener.IsListening) {
             Write-Audit $adminEmail 'compliance-create' @{ id = $new.id; item = $new.item; occurrences = $created }
             Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $new); created = $created }
         }
+        # Mirror worker.js handleAdminComplianceRestore. Matched before the /:id
+        # route below, or 'restore' would be read as an item id. Strictly
+        # additive: an item that still exists is left completely alone.
+        elseif ($path -eq '/api/admin/compliance/restore' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $haveId = @{}; $haveKey = @{}
+            foreach ($x in $complianceItems) {
+                $haveId[[string]$x.id] = $true
+                $haveKey["$(([string]$x.item).Trim().ToLower())|$($x.dueDate)"] = $true
+            }
+            $seedPath2 = Join-Path $PSScriptRoot 'compliance-seed.js'
+            $restoredIds = @()
+            if (Test-Path $seedPath2) {
+                $raw2 = Get-Content $seedPath2 -Raw
+                $s2 = $raw2.IndexOf('['); $e2 = $raw2.LastIndexOf(']')
+                foreach ($row in (ConvertFrom-Json $raw2.Substring($s2, $e2 - $s2 + 1))) {
+                    if ($haveId.ContainsKey([string]$row.id)) { continue }
+                    $k2 = "$(([string]$row.item).Trim().ToLower())|$($row.dueDate)"
+                    if ($haveKey.ContainsKey($k2)) { continue }
+                    $haveKey[$k2] = $true
+                    $null = $complianceItems.Add([ordered]@{
+                        id = $row.id; dueDate = $row.dueDate; item = $row.item; whatToDo = $row.whatToDo
+                        frequency = $row.frequency; source = $row.source; mandated = [bool]$row.mandated
+                        owner = $row.owner; reviewer = $row.reviewer; notes = $row.notes
+                        ownerCompleted = ''; ownerCompletedBy = ''
+                        reviewerCompleted = ''; reviewerCompletedBy = ''
+                        createdAt = (Get-Date).ToString('o'); createdBy = "restore:$adminEmail"; updatedAt = $null
+                    })
+                    $restoredIds += [string]$row.id
+                }
+            }
+            if ($restoredIds.Count -gt 0) {
+                Write-Audit $adminEmail 'compliance-restore' @{ restored = $restoredIds.Count; ids = $restoredIds }
+            }
+            Send-Json $ctx 200 @{ restored = $restoredIds.Count; total = $complianceItems.Count }
+        }
         elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
