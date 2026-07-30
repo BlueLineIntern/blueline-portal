@@ -2530,6 +2530,123 @@ const COMPLIANCE_KEY = 'compliance_items';
 const COMPLIANCE_OWNERS = ['Frank', 'Jennifer', 'Both'];
 const COMPLIANCE_REVIEWERS = ['Frank', 'Jennifer', 'N/A'];
 
+// ---------- Recurrence ----------
+// Recurring items are MATERIALISED: each due date is its own record with its own
+// pair of sign-offs. That matches how the source workbook already worked — a
+// quarterly item appears there as four separate dated rows — and it means every
+// occurrence is ticked off independently, which is what compliance evidence
+// needs. The alternative (one row plus a rule, expanded at render time) would
+// have nowhere to record who signed off which quarter.
+const COMPLIANCE_FREQUENCIES = ['One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually'];
+
+// Steps keyed by lowercased label. "One time" is deliberately absent — no step
+// means no repeat. The legacy spreadsheet wording is mapped too so an item
+// seeded as "Annual" still recurs correctly if someone turns it into a series.
+const COMPLIANCE_FREQ_STEPS = {
+  'weekly': { days: 7 },
+  'monthly': { months: 1 },
+  'quarterly': { months: 3 },
+  'semi-annually': { months: 6 },
+  'semi-annual': { months: 6 },
+  'annually': { months: 12 },
+  'annual': { months: 12 },
+};
+
+// How far ahead occurrences are kept generated, and a hard cap so a weekly item
+// can never run away if the horizon is ever widened.
+const COMPLIANCE_HORIZON_MONTHS = 12;
+const COMPLIANCE_MAX_OCCURRENCES = 200;
+
+function complianceFreqStep(frequency) {
+  return COMPLIANCE_FREQ_STEPS[String(frequency || '').trim().toLowerCase()] || null;
+}
+
+// Date-only maths done in UTC on purpose: these values have no time of day, and
+// doing it in local time would let a DST boundary shift a due date by a day.
+function isoAddDays(iso, days) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
+
+function isoAddMonths(iso, months) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  const target = m - 1 + months;
+  const ty = y + Math.floor(target / 12);
+  const tm = ((target % 12) + 12) % 12;
+  // Clamp to the month's length: Jan 31 + 1 month is Feb 28, not Mar 3.
+  const lastDay = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+  return `${ty}-${String(tm + 1).padStart(2, '0')}-${String(Math.min(d, lastDay)).padStart(2, '0')}`;
+}
+
+// Every due date for a series from `startIso` up to and including `untilIso`.
+// Each occurrence is stepped from the START rather than from the previous one, so
+// a monthly series beginning Jan 31 runs Jan 31, Feb 28, Mar 31 — stepping from
+// the previous date would clamp once and then stay stuck on the 28th.
+function complianceOccurrenceDates(startIso, frequency, untilIso) {
+  const step = complianceFreqStep(frequency);
+  if (!step) return [startIso];
+  const dates = [];
+  for (let i = 0; i < COMPLIANCE_MAX_OCCURRENCES; i++) {
+    const iso = step.days ? isoAddDays(startIso, step.days * i) : isoAddMonths(startIso, step.months * i);
+    if (iso > untilIso) break;
+    dates.push(iso);
+  }
+  return dates.length ? dates : [startIso];
+}
+
+function complianceHorizon() {
+  return isoAddMonths(new Date().toISOString().slice(0, 10), COMPLIANCE_HORIZON_MONTHS);
+}
+
+function complianceOccurrenceFrom(template, dueDate, seriesId) {
+  return {
+    ...template,
+    id: `cx-${invTs()}-${randomHex(3)}`,
+    seriesId,
+    dueDate,
+    // A new occurrence is always outstanding — sign-offs belong to one date only.
+    ownerCompleted: '', ownerCompletedBy: '',
+    reviewerCompleted: '', reviewerCompletedBy: '',
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+  };
+}
+
+// Keep every active series stocked with occurrences out to the horizon, so a
+// monthly item keeps appearing next month without anyone regenerating anything.
+//
+// Only extends FORWARD of a series' latest existing date — never backfills — so
+// deleting one occurrence doesn't resurrect it on the next load. Also skips any
+// date already taken by an item of the same name, which is what stops a seeded
+// quarterly item (already materialised four times by the workbook) from gaining
+// duplicates if someone turns it into a series.
+function extendComplianceSeries(items) {
+  const until = complianceHorizon();
+  const taken = new Set(items.map((x) => `${String(x.item).trim().toLowerCase()}|${x.dueDate}`));
+  const bySeries = new Map();
+  for (const it of items) {
+    if (!it.seriesId || !complianceFreqStep(it.frequency)) continue;
+    const cur = bySeries.get(it.seriesId);
+    if (!cur || String(it.dueDate) > String(cur.dueDate)) bySeries.set(it.seriesId, it);
+  }
+
+  const added = [];
+  for (const [seriesId, latest] of bySeries) {
+    const start = latest.seriesStart || latest.dueDate;
+    for (const date of complianceOccurrenceDates(start, latest.frequency, until)) {
+      if (date <= latest.dueDate) continue;
+      const key = `${String(latest.item).trim().toLowerCase()}|${date}`;
+      if (taken.has(key)) continue;
+      taken.add(key);
+      added.push(complianceOccurrenceFrom(latest, date, seriesId));
+    }
+  }
+  if (added.length) items.push(...added);
+  return added.length;
+}
+
 // Status is DERIVED, never stored — the workbook's own Instructions tab is
 // explicit that Status is automatic and must not be edited by hand. An item
 // closes when the owner has completed it AND the reviewer has, except where the
@@ -2612,6 +2729,11 @@ function sanitizeComplianceFields(body, { requireCore = false } = {}) {
     out.reviewer = str(body.reviewer, 60) || 'N/A';
   }
   if (body.whatToDo !== undefined) out.whatToDo = str(body.whatToDo, 2000);
+  // Free text rather than a strict enum: the 128 seeded rows carry wordings the
+  // dropdown doesn't offer ("Ongoing / target Dec 2026", "One-time: Jan 1,
+  // 2028"), and rejecting those would make those items unsaveable. Whether it
+  // repeats is decided by complianceFreqStep, which simply finds no step for
+  // anything it doesn't recognise.
   if (body.frequency !== undefined) out.frequency = str(body.frequency, 100);
   if (body.source !== undefined) out.source = str(body.source, 100);
   if (body.notes !== undefined) out.notes = str(body.notes, 2000);
@@ -2632,10 +2754,15 @@ async function handleAdminComplianceList(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const items = await getComplianceItems(env);
+  // Top up recurring series on read, so a monthly item keeps showing up next
+  // month with no cron and no manual regeneration. Persisted only when something
+  // was actually added, so the common case stays a pure read.
+  if (extendComplianceSeries(items)) await saveComplianceItems(env, items);
   return json({
     items: complianceSort(items).map(withComplianceStatus),
     owners: COMPLIANCE_OWNERS,
     reviewers: COMPLIANCE_REVIEWERS,
+    frequencies: COMPLIANCE_FREQUENCIES,
   }, 200, cors);
 }
 
@@ -2648,11 +2775,18 @@ async function handleAdminComplianceCreate(request, env, cors) {
   if (error) return json({ error }, 400, cors);
 
   const items = await getComplianceItems(env);
-  const item = {
-    // Prefixed so an app-added item is never confused with a seeded c### id.
+  const step = complianceFreqStep(fields.frequency);
+  // A recurring item is created as a whole series in one go, rather than one row
+  // that grows later, so it lands on the tracker and calendar for every due date
+  // immediately. seriesStart is kept so occurrences are always stepped from the
+  // original date (see complianceOccurrenceDates).
+  const seriesId = step ? `cs-${invTs()}-${randomHex(3)}` : '';
+  const base = {
     id: `cx-${invTs()}-${randomHex(3)}`,
     whatToDo: '', frequency: '', source: '', notes: '', mandated: false,
     ...fields,
+    seriesId,
+    seriesStart: step ? fields.dueDate : '',
     ownerCompleted: fields.ownerCompleted || '',
     ownerCompletedBy: '',
     reviewerCompleted: fields.reviewerCompleted || '',
@@ -2661,10 +2795,22 @@ async function handleAdminComplianceCreate(request, env, cors) {
     createdBy: adminEmail,
     updatedAt: null,
   };
-  items.push(item);
+  items.push(base);
+  let created = 1;
+  if (step) {
+    const taken = new Set(items.map((x) => `${String(x.item).trim().toLowerCase()}|${x.dueDate}`));
+    for (const date of complianceOccurrenceDates(fields.dueDate, fields.frequency, complianceHorizon())) {
+      if (date === base.dueDate) continue;
+      const key = `${String(base.item).trim().toLowerCase()}|${date}`;
+      if (taken.has(key)) continue;
+      taken.add(key);
+      items.push(complianceOccurrenceFrom(base, date, seriesId));
+      created += 1;
+    }
+  }
   await saveComplianceItems(env, items);
-  await logAudit(env, adminEmail, 'compliance-create', { id: item.id, item: item.item });
-  return json({ item: withComplianceStatus(item) }, 200, cors);
+  await logAudit(env, adminEmail, 'compliance-create', { id: base.id, item: base.item, occurrences: created });
+  return json({ item: withComplianceStatus(base), created }, 200, cors);
 }
 
 async function handleAdminComplianceUpdate(request, env, cors, id) {
@@ -2689,8 +2835,28 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
     next.reviewerCompletedBy = fields.reviewerCompleted ? adminEmail : '';
   }
   items[idx] = next;
+
+  // Setting a recurring frequency on a one-off item promotes it to a series, so
+  // "make this monthly" works on the 128 seeded items too and not only on newly
+  // added ones. extendComplianceSeries does the generating, and its same-name
+  // dedupe is what stops a seeded quarterly item — already materialised four
+  // times by the workbook — from picking up duplicates.
+  let created = 0;
+  if (fields.frequency !== undefined && complianceFreqStep(next.frequency) && !next.seriesId) {
+    next.seriesId = `cs-${invTs()}-${randomHex(3)}`;
+    next.seriesStart = next.dueDate;
+  }
+  // Dropping back to "One time" stops the series growing without touching the
+  // occurrences already generated (deleting dated sign-off records silently
+  // would destroy evidence).
+  if (fields.frequency !== undefined && !complianceFreqStep(next.frequency)) {
+    next.seriesId = '';
+    next.seriesStart = '';
+  }
+  if (next.seriesId) created = extendComplianceSeries(items);
+
   await saveComplianceItems(env, items);
-  return json({ item: withComplianceStatus(next) }, 200, cors);
+  return json({ item: withComplianceStatus(next), created }, 200, cors);
 }
 
 async function handleAdminComplianceDelete(request, env, cors, id) {
@@ -2699,10 +2865,28 @@ async function handleAdminComplianceDelete(request, env, cors, id) {
   const items = await getComplianceItems(env);
   const idx = items.findIndex((x) => x.id === id);
   if (idx < 0) return json({ error: 'Compliance item not found' }, 404, cors);
-  const [removed] = items.splice(idx, 1);
+  const target = items[idx];
+
+  // ?series=1 removes every occurrence of a recurring item. Without it, deleting
+  // a monthly item would mean deleting twelve rows by hand — and because
+  // extendComplianceSeries only ever appends after the latest date, removing just
+  // the last occurrence would simply be regenerated on the next load.
+  const wholeSeries = new URL(request.url).searchParams.get('series') === '1' && !!target.seriesId;
+  let removedCount = 1;
+  if (wholeSeries) {
+    const sid = target.seriesId;
+    const kept = items.filter((x) => x.seriesId !== sid);
+    removedCount = items.length - kept.length;
+    items.length = 0;
+    items.push(...kept);
+  } else {
+    items.splice(idx, 1);
+  }
   await saveComplianceItems(env, items);
-  await logAudit(env, adminEmail, 'compliance-delete', { id, item: removed && removed.item });
-  return json({ ok: true }, 200, cors);
+  await logAudit(env, adminEmail, 'compliance-delete', {
+    id, item: target.item, series: wholeSeries, removed: removedCount,
+  });
+  return json({ ok: true, removed: removedCount }, 200, cors);
 }
 
 // ---------- Advisor CRM: contacts ----------

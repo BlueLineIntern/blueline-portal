@@ -71,7 +71,16 @@
   .cal-month { font-size: var(--fs-lg); font-weight: var(--fw-semibold); min-width: 190px; }
   .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
   .cal-dow { background: var(--panel-subtle); padding: 6px 8px; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--muted); font-weight: var(--fw-semibold); text-align: center; }
-  .cal-day { background: var(--panel); min-height: 104px; padding: 5px 6px; display: flex; flex-direction: column; gap: 3px; }
+  /* Fixed height, not min-height: a day with several items used to stretch its
+     whole row, so the boxes were visibly different sizes. min-width:0 matters
+     too — without it a long item name sets the column's min-content width and
+     the seven columns stop being equal. Overflow scrolls inside the cell so a
+     busy day still shows everything without changing the grid. */
+  .cal-day {
+    background: var(--panel); height: 116px; min-width: 0; overflow: hidden;
+    padding: 5px 6px; display: flex; flex-direction: column; gap: 3px;
+  }
+  .cal-items { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
   .cal-day.other { background: var(--panel-subtle); }
   .cal-day.today .cal-num { background: var(--navy); color: #fff; border-radius: 50%; width: 21px; height: 21px; display: inline-flex; align-items: center; justify-content: center; }
   .cal-num { font-size: var(--fs-xs); color: var(--muted); font-weight: var(--fw-semibold); }
@@ -103,6 +112,7 @@
   .dl dt { color: var(--muted); }
   .dl dd { color: var(--text); }
   .cmp-signoff { font-size: var(--fs-sm); color: var(--muted); }
+  .cmp-hint { font-size: var(--fs-xs); color: var(--muted); margin: 2px 0 0; }
 
   @media (max-width: 820px) {
     .cmp-grid { grid-template-columns: 1fr 70px 70px 80px; }
@@ -198,7 +208,8 @@
       </div>
       <div class="field">
         <label for="d-frequency">Frequency</label>
-        <input type="text" id="d-frequency" maxlength="100" placeholder="e.g. Quarterly" />
+        <select id="d-frequency"></select>
+        <p class="cmp-hint" id="d-freq-hint"></p>
       </div>
     </div>
     <div class="field-row">
@@ -235,7 +246,11 @@
     </div>
   </div>
   <div class="drawer-foot">
-    <button type="button" class="btn btn-danger btn-small hidden" id="d-delete" title="Delete">Delete</button>
+    <div style="display:flex; gap:var(--sp-2);">
+      <button type="button" class="btn btn-danger btn-small hidden" id="d-delete" title="Delete this due date only">Delete</button>
+      <button type="button" class="btn btn-ghost btn-small hidden" id="d-delete-series"
+              title="Delete every due date of this repeating item">Delete series</button>
+    </div>
     <div style="display:flex; gap:var(--sp-3);">
       <button type="button" class="btn btn-ghost" id="d-cancel">Cancel</button>
       <button type="button" class="btn btn-primary" id="d-save">Save</button>
@@ -250,6 +265,10 @@
   let allItems = [];
   let owners = ['Frank', 'Jennifer', 'Both'];
   let reviewers = ['Frank', 'Jennifer', 'N/A'];
+  let frequencies = ['One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually'];
+  // Which frequencies actually repeat. Mirrors worker.js COMPLIANCE_FREQ_STEPS —
+  // used only to word the hint under the dropdown; the server decides what recurs.
+  const REPEATING = new Set(['weekly', 'monthly', 'quarterly', 'semi-annually', 'semi-annual', 'annually', 'annual']);
   let currentView = 'tracker';
   let trackerTab = 'open';        // 'open' | 'completed'
   let calCursor = null;           // first-of-month Date driving the calendar grid
@@ -479,11 +498,11 @@
       const items = byDate.get(key) || [];
       html += `<div class="cal-day ${day.getMonth() === month ? '' : 'other'} ${key === todayKey ? 'today' : ''}">
         <span class="cal-num">${day.getDate()}</span>
-        ${items.map((it) => {
+        <div class="cal-items">${items.map((it) => {
           const cls = isClosed(it) ? 'done' : (dueBits(it).overdue ? 'over' : '');
           return `<button type="button" class="cal-item ${cls}" data-id="${escapeHtml(it.id)}"
                     title="${escapeHtml(it.item)}">${escapeHtml(it.item)}</button>`;
-        }).join('')}
+        }).join('')}</div>
       </div>`;
     }
     const grid = document.getElementById('cal-grid');
@@ -500,11 +519,26 @@
       .join('');
   }
 
+  // Says plainly what picking a repeating frequency will do, so a series of
+  // twelve rows is never a surprise.
+  function updateFreqHint(it) {
+    const freq = document.getElementById('d-frequency').value;
+    const repeats = REPEATING.has(String(freq).trim().toLowerCase());
+    const el = document.getElementById('d-freq-hint');
+    if (!repeats) {
+      el.textContent = drawerMode === 'new' ? 'Happens once — no repeats.' : '';
+      return;
+    }
+    const word = String(freq).toLowerCase();
+    el.textContent = it && it.seriesId
+      ? `Repeats ${word}. Each due date is its own row, signed off separately.`
+      : `Repeats ${word} — saving creates a row for each due date through the next 12 months.`;
+  }
+
   function populateDrawer(it) {
     document.getElementById('d-item').value = it.item || '';
     document.getElementById('d-what').value = it.whatToDo || '';
     document.getElementById('d-due').value = it.dueDate || '';
-    document.getElementById('d-frequency').value = it.frequency || '';
     document.getElementById('d-source').value = it.source || '';
     document.getElementById('d-notes').value = it.notes || '';
     document.getElementById('d-mandated').value = it.mandated ? 'yes' : 'no';
@@ -512,6 +546,13 @@
     // renamed) still appears and isn't silently reassigned on save.
     fillSelect('d-owner', [...new Set([...owners, it.owner].filter(Boolean))], it.owner || owners[0]);
     fillSelect('d-reviewer', [...new Set([...reviewers, it.reviewer].filter(Boolean))], it.reviewer || 'N/A');
+    // Same union for frequency, and for a real reason: 66 of the seeded rows use
+    // wordings the dropdown doesn't offer ("Ongoing / target Dec 2026"). Without
+    // keeping the current value as an option, opening one of those items and
+    // saving would silently rewrite its frequency to whatever sat at the top.
+    fillSelect('d-frequency', [...new Set([...frequencies, it.frequency].filter(Boolean))],
+      it.frequency || 'One time');
+    updateFreqHint(it);
 
     const sec = document.getElementById('d-signoff-section');
     if (drawerMode === 'new') {
@@ -529,6 +570,10 @@
             : '<dt>Reviewer checked</dt><dd><span class="cmp-signoff">No reviewer — closes on the owner alone</span></dd>');
     }
     document.getElementById('d-delete').classList.toggle('hidden', drawerMode === 'new');
+    // Only offered for a repeating item — otherwise clearing a monthly item means
+    // deleting twelve rows one at a time.
+    document.getElementById('d-delete-series')
+      .classList.toggle('hidden', drawerMode === 'new' || !it.seriesId);
   }
 
   function openDrawerNew() {
@@ -583,19 +628,20 @@
     const btn = document.getElementById('d-save');
     btn.disabled = true;
     try {
+      let created = 0;
       if (drawerMode === 'new') {
-        const res = await api('/api/admin/compliance', { method: 'POST', body: JSON.stringify(payload) });
-        allItems.push(res.item);
+        created = (await api('/api/admin/compliance', { method: 'POST', body: JSON.stringify(payload) })).created || 1;
       } else {
-        const res = await api(`/api/admin/compliance/${encodeURIComponent(drawerId)}`, {
+        created = (await api(`/api/admin/compliance/${encodeURIComponent(drawerId)}`, {
           method: 'POST', body: JSON.stringify(payload),
-        });
-        Object.assign(allItems.find((x) => x.id === drawerId), res.item);
+        })).created || 0;
       }
-      sortItems();
       closeDrawer();
-      render();
-      setStatus('');
+      // Reload rather than patching in place: a repeating frequency generates a
+      // whole series of dated rows server-side, and the client has no way to know
+      // what they are.
+      await loadData();
+      setStatus(created > 1 ? `Saved — ${created} due dates created.` : '');
     } catch (err) {
       setStatus(`Could not save: ${err.message}`);
     } finally {
@@ -603,15 +649,20 @@
     }
   }
 
-  async function deleteItem() {
+  async function deleteItem({ series = false } = {}) {
     if (!drawerId) return;
     const it = allItems.find((x) => x.id === drawerId);
-    if (!confirm(`Delete “${it ? it.item : 'this item'}”? This cannot be undone.`)) return;
+    const name = it ? it.item : 'this item';
+    const count = series && it ? allItems.filter((x) => x.seriesId === it.seriesId).length : 1;
+    const msg = series
+      ? `Delete all ${count} due dates of “${name}”? This cannot be undone.`
+      : `Delete “${name}” (${it ? it.dueDate : ''})? This cannot be undone.`;
+    if (!confirm(msg)) return;
     try {
-      await api(`/api/admin/compliance/${encodeURIComponent(drawerId)}`, { method: 'DELETE' });
-      allItems = allItems.filter((x) => x.id !== drawerId);
+      await api(`/api/admin/compliance/${encodeURIComponent(drawerId)}${series ? '?series=1' : ''}`,
+        { method: 'DELETE' });
       closeDrawer();
-      render();
+      await loadData();
     } catch (err) {
       setStatus(`Could not delete: ${err.message}`);
     }
@@ -644,6 +695,7 @@
       allItems = data.items || [];
       if (Array.isArray(data.owners) && data.owners.length) owners = data.owners;
       if (Array.isArray(data.reviewers) && data.reviewers.length) reviewers = data.reviewers;
+      if (Array.isArray(data.frequencies) && data.frequencies.length) frequencies = data.frequencies;
       sortItems();
       render();
       setStatus(showStatus ? `Last updated ${new Date().toLocaleTimeString()}` : '');
@@ -659,7 +711,10 @@
   document.getElementById('cmp-new').addEventListener('click', openDrawerNew);
   document.getElementById('tr-search').addEventListener('input', renderTracker);
   document.getElementById('d-save').addEventListener('click', saveDrawer);
-  document.getElementById('d-delete').addEventListener('click', deleteItem);
+  document.getElementById('d-delete').addEventListener('click', () => deleteItem());
+  document.getElementById('d-delete-series').addEventListener('click', () => deleteItem({ series: true }));
+  document.getElementById('d-frequency').addEventListener('change', () =>
+    updateFreqHint(drawerId ? allItems.find((x) => x.id === drawerId) : null));
   document.getElementById('d-cancel').addEventListener('click', closeDrawer);
   document.getElementById('drawer-close').addEventListener('click', closeDrawer);
   document.getElementById('drawer-backdrop').addEventListener('click', closeDrawer);

@@ -435,9 +435,39 @@ Client portal is untouched and keeps its own look.
     number saying whether the firm is behind, which a static sheet couldn't show.
     Counts are computed client-side from the same item list the tracker renders,
     so the two can never disagree.
-  - **Calendar** is due dates only, as asked: a fixed six-week month grid (so it
-    doesn't jump between months) with each item on its due date; overdue red,
-    closed struck through. Clicking one opens its Details.
+  - **Calendar** is due dates only, as asked: Sunday–Saturday, a fixed six-week
+    month grid (so it doesn't jump between months) with each item on its due date;
+    overdue red, closed struck through. Clicking one opens its Details. Day cells
+    are a **fixed height with `min-width: 0`** and scroll internally — with
+    `min-height` a busy day stretched its whole row, and without `min-width: 0` a
+    long item name set the column's min-content width, so the boxes came out
+    different sizes. Note a six-week grid always shows some greyed days of the
+    neighbouring months; an item appearing there is not a duplicate.
+  - **Recurrence** (`frequency` is a dropdown: One time / Weekly / Monthly /
+    Quarterly / Semi-annually / Annually). Recurring items are **materialised** —
+    one record per due date, each with its own pair of sign-offs — which is how
+    the source workbook already worked (a quarterly item is four dated rows there)
+    and is what compliance evidence needs: one row plus a rule would have nowhere
+    to record who signed off which quarter.
+    - Occurrences are generated to a **12-month horizon** and topped up on read,
+      so a monthly item keeps appearing next month with no cron. The top-up only
+      appends *after* a series' latest date, so deleting one occurrence doesn't
+      resurrect it, and it skips any date already held by an item of the same
+      name — which is what stops the 64 already-materialised seeded quarterly rows
+      gaining duplicates if someone turns one into a series.
+    - Each occurrence is stepped from the **series start**, not from the previous
+      date: a monthly series from Jan 31 runs Jan 31 → Feb 28 → Mar 31, where
+      stepping from the previous date would clamp once and stay stuck on the 28th.
+      Date maths is UTC so a DST boundary can't shift a due date by a day.
+    - Frequency stays **free text** on the wire: 66 seeded rows carry wordings the
+      dropdown doesn't offer ("Ongoing / target Dec 2026"), and the drawer keeps
+      the current value as an option so opening one of those and saving can't
+      silently rewrite it. Whether something repeats is decided by looking up a
+      step, and unrecognised wording simply has none.
+    - **Delete series** clears every occurrence at once; plain Delete removes only
+      that due date. Dropping a series back to "One time" stops it growing but
+      leaves generated dates alone, since deleting dated sign-off records would
+      destroy evidence.
   - **One encrypted KV blob** (`compliance_items`), matching the `board_lists`
     pattern rather than a key per item: 128 items are read together every load, so
     per-item keys would mean 128 KV gets per request — enough to blow the

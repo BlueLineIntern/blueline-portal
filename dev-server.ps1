@@ -70,6 +70,94 @@ function Import-ComplianceSeed {
     }
 }
 
+# Mirror worker.js recurrence. Recurring items are MATERIALISED: one record per
+# due date, each with its own sign-offs, as the source workbook already did.
+$complianceFrequencies = @('One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually')
+$complianceHorizonMonths = 12
+$complianceMaxOccurrences = 200
+
+# Returns @{days=N} / @{months=N}, or $null when the frequency does not repeat.
+function Get-ComplianceFreqStep($frequency) {
+    switch (([string]$frequency).Trim().ToLower()) {
+        'weekly'         { return @{ days = 7 } }
+        'monthly'        { return @{ months = 1 } }
+        'quarterly'      { return @{ months = 3 } }
+        'semi-annually'  { return @{ months = 6 } }
+        'semi-annual'    { return @{ months = 6 } }
+        'annually'       { return @{ months = 12 } }
+        'annual'         { return @{ months = 12 } }
+        default          { return $null }
+    }
+}
+
+# Occurrences are stepped from the SERIES START, not from the previous date, so a
+# monthly series beginning Jan 31 runs Jan 31, Feb 28, Mar 31 rather than sticking
+# on the 28th once it clamps. .NET AddMonths already clamps to the month length.
+function Get-ComplianceOccurrenceDates($startIso, $frequency, $untilIso) {
+    $step = Get-ComplianceFreqStep $frequency
+    if (-not $step) { return , @($startIso) }
+    $start = [datetime]::ParseExact($startIso, 'yyyy-MM-dd', $null)
+    $until = [datetime]::ParseExact($untilIso, 'yyyy-MM-dd', $null)
+    $out = [System.Collections.ArrayList]::new()
+    for ($i = 0; $i -lt $complianceMaxOccurrences; $i++) {
+        $d = if ($step.days) { $start.AddDays($step.days * $i) } else { $start.AddMonths($step.months * $i) }
+        if ($d -gt $until) { break }
+        $null = $out.Add($d.ToString('yyyy-MM-dd'))
+    }
+    if ($out.Count -eq 0) { return , @($startIso) }
+    return , @($out.ToArray())
+}
+
+function Get-ComplianceHorizon {
+    return (Get-Date).Date.AddMonths($complianceHorizonMonths).ToString('yyyy-MM-dd')
+}
+
+function New-ComplianceOccurrence($template, $dueDate, $seriesId) {
+    $o = [ordered]@{}
+    foreach ($k in $template.Keys) { $o[$k] = $template[$k] }
+    $script:cmpCounter++
+    $o['id'] = 'cx-{0:d4}' -f $script:cmpCounter
+    $o['seriesId'] = $seriesId
+    $o['dueDate'] = $dueDate
+    $o['ownerCompleted'] = ''; $o['ownerCompletedBy'] = ''
+    $o['reviewerCompleted'] = ''; $o['reviewerCompletedBy'] = ''
+    $o['createdAt'] = (Get-Date).ToString('o')
+    $o['updatedAt'] = $null
+    return $o
+}
+
+# Mirror worker.js extendComplianceSeries: top up active series to the horizon.
+# Only appends AFTER a series' latest date (so a deleted occurrence is not
+# resurrected) and skips dates already used by an item of the same name (so a
+# seeded quarterly item, already materialised by the workbook, gains no
+# duplicates). Returns how many were added.
+function Update-ComplianceSeries {
+    $until = Get-ComplianceHorizon
+    $taken = @{}
+    foreach ($x in $complianceItems) { $taken["$(([string]$x.item).Trim().ToLower())|$($x.dueDate)"] = $true }
+    $latest = @{}
+    foreach ($x in $complianceItems) {
+        if (-not $x.seriesId) { continue }
+        if (-not (Get-ComplianceFreqStep $x.frequency)) { continue }
+        $cur = $latest[$x.seriesId]
+        if ((-not $cur) -or ([string]$x.dueDate -gt [string]$cur.dueDate)) { $latest[$x.seriesId] = $x }
+    }
+    $added = 0
+    foreach ($sid in @($latest.Keys)) {
+        $tpl = $latest[$sid]
+        $start = if ($tpl.seriesStart) { $tpl.seriesStart } else { $tpl.dueDate }
+        foreach ($date in (Get-ComplianceOccurrenceDates $start $tpl.frequency $until)) {
+            if ([string]$date -le [string]$tpl.dueDate) { continue }
+            $key = "$(([string]$tpl.item).Trim().ToLower())|$date"
+            if ($taken.ContainsKey($key)) { continue }
+            $taken[$key] = $true
+            $null = $complianceItems.Add((New-ComplianceOccurrence $tpl $date $sid))
+            $added++
+        }
+    }
+    return $added
+}
+
 # Mirror worker.js complianceStatus/complianceReviewerRequired: status is DERIVED
 # from the two completion dates, never stored. Reviewer 'N/A' closes on the owner.
 function Get-ComplianceReviewerRequired($it) { return ([string]$it.reviewer).Trim() -ne 'N/A' }
@@ -1323,10 +1411,12 @@ while ($listener.IsListening) {
         }
         elseif ($path -eq '/api/admin/compliance' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $null = Update-ComplianceSeries
             # Soonest due first, matching worker.js complianceSort.
             $sorted = @($complianceItems | Sort-Object -Property @{Expression={[string]$_.dueDate}}, @{Expression={[string]$_.item}})
             $payload = @($sorted | ForEach-Object { ConvertTo-CompliancePayload $_ })
-            Send-Json $ctx 200 @{ items = $payload; owners = @('Frank','Jennifer','Both'); reviewers = @('Frank','Jennifer','N/A') }
+            Send-Json $ctx 200 @{ items = $payload; owners = @('Frank','Jennifer','Both')
+                                  reviewers = @('Frank','Jennifer','N/A'); frequencies = $complianceFrequencies }
         }
         elseif ($path -eq '/api/admin/compliance' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
@@ -1337,6 +1427,8 @@ while ($listener.IsListening) {
             if (([string]$body.dueDate) -notmatch '^\d{4}-\d{2}-\d{2}$') { Send-Json $ctx 400 @{ error = 'Due date must be YYYY-MM-DD' }; continue }
             if (-not ([string]$body.owner).Trim()) { Send-Json $ctx 400 @{ error = 'Owner is required' }; continue }
             $script:cmpCounter++
+            $step = Get-ComplianceFreqStep $body.frequency
+            $seriesId = if ($step) { 'cs-{0:d4}' -f $script:cmpCounter } else { '' }
             $new = [ordered]@{
                 id = 'cx-{0:d4}' -f $script:cmpCounter
                 dueDate = [string]$body.dueDate; item = ([string]$body.item).Trim()
@@ -1345,13 +1437,19 @@ while ($listener.IsListening) {
                 owner = ([string]$body.owner).Trim()
                 reviewer = if (([string]$body.reviewer).Trim()) { ([string]$body.reviewer).Trim() } else { 'N/A' }
                 notes = [string]$body.notes
+                seriesId = $seriesId
+                seriesStart = if ($step) { [string]$body.dueDate } else { '' }
                 ownerCompleted = ''; ownerCompletedBy = ''
                 reviewerCompleted = ''; reviewerCompletedBy = ''
                 createdAt = (Get-Date).ToString('o'); createdBy = $adminEmail; updatedAt = $null
             }
             $null = $complianceItems.Add($new)
-            Write-Audit $adminEmail 'compliance-create' @{ id = $new.id; item = $new.item }
-            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $new) }
+            # A recurring item is created as a whole series at once, so it appears
+            # on every due date immediately rather than growing later.
+            $created = 1
+            if ($step) { $created += Update-ComplianceSeries }
+            Write-Audit $adminEmail 'compliance-create' @{ id = $new.id; item = $new.item; occurrences = $created }
+            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $new); created = $created }
         }
         elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
@@ -1391,7 +1489,23 @@ while ($listener.IsListening) {
                 $it.reviewerCompletedBy = if ($reviewerVal) { $adminEmail } else { '' }
             }
             $it.updatedAt = (Get-Date).ToString('o')
-            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $it) }
+            # Setting a repeating frequency on a one-off item promotes it to a
+            # series, so "make this monthly" works on seeded items too. Dropping
+            # back to One time stops it growing but leaves already-generated dates
+            # alone (deleting dated sign-off records would destroy evidence).
+            $created = 0
+            if ($body.PSObject.Properties['frequency']) {
+                if ((Get-ComplianceFreqStep $it.frequency) -and -not $it.seriesId) {
+                    $script:cmpCounter++
+                    $it.seriesId = 'cs-{0:d4}' -f $script:cmpCounter
+                    $it.seriesStart = $it.dueDate
+                }
+                elseif (-not (Get-ComplianceFreqStep $it.frequency)) {
+                    $it.seriesId = ''; $it.seriesStart = ''
+                }
+            }
+            if ($it.seriesId) { $created = Update-ComplianceSeries }
+            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $it); created = $created }
         }
         elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'DELETE') {
             $adminEmail = Get-AdminEmail $ctx
@@ -1399,9 +1513,19 @@ while ($listener.IsListening) {
             $cid = [Uri]::UnescapeDataString($Matches[1])
             $it = $complianceItems | Where-Object { $_.id -eq $cid } | Select-Object -First 1
             if (-not $it) { Send-Json $ctx 404 @{ error = 'Compliance item not found' }; continue }
-            $complianceItems.Remove($it)
-            Write-Audit $adminEmail 'compliance-delete' @{ id = $cid; item = $it.item }
-            Send-Json $ctx 200 @{ ok = $true }
+            # ?series=1 drops every occurrence of a repeating item — otherwise
+            # clearing a monthly item means deleting twelve rows by hand, and
+            # deleting only the last one would just be regenerated on next load.
+            $wholeSeries = ($ctx.Request.QueryString['series'] -eq '1') -and [bool]$it.seriesId
+            $removed = 1
+            if ($wholeSeries) {
+                $doomed = @($complianceItems | Where-Object { $_.seriesId -eq $it.seriesId })
+                $removed = $doomed.Count
+                foreach ($d in $doomed) { $complianceItems.Remove($d) }
+            }
+            else { $complianceItems.Remove($it) }
+            Write-Audit $adminEmail 'compliance-delete' @{ id = $cid; item = $it.item; series = $wholeSeries; removed = $removed }
+            Send-Json $ctx 200 @{ ok = $true; removed = $removed }
         }
         elseif ($path -eq '/api/admin/learning' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
