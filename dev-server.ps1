@@ -38,6 +38,54 @@ $adminPasswords = @{
 $adminMfa = @{}      # email -> @{ secret; confirmed; backupCodes=@(@{hash;used}); createdAt }
 $adminPending = @{}  # pending token -> email (short-lived between password and 2nd factor)
 $contacts = @{}      # email -> CRM contact record (worker stores these encrypted in KV)
+
+# Compliance items. Loaded from the SAME compliance-seed.js the worker imports,
+# so the mock can't drift from production data — that file's array is strict JSON
+# precisely so this can parse it after stripping the ES module export prefix.
+# The worker keeps these in one encrypted KV blob; here they live in memory.
+$complianceItems = [System.Collections.ArrayList]::new()
+$script:cmpCounter = 0
+function Import-ComplianceSeed {
+    $seedPath = Join-Path $PSScriptRoot 'compliance-seed.js'
+    # Plain ASCII on purpose: this file is UTF-8 with no BOM, PowerShell 5.1
+    # decodes it as Windows-1252, and an em-dash then becomes three chars ending
+    # in U+201D — a curly double-quote, which PS accepts as a real string
+    # delimiter. Inside a double-quoted string that silently ends the string and
+    # corrupts the rest of the file. Safe in comments; never in "..." literals.
+    if (-not (Test-Path $seedPath)) { Write-Host '  (no compliance-seed.js - Compliance tab will be empty)'; return }
+    $raw = Get-Content $seedPath -Raw
+    $start = $raw.IndexOf('[')
+    $end = $raw.LastIndexOf(']')
+    if ($start -lt 0 -or $end -le $start) { Write-Host '  (could not parse compliance-seed.js)'; return }
+    $json = $raw.Substring($start, $end - $start + 1)
+    foreach ($row in (ConvertFrom-Json $json)) {
+        $null = $complianceItems.Add([ordered]@{
+            id = $row.id; dueDate = $row.dueDate; item = $row.item; whatToDo = $row.whatToDo
+            frequency = $row.frequency; source = $row.source; mandated = [bool]$row.mandated
+            owner = $row.owner; reviewer = $row.reviewer; notes = $row.notes
+            ownerCompleted = ''; ownerCompletedBy = ''
+            reviewerCompleted = ''; reviewerCompletedBy = ''
+            createdAt = (Get-Date).ToString('o'); createdBy = 'seed'; updatedAt = $null
+        })
+    }
+}
+
+# Mirror worker.js complianceStatus/complianceReviewerRequired: status is DERIVED
+# from the two completion dates, never stored. Reviewer 'N/A' closes on the owner.
+function Get-ComplianceReviewerRequired($it) { return ([string]$it.reviewer).Trim() -ne 'N/A' }
+function Get-ComplianceStatus($it) {
+    $ownerDone = [bool]([string]$it.ownerCompleted).Trim()
+    $reviewerDone = [bool]([string]$it.reviewerCompleted).Trim()
+    if ($ownerDone -and ((-not (Get-ComplianceReviewerRequired $it)) -or $reviewerDone)) { return 'CLOSED' }
+    return 'OPEN'
+}
+function ConvertTo-CompliancePayload($it) {
+    $o = [ordered]@{}
+    foreach ($k in $it.Keys) { $o[$k] = $it[$k] }
+    $o['status'] = Get-ComplianceStatus $it
+    $o['reviewerRequired'] = Get-ComplianceReviewerRequired $it
+    return $o
+}
 $contactStatuses = @('prospect', 'onboarding', 'active', 'inactive')
 $tasks = @{}   # id -> task record (listings sort by createdAt, so plain hashtable is fine)
 $notes = @{}   # id -> note record
@@ -613,10 +661,13 @@ function Build-Module($name, $body) {
     return $null
 }
 
+Import-ComplianceSeed
+
 $listener = New-Object Net.HttpListener
 $listener.Prefixes.Add("http://localhost:$port/")
 $listener.Start()
 Write-Host "Mock portal server on http://localhost:$port/"
+Write-Host "  compliance items loaded: $($complianceItems.Count)"
 
 while ($listener.IsListening) {
     $ctx = $listener.GetContext()
@@ -1269,6 +1320,88 @@ while ($listener.IsListening) {
                 @{ name = $_.name; email = $_.email; modules = $mods; assignments = $asg }
             })
             Send-Json $ctx 200 @{ clients = $clients }
+        }
+        elseif ($path -eq '/api/admin/compliance' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            # Soonest due first, matching worker.js complianceSort.
+            $sorted = @($complianceItems | Sort-Object -Property @{Expression={[string]$_.dueDate}}, @{Expression={[string]$_.item}})
+            $payload = @($sorted | ForEach-Object { ConvertTo-CompliancePayload $_ })
+            Send-Json $ctx 200 @{ items = $payload; owners = @('Frank','Jennifer','Both'); reviewers = @('Frank','Jennifer','N/A') }
+        }
+        elseif ($path -eq '/api/admin/compliance' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
+            if (-not ([string]$body.item).Trim()) { Send-Json $ctx 400 @{ error = 'Item name is required' }; continue }
+            if (([string]$body.dueDate) -notmatch '^\d{4}-\d{2}-\d{2}$') { Send-Json $ctx 400 @{ error = 'Due date must be YYYY-MM-DD' }; continue }
+            if (-not ([string]$body.owner).Trim()) { Send-Json $ctx 400 @{ error = 'Owner is required' }; continue }
+            $script:cmpCounter++
+            $new = [ordered]@{
+                id = 'cx-{0:d4}' -f $script:cmpCounter
+                dueDate = [string]$body.dueDate; item = ([string]$body.item).Trim()
+                whatToDo = [string]$body.whatToDo; frequency = [string]$body.frequency
+                source = [string]$body.source; mandated = [bool]$body.mandated
+                owner = ([string]$body.owner).Trim()
+                reviewer = if (([string]$body.reviewer).Trim()) { ([string]$body.reviewer).Trim() } else { 'N/A' }
+                notes = [string]$body.notes
+                ownerCompleted = ''; ownerCompletedBy = ''
+                reviewerCompleted = ''; reviewerCompletedBy = ''
+                createdAt = (Get-Date).ToString('o'); createdBy = $adminEmail; updatedAt = $null
+            }
+            $null = $complianceItems.Add($new)
+            Write-Audit $adminEmail 'compliance-create' @{ id = $new.id; item = $new.item }
+            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $new) }
+        }
+        elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $cid = [Uri]::UnescapeDataString($Matches[1])
+            $it = $complianceItems | Where-Object { $_.id -eq $cid } | Select-Object -First 1
+            if (-not $it) { Send-Json $ctx 404 @{ error = 'Compliance item not found' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
+            if ($body.PSObject.Properties['dueDate'] -and ([string]$body.dueDate) -notmatch '^\d{4}-\d{2}-\d{2}$') {
+                Send-Json $ctx 400 @{ error = 'Due date must be YYYY-MM-DD' }; continue
+            }
+            # Validate the two check-off dates BEFORE mutating anything, and
+            # without a nested loop: PowerShell's `continue` takes a label rather
+            # than a level count, so continuing out of a foreach here would fall
+            # through and send a second response on the same request.
+            $ownerGiven = [bool]$body.PSObject.Properties['ownerCompleted']
+            $reviewerGiven = [bool]$body.PSObject.Properties['reviewerCompleted']
+            $ownerVal = if ($ownerGiven) { ([string]$body.ownerCompleted).Trim() } else { $null }
+            $reviewerVal = if ($reviewerGiven) { ([string]$body.reviewerCompleted).Trim() } else { $null }
+            $badDate = ($ownerVal -and $ownerVal -notmatch '^\d{4}-\d{2}-\d{2}$') -or
+                       ($reviewerVal -and $reviewerVal -notmatch '^\d{4}-\d{2}-\d{2}$')
+            if ($badDate) { Send-Json $ctx 400 @{ error = 'Completion dates must be YYYY-MM-DD or empty' }; continue }
+
+            foreach ($f in @('item','whatToDo','dueDate','frequency','source','notes','owner','reviewer')) {
+                if ($body.PSObject.Properties[$f]) { $it[$f] = [string]$body.$f }
+            }
+            if ($body.PSObject.Properties['mandated']) { $it.mandated = [bool]$body.mandated }
+            # Empty clears a check-off (re-opening the item); the stamp of who
+            # ticked it is cleared with it.
+            if ($ownerGiven) {
+                $it.ownerCompleted = $ownerVal
+                $it.ownerCompletedBy = if ($ownerVal) { $adminEmail } else { '' }
+            }
+            if ($reviewerGiven) {
+                $it.reviewerCompleted = $reviewerVal
+                $it.reviewerCompletedBy = if ($reviewerVal) { $adminEmail } else { '' }
+            }
+            $it.updatedAt = (Get-Date).ToString('o')
+            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $it) }
+        }
+        elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'DELETE') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $cid = [Uri]::UnescapeDataString($Matches[1])
+            $it = $complianceItems | Where-Object { $_.id -eq $cid } | Select-Object -First 1
+            if (-not $it) { Send-Json $ctx 404 @{ error = 'Compliance item not found' }; continue }
+            $complianceItems.Remove($it)
+            Write-Audit $adminEmail 'compliance-delete' @{ id = $cid; item = $it.item }
+            Send-Json $ctx 200 @{ ok = $true }
         }
         elseif ($path -eq '/api/admin/learning' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }

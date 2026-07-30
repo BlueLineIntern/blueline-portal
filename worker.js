@@ -51,6 +51,8 @@
  * unauthenticated beyond a per-session write token. See STATUS.md "Known gaps".
  */
 
+import { COMPLIANCE_SEED } from './compliance-seed.js';
+
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const PBKDF2_ITERATIONS = 100000;
 const ONBOARDING_TTL_SECONDS = 60 * 60 * 24 * 30; // secrets + soft-deleted records expire after 30 days
@@ -2513,6 +2515,196 @@ async function handleAdminLearningFields(request, env, cors) {
   }
 }
 
+// ---------- Compliance tracker ----------
+// The firm's compliance calendar, seeded from BlueLine_Compliance_Tracker.xlsx
+// and then owned by the app (the workbook is not written back to).
+//
+// ONE encrypted KV blob rather than a key per item, matching the board_lists
+// pattern. 128 items are always read together and written rarely, so a key each
+// would mean 128 KV gets per page load — enough to blow the per-request
+// subrequest budget on a small plan. Trade-off: a read-modify-write race could
+// drop a concurrent edit. The window is a few ms and every write is a targeted
+// single-item mutation, so with a two-person compliance team this is acceptable;
+// it would not be for a large team hammering the same list.
+const COMPLIANCE_KEY = 'compliance_items';
+const COMPLIANCE_OWNERS = ['Frank', 'Jennifer', 'Both'];
+const COMPLIANCE_REVIEWERS = ['Frank', 'Jennifer', 'N/A'];
+
+// Status is DERIVED, never stored — the workbook's own Instructions tab is
+// explicit that Status is automatic and must not be edited by hand. An item
+// closes when the owner has completed it AND the reviewer has, except where the
+// reviewer is "N/A" (the joint items done by both people together), which close
+// on the owner alone. Deriving it means the status can never contradict the two
+// check-offs the tracker shows.
+function complianceReviewerRequired(item) {
+  return String(item.reviewer || '').trim() !== 'N/A';
+}
+
+function complianceStatus(item) {
+  const ownerDone = !!String(item.ownerCompleted || '').trim();
+  const reviewerDone = !!String(item.reviewerCompleted || '').trim();
+  const closed = ownerDone && (!complianceReviewerRequired(item) || reviewerDone);
+  return closed ? 'CLOSED' : 'OPEN';
+}
+
+// Soonest due first, so the tracker's top row is always the most urgent thing.
+// Ties broken by item name to keep the order stable across reloads.
+function complianceSort(items) {
+  return items.slice().sort((a, b) =>
+    String(a.dueDate).localeCompare(String(b.dueDate)) || String(a.item).localeCompare(String(b.item)));
+}
+
+function withComplianceStatus(item) {
+  return { ...item, status: complianceStatus(item), reviewerRequired: complianceReviewerRequired(item) };
+}
+
+// Reads the blob, seeding it from the spreadsheet export on first ever call.
+// The presence of the blob — not whether it has any items — is what marks it as
+// seeded, so deleting every item does NOT resurrect all 128 on the next load.
+async function getComplianceItems(env) {
+  const rec = await decryptToObject(env, await env.PORTAL_KV.get(COMPLIANCE_KEY));
+  if (rec && Array.isArray(rec.items)) return rec.items;
+  const seeded = COMPLIANCE_SEED.map((row) => ({
+    ...row,
+    ownerCompleted: '',
+    ownerCompletedBy: '',
+    reviewerCompleted: '',
+    reviewerCompletedBy: '',
+    createdAt: new Date().toISOString(),
+    createdBy: 'seed',
+    updatedAt: null,
+  }));
+  await saveComplianceItems(env, seeded);
+  return seeded;
+}
+
+async function saveComplianceItems(env, items) {
+  await env.PORTAL_KV.put(COMPLIANCE_KEY, await encryptJSON(env, { version: 1, items }));
+}
+
+const isIsoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '').trim());
+
+// Shared by create and update. Returns {fields} or {error}; only keys actually
+// present in the body are returned, so an update can be partial.
+function sanitizeComplianceFields(body, { requireCore = false } = {}) {
+  const out = {};
+  const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
+
+  if (body.item !== undefined || requireCore) {
+    const v = str(body.item, 300);
+    if (!v) return { error: 'Item name is required' };
+    out.item = v;
+  }
+  if (body.dueDate !== undefined || requireCore) {
+    const v = str(body.dueDate, 10);
+    if (!isIsoDate(v)) return { error: 'Due date must be YYYY-MM-DD' };
+    out.dueDate = v;
+  }
+  if (body.owner !== undefined || requireCore) {
+    const v = str(body.owner, 60);
+    if (!v) return { error: 'Owner is required' };
+    out.owner = v;
+  }
+  if (body.reviewer !== undefined || requireCore) {
+    // Free text rather than a strict enum: roles get reassigned and new staff
+    // appear, and rejecting an unknown name here would make an item unsaveable.
+    // The UI offers the known names; "N/A" is what drives the close rule.
+    out.reviewer = str(body.reviewer, 60) || 'N/A';
+  }
+  if (body.whatToDo !== undefined) out.whatToDo = str(body.whatToDo, 2000);
+  if (body.frequency !== undefined) out.frequency = str(body.frequency, 100);
+  if (body.source !== undefined) out.source = str(body.source, 100);
+  if (body.notes !== undefined) out.notes = str(body.notes, 2000);
+  if (body.mandated !== undefined) out.mandated = !!body.mandated;
+
+  // The two check-offs. An empty string clears one (re-opening the item);
+  // anything else must be a real date, so a stray value can't silently close it.
+  for (const key of ['ownerCompleted', 'reviewerCompleted']) {
+    if (body[key] === undefined) continue;
+    const v = str(body[key], 10);
+    if (v && !isIsoDate(v)) return { error: `${key} must be YYYY-MM-DD or empty` };
+    out[key] = v;
+  }
+  return { fields: out };
+}
+
+async function handleAdminComplianceList(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const items = await getComplianceItems(env);
+  return json({
+    items: complianceSort(items).map(withComplianceStatus),
+    owners: COMPLIANCE_OWNERS,
+    reviewers: COMPLIANCE_REVIEWERS,
+  }, 200, cors);
+}
+
+async function handleAdminComplianceCreate(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const { fields, error } = sanitizeComplianceFields(body, { requireCore: true });
+  if (error) return json({ error }, 400, cors);
+
+  const items = await getComplianceItems(env);
+  const item = {
+    // Prefixed so an app-added item is never confused with a seeded c### id.
+    id: `cx-${invTs()}-${randomHex(3)}`,
+    whatToDo: '', frequency: '', source: '', notes: '', mandated: false,
+    ...fields,
+    ownerCompleted: fields.ownerCompleted || '',
+    ownerCompletedBy: '',
+    reviewerCompleted: fields.reviewerCompleted || '',
+    reviewerCompletedBy: '',
+    createdAt: new Date().toISOString(),
+    createdBy: adminEmail,
+    updatedAt: null,
+  };
+  items.push(item);
+  await saveComplianceItems(env, items);
+  await logAudit(env, adminEmail, 'compliance-create', { id: item.id, item: item.item });
+  return json({ item: withComplianceStatus(item) }, 200, cors);
+}
+
+async function handleAdminComplianceUpdate(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const { fields, error } = sanitizeComplianceFields(body);
+  if (error) return json({ error }, 400, cors);
+
+  const items = await getComplianceItems(env);
+  const idx = items.findIndex((x) => x.id === id);
+  if (idx < 0) return json({ error: 'Compliance item not found' }, 404, cors);
+
+  const next = { ...items[idx], ...fields, updatedAt: new Date().toISOString() };
+  // Stamp who ticked each box, and clear the stamp when a box is unticked, so
+  // the details view can always answer "who signed this off?".
+  if (fields.ownerCompleted !== undefined) {
+    next.ownerCompletedBy = fields.ownerCompleted ? adminEmail : '';
+  }
+  if (fields.reviewerCompleted !== undefined) {
+    next.reviewerCompletedBy = fields.reviewerCompleted ? adminEmail : '';
+  }
+  items[idx] = next;
+  await saveComplianceItems(env, items);
+  return json({ item: withComplianceStatus(next) }, 200, cors);
+}
+
+async function handleAdminComplianceDelete(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const items = await getComplianceItems(env);
+  const idx = items.findIndex((x) => x.id === id);
+  if (idx < 0) return json({ error: 'Compliance item not found' }, 404, cors);
+  const [removed] = items.splice(idx, 1);
+  await saveComplianceItems(env, items);
+  await logAudit(env, adminEmail, 'compliance-delete', { id, item: removed && removed.item });
+  return json({ ok: true }, 200, cors);
+}
+
 // ---------- Advisor CRM: contacts ----------
 // contact:<email> holds the CRM fields an advisor manages about a person
 // (status, household, advisor, tags, …), stored encrypted. It exists
@@ -3916,6 +4108,21 @@ export default {
         } catch (err) {
           return json({ error: 'Failed to list SharePoint lists: ' + (err && err.message) }, 500, cors);
         }
+      }
+      // Compliance tracker. The collection path is matched before the /:id
+      // routes so the greedy `(.+)` can't swallow it.
+      if (url.pathname === '/api/admin/compliance' && request.method === 'GET') {
+        return await handleAdminComplianceList(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/compliance' && request.method === 'POST') {
+        return await handleAdminComplianceCreate(request, env, cors);
+      }
+      const complianceMatch = url.pathname.match(/^\/api\/admin\/compliance\/(.+)$/);
+      if (complianceMatch && request.method === 'POST') {
+        return await handleAdminComplianceUpdate(request, env, cors, decodeURIComponent(complianceMatch[1]));
+      }
+      if (complianceMatch && request.method === 'DELETE') {
+        return await handleAdminComplianceDelete(request, env, cors, decodeURIComponent(complianceMatch[1]));
       }
       // Learning resources. Exact-match paths, so the /fields diagnostic can't
       // be swallowed by the list route regardless of declaration order.

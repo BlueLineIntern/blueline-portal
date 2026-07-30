@@ -406,6 +406,51 @@ Client portal is untouched and keeps its own look.
     requires a deploy with the secrets set. The reconcile logic itself (create /
     PATCH / delete sets, legacy migration, 404 recreate) is covered by unit tests
     run against the real source with a stubbed Graph layer.
+- **Compliance** (`compliance.html`, sidebar "Compliance") is the firm's compliance
+  calendar, seeded from `BlueLine_Compliance_Tracker.xlsx` and then owned by the
+  app — the workbook is never written back to. Three views off one `?view=` param:
+  **Tracker** (default), **Dashboard**, **Calendar**.
+  - **Seed**: `compliance-seed.js` holds all 128 rows of the workbook's "Calendar
+    Tracker" sheet, generated once and verified against the workbook's own
+    Dashboard tab (Owner: Frank 64 / Jennifer 55 / Both 9; Reviewer: Frank 54 /
+    Jennifer 64 / N/A 10). Single source of truth: `worker.js` imports it and
+    `dev-server.ps1` parses the same file, so the mock can't drift from prod. Its
+    array is deliberately strict JSON so PowerShell can read it after stripping
+    the ES-module export prefix. Do not hand-edit.
+  - **Status is DERIVED, never stored** — the workbook's Instructions tab is
+    explicit that Status is automatic. An item is CLOSED once the owner *and* the
+    reviewer have a completion date; items whose reviewer is `N/A` (the joint ones
+    done by both people together) close on the owner alone. Deriving it means the
+    status can never contradict the two check-offs on screen. Ticking a box writes
+    today's date plus who ticked it; unticking clears both.
+  - **Tracker is deliberately minimal** (asked for): item, owner check-off,
+    reviewer check-off, status, Details. Sorted soonest-due first, so the top row
+    is the most urgent. A due-date pill is the one addition — sorting by a date
+    you can't see is disorienting. Everything else (what to do, frequency, source,
+    mandated, notes, sign-off history) lives behind **Details**. CLOSED items leave
+    the working list entirely for a **Completed** pill, so finished work is
+    reachable without cluttering what's outstanding.
+  - **Dashboard** mirrors the workbook's Dashboard tab (open/closed/total, % and
+    by-owner / by-reviewer breakdowns) and adds an **Overdue** tile — the one
+    number saying whether the firm is behind, which a static sheet couldn't show.
+    Counts are computed client-side from the same item list the tracker renders,
+    so the two can never disagree.
+  - **Calendar** is due dates only, as asked: a fixed six-week month grid (so it
+    doesn't jump between months) with each item on its due date; overdue red,
+    closed struck through. Clicking one opens its Details.
+  - **One encrypted KV blob** (`compliance_items`), matching the `board_lists`
+    pattern rather than a key per item: 128 items are read together every load, so
+    per-item keys would mean 128 KV gets per request — enough to blow the
+    subrequest budget on a small plan. Trade-off: a read-modify-write race could
+    drop a concurrent edit. Every write is a single-item mutation and the window is
+    milliseconds, which is fine for a two-person compliance team and would not be
+    for a large one. Seeding is keyed on the blob's *existence*, not on it having
+    items, so deleting everything does not resurrect all 128.
+  - **PowerShell gotcha, recorded because it cost real time**: `dev-server.ps1` is
+    UTF-8 with no BOM, so PS 5.1 decodes it as Windows-1252 and an em-dash becomes
+    three chars ending in U+201D — a curly double-quote, which PS accepts as a
+    string delimiter. Inside a `"…"` literal that silently ends the string and
+    breaks the whole file. Fine in comments; keep string literals ASCII.
 - **Learning** (`learning.html`, sidebar "Learning") lists staff training videos
   and documents from a SharePoint **document library** ("Learning Resources"),
   via `GET /api/admin/learning`. Staff-facing only — nothing here is exposed to
