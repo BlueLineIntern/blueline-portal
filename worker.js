@@ -2385,6 +2385,92 @@ async function deleteHouseholdFromSharePoint(env, household) {
   }
 }
 
+// Push a compliance item's current state to a dedicated SharePoint list, as a
+// disaster-recovery mirror — same reasoning and same shape as household push:
+// if the Worker or KV is unavailable, the compliance register still needs to
+// be readable directly in SharePoint. Push-only, no pull: compliance items are
+// managed entirely in this app (checkboxes, the Complete button, the drawer),
+// so unlike contacts there is no reason to ever edit one directly in
+// SharePoint, and no conflict to resolve.
+//
+// Requires a SharePoint list already created with these columns (Text unless
+// noted): ComplianceId, WhatToDo (multi-line), DueDate, Frequency, Source,
+// Mandated (Yes/No text), Owner, OwnerCompleted, Reviewer, ReviewerCompleted,
+// Status, CompletedAt, Notes (multi-line). Title (the list's built-in column)
+// holds the item name. Skips silently if SHAREPOINT_COMPLIANCE_LIST_ID isn't
+// configured, so this ships safely before that list exists.
+//
+// Best-effort: any failure is logged and returns the item unchanged, so a
+// SharePoint outage can never block saving a compliance item in the app.
+async function pushComplianceToSharePoint(env, item) {
+  if (!env.SHAREPOINT_COMPLIANCE_LIST_ID) return item;
+  try {
+    const token = await getGraphToken(env);
+    const siteId = env.SHAREPOINT_SITE_ID;
+    const listId = env.SHAREPOINT_COMPLIANCE_LIST_ID;
+    const fields = {
+      Title: item.item,
+      ComplianceId: item.id,
+      WhatToDo: item.whatToDo || '',
+      DueDate: item.dueDate || '',
+      Frequency: item.frequency || '',
+      Source: item.source || '',
+      Mandated: item.mandated ? 'Yes' : 'No',
+      Owner: item.owner || '',
+      OwnerCompleted: item.ownerCompleted || '',
+      Reviewer: item.reviewer || '',
+      ReviewerCompleted: item.reviewerCompleted || '',
+      Status: complianceStatus(item),
+      CompletedAt: item.completedAt || '',
+      Notes: item.notes || '',
+    };
+
+    if (item.sharePointItemId) {
+      const patchUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${item.sharePointItemId}/fields`;
+      const patchRes = await fetch(patchUrl, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields),
+      });
+      if (patchRes.ok) return { ...item, sharePointItemId: item.sharePointItemId };
+      // The row may have been removed independently on the SharePoint side
+      // (manual cleanup, list rebuilt) — recreate rather than fail outright.
+      console.error('Failed to update compliance item in SharePoint, recreating:', patchRes.status, await patchRes.text());
+    }
+
+    const createUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`;
+    const createRes = await fetch(createUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields }),
+    });
+    if (!createRes.ok) {
+      console.error('Failed to create compliance item in SharePoint:', createRes.status, await createRes.text());
+      return item;
+    }
+    const created = await createRes.json().catch(() => ({}));
+    return { ...item, sharePointItemId: created.id || null };
+  } catch (err) {
+    console.error('Error pushing compliance item to SharePoint:', err);
+    return item;
+  }
+}
+
+// Mirrors deleteHouseholdFromSharePoint: an intentional delete in the app
+// should remove the backup row too, or it reads as still-current during a
+// later outage. Best-effort: never throws.
+async function deleteComplianceFromSharePoint(env, item) {
+  if (!env.SHAREPOINT_COMPLIANCE_LIST_ID || !item || !item.sharePointItemId) return;
+  try {
+    const token = await getGraphToken(env);
+    const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists/${env.SHAREPOINT_COMPLIANCE_LIST_ID}/items/${item.sharePointItemId}`;
+    const res = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) console.error('Failed to delete compliance item from SharePoint:', res.status, await res.text());
+  } catch (err) {
+    console.error('Error deleting compliance item from SharePoint:', err);
+  }
+}
+
 // ---------- Learning resources (SharePoint document library) ----------
 // Staff training material — videos and documents — kept in a SharePoint
 // document library ("Learning Resources") and listed read-only in the admin
@@ -2882,7 +2968,17 @@ async function handleAdminComplianceCreate(request, env, cors) {
   };
   items.push(base);
   let created = 1;
-  if (complianceAdvanceSeries(items, base)) created = 2;
+  const occurrence = complianceAdvanceSeries(items, base);
+  if (occurrence) created = 2;
+
+  // Best-effort disaster-recovery mirror — see pushComplianceToSharePoint.
+  // Runs before the KV write so a successful push's item id is captured
+  // immediately. base is a brand-new item, so this is always a create; a
+  // fresh occurrence (rare on create — it needs the new item already CLOSED)
+  // gets its own row too rather than waiting for its first edit.
+  Object.assign(base, await pushComplianceToSharePoint(env, base));
+  if (occurrence) Object.assign(occurrence, await pushComplianceToSharePoint(env, occurrence));
+
   await saveComplianceItems(env, items);
   await logAudit(env, adminEmail, 'compliance-create', { id: base.id, item: base.item, occurrences: created });
   return json({ item: withComplianceStatus(base), created }, 200, cors);
@@ -2953,7 +3049,12 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
   }
   // Completing this occurrence (owner + reviewer sign-off, or owner alone when
   // no reviewer is required) drips the next due date into existence.
-  if (complianceAdvanceSeries(items, next)) created = 1;
+  const occurrence = complianceAdvanceSeries(items, next);
+  if (occurrence) created = 1;
+
+  // Best-effort disaster-recovery mirror — see pushComplianceToSharePoint.
+  Object.assign(next, await pushComplianceToSharePoint(env, next));
+  if (occurrence) Object.assign(occurrence, await pushComplianceToSharePoint(env, occurrence));
 
   await saveComplianceItems(env, items);
   return json({ item: withComplianceStatus(next), created }, 200, cors);
@@ -2973,8 +3074,10 @@ async function handleAdminComplianceDelete(request, env, cors, id) {
   // so nothing regenerates behind you.
   const wholeSeries = new URL(request.url).searchParams.get('series') === '1' && !!target.seriesId;
   let removedCount = 1;
+  let removedItems = [target];
   if (wholeSeries) {
     const sid = target.seriesId;
+    removedItems = items.filter((x) => x.seriesId === sid);
     const kept = items.filter((x) => x.seriesId !== sid);
     removedCount = items.length - kept.length;
     items.length = 0;
@@ -2982,6 +3085,10 @@ async function handleAdminComplianceDelete(request, env, cors, id) {
   } else {
     items.splice(idx, 1);
   }
+  // Best-effort — see deleteComplianceFromSharePoint. Sequential, not
+  // Promise.all: a whole series can be dozens of rows, and this must never
+  // fire that many concurrent Graph calls at once.
+  for (const it of removedItems) await deleteComplianceFromSharePoint(env, it);
   await saveComplianceItems(env, items);
   await logAudit(env, adminEmail, 'compliance-delete', {
     id, item: target.item, series: wholeSeries, removed: removedCount,
