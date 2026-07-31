@@ -16,8 +16,11 @@
   .view-toggle button + button { border-left: 1px solid var(--border-strong); }
   .view-toggle button.active { background: var(--navy); color: #fff; }
 
-  .cmp-searchrow { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-  .cmp-searchrow input { min-width: 280px; }
+  .cmp-searchrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  /* flex:1 lets search take the slack so the period select and export button
+     sit together at the right rather than being spread across the row. */
+  .cmp-searchrow input { min-width: 240px; flex: 1 1 240px; }
+  .cmp-searchrow select { width: auto; flex: 0 0 auto; }
 
   /* One grid shared by the header strip and every row, so the four columns line
      up without a <table> (rows need to be clickable blocks, not cells). */
@@ -36,6 +39,19 @@
   .cmp-row:hover { background: var(--panel-subtle); }
   .cmp-title { font-weight: var(--fw-semibold); color: var(--text); }
   .cmp-row.done .cmp-title { text-decoration: line-through; color: var(--muted); }
+  /* Signed off but not yet completed. Struck through like a finished item, but
+     NOT muted — the Complete button is still the outstanding action, and
+     greying the row would make it read as already dealt with. */
+  .cmp-row.signed .cmp-title { text-decoration: line-through; }
+  /* How often the item recurs. Neutral by design: this is a property of the
+     item, not a status, and colouring it would compete with the due pill
+     sitting immediately to its left. */
+  .freq-chip {
+    display: inline-block; margin-left: var(--sp-2);
+    font-size: var(--fs-2xs); color: var(--muted);
+    border: 1px solid var(--border); border-radius: var(--radius-pill);
+    padding: 0 var(--sp-2); white-space: nowrap;
+  }
   .cmp-sub { margin-top: 5px; display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
   .cmp-cell { display: flex; flex-direction: column; align-items: center; gap: 5px; }
   .cmp-who { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
@@ -197,6 +213,12 @@
       <div class="filter-row" id="tr-filters"></div>
       <div class="cmp-searchrow">
         <input type="search" class="input" id="tr-search" placeholder="Search compliance items…" />
+        <select class="input" id="tr-period" title="Filter by when the item is due">
+          <option value="all" selected>All due dates</option>
+          <option value="month">Due this month</option>
+          <option value="quarter">Due this quarter</option>
+          <option value="year">Due this year</option>
+        </select>
         <button type="button" class="btn btn-ghost btn-small" id="tr-export">↓ Export spreadsheet</button>
       </div>
       <div class="cmp-grid cmp-head" id="tr-head">
@@ -309,6 +331,7 @@
   const REPEATING = new Set(['weekly', 'monthly', 'quarterly', 'semi-annually', 'semi-annual', 'annually', 'annual']);
   let currentView = 'tracker';
   let trackerTab = 'open';        // 'open' | 'completed'
+  let trackerPeriod = 'all';      // 'all' | 'month' | 'quarter' | 'year' (by due date)
   let calCursor = null;           // first-of-month Date driving the calendar grid
   let drawerMode = 'edit';
   let drawerId = null;
@@ -356,18 +379,59 @@
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   };
 
+  // Calendar-period bounds as YYYY-MM-DD strings. dueDate is always in that
+  // format, so string comparison is chronological and avoids `new Date(iso)`,
+  // which reads a date-only string as UTC midnight and lands on the previous
+  // day in Eastern — putting a boundary date (the 1st, or Dec 31) in the wrong
+  // period. Shared by the dashboard tiles and the tracker's period filter so
+  // the two can never disagree about what "this quarter" means.
+  function periodRange(period, now = new Date()) {
+    if (period === 'all') return null;
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const pad = (n) => String(n).padStart(2, '0');
+    const iso = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
+    // Day 0 of the next month is the last day of this one, leap years included.
+    const lastDay = (y, m) => new Date(y, m + 1, 0).getDate();
+    if (period === 'month') return { from: iso(year, month, 1), to: iso(year, month, lastDay(year, month)) };
+    if (period === 'quarter') {
+      const q = Math.floor(month / 3) * 3;
+      return { from: iso(year, q, 1), to: iso(year, q + 2, lastDay(year, q + 2)) };
+    }
+    if (period === 'year') return { from: `${year}-01-01`, to: `${year}-12-31` };
+    return null;
+  }
+
   // ---------- Tracker ----------
   function trackerRows() {
     const q = document.getElementById('tr-search').value.trim().toLowerCase();
+    // Containment in the calendar period, NOT "due by then" — an item that
+    // slipped from an earlier month is not due this month, and saying it was
+    // would make the filter label untrue. Overdue is what surfaces those.
+    const range = periodRange(trackerPeriod);
     return allItems
       .filter((it) => (trackerTab === 'completed' ? isClosed(it) : !isClosed(it)))
+      .filter((it) => {
+        if (!range) return true;
+        const d = String(it.dueDate || '');
+        return d >= range.from && d <= range.to;
+      })
       .filter((it) => !q || [it.item, it.whatToDo, it.owner, it.reviewer, it.frequency, it.source, it.notes]
         .some((v) => String(v || '').toLowerCase().includes(q)));
   }
 
   function renderTrackerFilters() {
-    const open = allItems.filter((it) => !isClosed(it)).length;
-    const done = allItems.filter(isClosed).length;
+    // Counted within the active due-date period, not across everything —
+    // "Open (127)" sitting above a three-row list reads as a bug.
+    const range = periodRange(trackerPeriod);
+    const inPeriod = (it) => {
+      if (!range) return true;
+      const d = String(it.dueDate || '');
+      return d >= range.from && d <= range.to;
+    };
+    const scoped = allItems.filter(inPeriod);
+    const open = scoped.filter((it) => !isClosed(it)).length;
+    const done = scoped.filter(isClosed).length;
     const pills = [
       { id: 'open', label: `Open (${open})` },
       // Closed items leave the working list entirely and live here, so a finished
@@ -381,6 +445,14 @@
     wrap.querySelectorAll('.filter-pill').forEach((b) =>
       b.addEventListener('click', () => { trackerTab = b.dataset.tab; renderTracker(); })
     );
+  }
+
+  // A blank frequency means the item never repeats. Saying "One time" is more
+  // useful than an empty cell, and matches the wording the frequency dropdown
+  // already uses for that case.
+  function freqLabel(frequency) {
+    const f = String(frequency || '').trim();
+    return f || 'One time';
   }
 
   function checkCell(it, role) {
@@ -419,19 +491,33 @@
     const rows = trackerRows();
     document.getElementById('tr-head').classList.toggle('hidden', !rows.length);
     if (!rows.length) {
+      // Name the period when one is filtering, otherwise "nothing matches that
+      // search" is misleading when it was actually the date filter that emptied
+      // the list — and the search box may well be empty.
+      const periodWord = { month: 'this month', quarter: 'this quarter', year: 'this year' }[trackerPeriod];
+      const scope = periodWord ? ` due ${periodWord}` : '';
       const msg = trackerTab === 'completed'
-        ? 'Nothing completed yet. Sign off both boxes on an item, then press Complete.'
-        : (allItems.length ? 'Nothing matches that search.' : 'No compliance items yet — use “Add item”.');
+        ? (periodWord
+            ? `Nothing completed${scope}.`
+            : 'Nothing completed yet. Sign off both boxes on an item, then press Complete.')
+        : (allItems.length ? `Nothing open${scope} matches.` : 'No compliance items yet — use “Add item”.');
       list.innerHTML = `<p class="empty" style="padding:var(--sp-4);">${msg}</p>`;
       return;
     }
     list.innerHTML = rows.map((it) => {
       const d = dueBits(it);
       const closed = isClosed(it);
-      return `<div class="cmp-grid cmp-row ${closed ? 'done' : ''}" data-id="${escapeHtml(it.id)}">
+      // Signed off by everyone but not yet completed: struck through so it
+      // reads as finished work, while staying in the open list because the
+      // Complete button is still the outstanding action.
+      const awaitingComplete = !closed && it.signedOff;
+      return `<div class="cmp-grid cmp-row ${closed ? 'done' : ''} ${awaitingComplete ? 'signed' : ''}" data-id="${escapeHtml(it.id)}">
         <div>
           <div class="cmp-title">${escapeHtml(it.item)}</div>
-          <div class="cmp-sub"><span class="due due-${d.state}">${escapeHtml(d.text)}</span></div>
+          <div class="cmp-sub">
+            <span class="due due-${d.state}">${escapeHtml(d.text)}</span>
+            <span class="freq-chip">${escapeHtml(freqLabel(it.frequency))}</span>
+          </div>
         </div>
         <div class="cmp-source-cell cmp-sub">${it.source ? escapeHtml(it.source) : '<span class="cell-missing">—</span>'}</div>
         <div class="cmp-mandated-cell" style="text-align:center;">
@@ -560,7 +646,9 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `compliance-${trackerTab}-${todayIso()}.csv`;
+    // Period goes in the filename too — two exports taken the same day with
+    // different date filters would otherwise be indistinguishable downloads.
+    a.download = `compliance-${trackerTab}${trackerPeriod === 'all' ? '' : `-${trackerPeriod}`}-${todayIso()}.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -577,27 +665,16 @@
     const openItems = allItems.filter((it) => !isClosed(it));
     const overdue = allItems.filter((it) => dueBits(it).overdue).length;
 
-    // dueDate is always YYYY-MM-DD, so comparing the strings is chronological.
-    // Deliberately not via Date: `new Date(iso)` reads a date-only string as UTC
-    // midnight and lands on the previous day in Eastern, which would put a
-    // boundary date (the 1st, or Dec 31) in the wrong bucket.
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
-    const qFirst = Math.floor(month / 3) * 3;
-    const pad = (n) => String(n).padStart(2, '0');
-    const iso = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
-    // Day 0 of the next month is the last day of this one, leap years included.
-    const lastDay = (y, m) => new Date(y, m + 1, 0).getDate();
-
-    // Each bucket is containment in the calendar period, NOT "due by then", so
-    // the labels stay literally true — an item that slipped from a previous
-    // month is not counted as due this month; Overdue is what surfaces it.
+    // Bounds come from the same periodRange() the tracker's filter uses, so a
+    // tile and the filtered list can never disagree about what "this quarter"
+    // means. Each bucket is containment in the calendar period, NOT "due by
+    // then", so the labels stay literally true — an item that slipped from a
+    // previous month is not counted as due this month; Overdue surfaces it.
     // The periods nest, so quarter >= month and year >= quarter by definition.
     const periods = [
-      { label: 'Open this month', from: iso(year, month, 1), to: iso(year, month, lastDay(year, month)) },
-      { label: 'Open this quarter', from: iso(year, qFirst, 1), to: iso(year, qFirst + 2, lastDay(year, qFirst + 2)) },
-      { label: 'Open this year', from: `${year}-01-01`, to: `${year}-12-31` },
+      { label: 'Open this month', ...periodRange('month') },
+      { label: 'Open this quarter', ...periodRange('quarter') },
+      { label: 'Open this year', ...periodRange('year') },
     ];
     const countIn = (p) => openItems.filter((it) => {
       const d = String(it.dueDate || '');
@@ -926,6 +1003,10 @@
   document.getElementById('cmp-new').addEventListener('click', openDrawerNew);
   document.getElementById('tr-search').addEventListener('input', renderTracker);
   document.getElementById('tr-export').addEventListener('click', exportTracker);
+  document.getElementById('tr-period').addEventListener('change', (e) => {
+    trackerPeriod = e.target.value;
+    renderTracker();
+  });
   document.getElementById('d-save').addEventListener('click', saveDrawer);
   document.getElementById('d-delete').addEventListener('click', () => deleteItem());
   document.getElementById('d-delete-series').addEventListener('click', () => deleteItem({ series: true }));

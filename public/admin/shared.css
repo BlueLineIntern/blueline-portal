@@ -806,7 +806,19 @@ body .topbar, body .footer { display: none; }
   .field input[type="text"], .field input[type="email"], .field input[type="date"],
   .field input[type="datetime-local"], .field input[type="search"],
   .field select, .field textarea,
-  .list-toolbar select { font-size: var(--fs-input); }
+  .list-toolbar select,
+  /* Catch-all so a NEW control doesn't have to be remembered here to avoid the
+     zoom. This has been missed four separate times now by only listing the
+     selectors that existed at the time. Kept alongside the specific rules
+     above: those cover controls whose own styling out-specifies a bare
+     element selector, which this cannot. */
+  select, textarea,
+  input[type="text"], input[type="email"], input[type="search"],
+  input[type="date"], input[type="time"], input[type="datetime-local"],
+  input[type="tel"], input[type="number"], input[type="password"],
+  /* .input is the shared control class and out-specifies the bare element
+     selectors above (0,1,0 vs 0,0,1), so it needs naming explicitly. */
+  .input, select.input, textarea.input { font-size: var(--fs-input); }
 
   /* auto-fit's 168px floor leaves room for only one column on a phone, so the
      five tiles became five full-width rows of chrome above the feed. Two up. */
