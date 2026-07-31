@@ -2527,7 +2527,11 @@ async function handleAdminLearningFields(request, env, cors) {
 // single-item mutation, so with a two-person compliance team this is acceptable;
 // it would not be for a large team hammering the same list.
 const COMPLIANCE_KEY = 'compliance_items';
-const COMPLIANCE_OWNERS = ['Frank', 'Jennifer', 'Both'];
+// "Both" is deliberately gone: an item owned by everyone is owned by no one,
+// and those items closed on the owner alone with no second pair of eyes.
+// Existing 'Both' rows are migrated to Frank owns / Jennifer reviews on read
+// (see getComplianceItems), which also gives them the review step they lacked.
+const COMPLIANCE_OWNERS = ['Frank', 'Jennifer'];
 const COMPLIANCE_REVIEWERS = ['Frank', 'Jennifer', 'N/A'];
 
 // ---------- Recurrence ----------
@@ -2660,21 +2664,38 @@ function complianceAdvanceSeries(items, item) {
   return occurrence;
 }
 
-// Status is DERIVED, never stored — the workbook's own Instructions tab is
-// explicit that Status is automatic and must not be edited by hand. An item
-// closes when the owner has completed it AND the reviewer has, except where the
-// reviewer is "N/A" (the joint items done by both people together), which close
-// on the owner alone. Deriving it means the status can never contradict the two
-// check-offs the tracker shows.
+// An item needs a reviewer unless the reviewer is explicitly "N/A".
 function complianceReviewerRequired(item) {
   return String(item.reviewer || '').trim() !== 'N/A';
 }
 
-function complianceStatus(item) {
+// Every required sign-off is in. This is the precondition for completing, NOT
+// completion itself — closing is now a deliberate act (see completedAt below).
+function complianceSignedOff(item) {
   const ownerDone = !!String(item.ownerCompleted || '').trim();
   const reviewerDone = !!String(item.reviewerCompleted || '').trim();
-  const closed = ownerDone && (!complianceReviewerRequired(item) || reviewerDone);
-  return closed ? 'CLOSED' : 'OPEN';
+  return ownerDone && (!complianceReviewerRequired(item) || reviewerDone);
+}
+
+// Status keys off a stored completedAt rather than being derived purely from
+// the two check-offs. Ticking the last box used to close the item instantly,
+// which meant the sign-off gesture and the "this is finished" decision were
+// the same click and neither could happen without the other. Now the boxes
+// record who has signed off, and completing is its own explicit step.
+function complianceStatus(item) {
+  return String(item.completedAt || '').trim() ? 'CLOSED' : 'OPEN';
+}
+
+// Whose turn it is, or '' when finished/blocked. Drives the calendar's colour
+// coding: work flows owner -> reviewer -> done, so the person named here is
+// whoever the item is actually waiting on right now.
+function complianceAwaiting(item) {
+  if (complianceStatus(item) === 'CLOSED') return '';
+  if (!String(item.ownerCompleted || '').trim()) return String(item.owner || '').trim();
+  if (complianceReviewerRequired(item) && !String(item.reviewerCompleted || '').trim()) {
+    return String(item.reviewer || '').trim();
+  }
+  return ''; // signed off by everyone, waiting only on the Complete button
 }
 
 // Soonest due first, so the tracker's top row is always the most urgent thing.
@@ -2685,21 +2706,76 @@ function complianceSort(items) {
 }
 
 function withComplianceStatus(item) {
-  return { ...item, status: complianceStatus(item), reviewerRequired: complianceReviewerRequired(item) };
+  return {
+    ...item,
+    status: complianceStatus(item),
+    reviewerRequired: complianceReviewerRequired(item),
+    // Both surfaced so the client doesn't re-derive them and drift from here.
+    signedOff: complianceSignedOff(item),
+    awaiting: complianceAwaiting(item),
+  };
 }
 
 // Reads the blob, seeding it from the spreadsheet export on first ever call.
 // The presence of the blob — not whether it has any items — is what marks it as
 // seeded, so deleting every item does NOT resurrect all 128 on the next load.
+// Brings stored rows up to the current shape. Two migrations, both idempotent
+// and both applied on read then written back once if anything changed:
+//
+//  - owner 'Both' -> Frank owns, Jennifer reviews. Those rows also had
+//    reviewer 'N/A', so this is what gives them a review step at all.
+//  - Items that were closed under the old derive-from-checkboxes rule have no
+//    completedAt, so they'd silently reopen now that status keys off it.
+//    Backfill from the later of the two sign-off dates.
+function migrateComplianceItems(items) {
+  let changed = false;
+  const migrated = items.map((it) => {
+    const next = { ...it };
+    if (String(next.owner || '').trim() === 'Both') {
+      next.owner = 'Frank';
+      if (String(next.reviewer || '').trim() === 'N/A' || !String(next.reviewer || '').trim()) {
+        next.reviewer = 'Jennifer';
+      }
+      changed = true;
+    }
+    if (next.completedAt === undefined) {
+      const ownerDone = String(next.ownerCompleted || '').trim();
+      const reviewerDone = String(next.reviewerCompleted || '').trim();
+      const reviewerNeeded = String(next.reviewer || '').trim() !== 'N/A';
+      // Mirrors the OLD close rule exactly, so anything that read as CLOSED
+      // before this change still reads as CLOSED after it.
+      const wasClosed = ownerDone && (!reviewerNeeded || reviewerDone);
+      next.completedAt = wasClosed
+        ? (reviewerDone && reviewerDone > ownerDone ? reviewerDone : ownerDone)
+        : '';
+      next.completedBy = wasClosed ? String(next.reviewerCompletedBy || next.ownerCompletedBy || '') : '';
+      changed = true;
+    }
+    return next;
+  });
+  return { items: migrated, changed };
+}
+
 async function getComplianceItems(env) {
   const rec = await decryptToObject(env, await env.PORTAL_KV.get(COMPLIANCE_KEY));
-  if (rec && Array.isArray(rec.items)) return rec.items;
+  if (rec && Array.isArray(rec.items)) {
+    const { items, changed } = migrateComplianceItems(rec.items);
+    if (changed) await saveComplianceItems(env, items);
+    return items;
+  }
   const seeded = COMPLIANCE_SEED.map((row) => ({
     ...row,
+    // The seed still carries 'Both' rows; run them through the same migration
+    // rather than maintaining two copies of that rule.
+    ...(String(row.owner || '').trim() === 'Both'
+      ? { owner: 'Frank', reviewer: String(row.reviewer || '').trim() && row.reviewer !== 'N/A' ? row.reviewer : 'Jennifer' }
+      : {}),
     ownerCompleted: '',
     ownerCompletedBy: '',
     reviewerCompleted: '',
     reviewerCompletedBy: '',
+    completedAt: '',
+    completedBy: '',
     createdAt: new Date().toISOString(),
     createdBy: 'seed',
     updatedAt: null,
@@ -2832,6 +2908,30 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
   }
   if (fields.reviewerCompleted !== undefined) {
     next.reviewerCompletedBy = fields.reviewerCompleted ? adminEmail : '';
+  }
+
+  // Explicit complete / reopen. Refused unless every required sign-off is in,
+  // so the button can't be used to skip the review step it exists to protect.
+  if (body.complete !== undefined) {
+    if (body.complete) {
+      if (!complianceSignedOff(next)) {
+        return json({ error: 'Both the owner and reviewer must sign off before this can be completed' }, 400, cors);
+      }
+      // Date-only, matching ownerCompleted/reviewerCompleted — these are
+      // sign-off dates in a compliance record, not timestamps.
+      next.completedAt = new Date().toISOString().slice(0, 10);
+      next.completedBy = adminEmail;
+    } else {
+      next.completedAt = '';
+      next.completedBy = '';
+    }
+  }
+  // Un-ticking a sign-off on an already-completed item would leave it CLOSED
+  // with an incomplete audit trail, so completion is withdrawn with it.
+  if ((fields.ownerCompleted !== undefined || fields.reviewerCompleted !== undefined)
+      && next.completedAt && !complianceSignedOff(next)) {
+    next.completedAt = '';
+    next.completedBy = '';
   }
   items[idx] = next;
 

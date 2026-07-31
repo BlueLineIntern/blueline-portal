@@ -22,7 +22,7 @@
   /* One grid shared by the header strip and every row, so the four columns line
      up without a <table> (rows need to be clickable blocks, not cells). */
   .cmp-grid {
-    display: grid; grid-template-columns: 1fr 92px 92px 96px 88px;
+    display: grid; grid-template-columns: 1fr 130px 90px 92px 92px 104px 88px;
     align-items: center; gap: var(--sp-3);
   }
   .cmp-head {
@@ -89,8 +89,34 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .cal-item:hover { filter: brightness(0.95); }
-  .cal-item.over { background: var(--due-over-bg); color: var(--due-over-fg); }
-  .cal-item.done { background: var(--gray-bg); color: var(--muted); text-decoration: line-through; }
+  /* Colour says WHO the item is waiting on, so the calendar can be read as a
+     workload split at a glance: work flows owner -> reviewer -> done.
+     Jennifer blue, Frank orange, complete green. Overdue keeps its red, which
+     outranks whose turn it is — being late is the more urgent fact. Anyone
+     outside the two named staff falls back to neutral rather than borrowing a
+     colour that would read as the wrong person. */
+  .cal-item.who-jennifer { background: var(--sky-bg); color: var(--sky-dark); }
+  .cal-item.who-frank { background: var(--amber-bg); color: var(--amber); }
+  .cal-item.who-other { background: var(--gray-bg); color: var(--text); }
+  /* Signed off by everyone but not yet completed — the Complete button is all
+     that's left, so it reads as neither anyone's turn nor finished. */
+  .cal-item.ready { background: var(--violet-bg); color: var(--violet); }
+  .cal-item.done { background: var(--green-bg); color: var(--green); text-decoration: line-through; }
+  /* Overdue is an EDGE MARKER, not a fill: whose-turn is the primary signal
+     here, and repainting late items red would hide it exactly when the
+     calendar is busiest — most open items are overdue, so a red fill made the
+     whole month one colour and the owner/reviewer split invisible. */
+  .cal-item.over { box-shadow: inset 3px 0 0 var(--red); font-weight: var(--fw-semibold); }
+  .cal-legend { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-bottom: var(--sp-3); font-size: var(--fs-xs); color: var(--muted); }
+  .cal-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  /* Swatches carry .cal-sw, NOT .cal-item — sharing the class would make every
+     `.cal-item` selector (and any future one) silently match the legend too. */
+  .cal-sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .cal-sw.who-jennifer { background: var(--sky-bg); }
+  .cal-sw.who-frank { background: var(--amber-bg); }
+  .cal-sw.ready { background: var(--violet-bg); }
+  .cal-sw.done { background: var(--green-bg); }
+  .cal-sw.over { background: var(--gray-bg); box-shadow: inset 3px 0 0 var(--red); }
 
   /* Every control in the drawer is pinned to its column width. shared.css sets no
      width on .field controls, and a grid/flex child defaults to min-width:auto —
@@ -112,9 +138,16 @@
   .cmp-signoff { font-size: var(--fs-sm); color: var(--muted); }
   .cmp-hint { font-size: var(--fs-xs); color: var(--muted); margin: 2px 0 0; }
 
+  @media (max-width: 1000px) {
+    /* Source and Mandated are reference detail, not the working columns —
+       they drop first and stay available in the drawer. */
+    .cmp-grid { grid-template-columns: 1fr 92px 92px 104px 88px; }
+    .cmp-head span:nth-child(2), .cmp-head span:nth-child(3),
+    .cmp-row .cmp-source-cell, .cmp-row .cmp-mandated-cell { display: none; }
+  }
   @media (max-width: 820px) {
-    .cmp-grid { grid-template-columns: 1fr 70px 70px 80px; }
-    .cmp-head span:nth-child(5), .cmp-row .cmp-details-cell { display: none; }
+    .cmp-grid { grid-template-columns: 1fr 70px 70px 92px; }
+    .cmp-head span:nth-child(7), .cmp-row .cmp-details-cell { display: none; }
     .cmp-row { cursor: pointer; }
   }
 </style>
@@ -126,9 +159,9 @@
     <div class="page-head">
       <div>
         <h1>Compliance</h1>
-        <p class="sub">The firm's compliance calendar. Every item needs the owner to complete it and the
-        reviewer to check it — an item closes only when both are ticked, so nothing is signed off by one
-        person alone. Items with no reviewer close on the owner alone.</p>
+        <p class="sub">The firm's compliance calendar. Work flows owner → reviewer → complete: both tick
+        their box to sign off, then the item is closed with the Complete button. Nothing is signed off by
+        one person alone. Items with no reviewer need only the owner's sign-off before completing.</p>
       </div>
       <div class="page-actions">
         <button type="button" class="btn btn-primary btn-small" id="cmp-new">+ Add item</button>
@@ -164,9 +197,10 @@
       <div class="filter-row" id="tr-filters"></div>
       <div class="cmp-searchrow">
         <input type="search" class="input" id="tr-search" placeholder="Search compliance items…" />
+        <button type="button" class="btn btn-ghost btn-small" id="tr-export">↓ Export spreadsheet</button>
       </div>
       <div class="cmp-grid cmp-head" id="tr-head">
-        <span>Item</span><span>Owner</span><span>Reviewer</span><span>Status</span><span></span>
+        <span>Item</span><span>Source</span><span>Mandated</span><span>Owner</span><span>Reviewer</span><span>Status</span><span></span>
       </div>
       <div class="panel" style="padding:0;"><div id="tr-list"></div></div>
     </div>
@@ -179,6 +213,9 @@
         <button type="button" class="btn btn-ghost btn-small" id="cal-next">Next →</button>
         <button type="button" class="btn btn-ghost btn-small" id="cal-today">Today</button>
       </div>
+      <!-- Colour alone can't say whose turn it is to someone who hasn't been
+           told the scheme, and this one is not guessable. -->
+      <div class="cal-legend" id="cal-legend"></div>
       <div class="cal-grid" id="cal-grid"></div>
     </div>
   </main>
@@ -261,7 +298,10 @@
   initShell('compliance');
 
   let allItems = [];
-  let owners = ['Frank', 'Jennifer', 'Both'];
+  // No 'Both': an item owned by everyone is owned by no one, and those rows
+  // closed on the owner alone with no second pair of eyes. Existing ones are
+  // migrated server-side to Frank owns / Jennifer reviews.
+  let owners = ['Frank', 'Jennifer'];
   let reviewers = ['Frank', 'Jennifer', 'N/A'];
   let frequencies = ['One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually'];
   // Which frequencies actually repeat. Mirrors worker.js COMPLIANCE_FREQ_STEPS —
@@ -357,6 +397,22 @@
     </div>`;
   }
 
+  // Completing is now its own act rather than a side effect of ticking the
+  // last box, so the status cell carries the button that performs it. It only
+  // appears once every required sign-off is in — before that there is nothing
+  // legitimate to press, and an always-visible disabled button reads as broken.
+  function statusCell(it) {
+    if (isClosed(it)) {
+      return `<button type="button" class="badge badge-green cmp-reopen btn-link" data-id="${escapeHtml(it.id)}"
+                title="Completed ${escapeHtml(fmtDay(it.completedAt))} — click to reopen">COMPLETE</button>`;
+    }
+    if (it.signedOff) {
+      return `<button type="button" class="btn btn-primary btn-small cmp-complete" data-id="${escapeHtml(it.id)}"
+                title="Both sign-offs are in — close this item">Complete</button>`;
+    }
+    return '<span class="badge badge-amber">OPEN</span>';
+  }
+
   function renderTracker() {
     renderTrackerFilters();
     const list = document.getElementById('tr-list');
@@ -364,7 +420,7 @@
     document.getElementById('tr-head').classList.toggle('hidden', !rows.length);
     if (!rows.length) {
       const msg = trackerTab === 'completed'
-        ? 'Nothing completed yet. Ticking both boxes on an item moves it here.'
+        ? 'Nothing completed yet. Sign off both boxes on an item, then press Complete.'
         : (allItems.length ? 'Nothing matches that search.' : 'No compliance items yet — use “Add item”.');
       list.innerHTML = `<p class="empty" style="padding:var(--sp-4);">${msg}</p>`;
       return;
@@ -377,11 +433,18 @@
           <div class="cmp-title">${escapeHtml(it.item)}</div>
           <div class="cmp-sub"><span class="due due-${d.state}">${escapeHtml(d.text)}</span></div>
         </div>
+        <div class="cmp-source-cell cmp-sub">${it.source ? escapeHtml(it.source) : '<span class="cell-missing">—</span>'}</div>
+        <div class="cmp-mandated-cell" style="text-align:center;">
+          <!-- Yes/No rather than "Required"/"Best practice": "Best practice" is
+               itself a real Source value on 43 seeded items, so labelling the
+               not-mandated case that way put the same words in two adjacent
+               columns and read as a duplicated cell. -->
+          <span class="badge ${it.mandated ? 'badge-navy' : 'badge-gray'}"
+                title="${it.mandated ? 'Required by a governing document' : 'Not mandated — best practice'}">${it.mandated ? 'Yes' : 'No'}</span>
+        </div>
         ${checkCell(it, 'owner')}
         ${checkCell(it, 'reviewer')}
-        <div style="text-align:center;">
-          <span class="badge ${closed ? 'badge-green' : 'badge-amber'}">${closed ? 'CLOSED' : 'OPEN'}</span>
-        </div>
+        <div style="text-align:center;">${statusCell(it)}</div>
         <div class="cmp-details-cell" style="text-align:center;">
           <button type="button" class="btn btn-ghost btn-small cmp-details" data-id="${escapeHtml(it.id)}">Details</button>
         </div>
@@ -394,10 +457,45 @@
     list.querySelectorAll('.cmp-details').forEach((b) =>
       b.addEventListener('click', (e) => { e.stopPropagation(); openDrawerEdit(b.dataset.id); })
     );
+    list.querySelectorAll('.cmp-complete').forEach((b) =>
+      b.addEventListener('click', (e) => { e.stopPropagation(); setComplete(b, true); })
+    );
+    list.querySelectorAll('.cmp-reopen').forEach((b) =>
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm('Reopen this completed item?')) setComplete(b, false);
+      })
+    );
     // Narrow screens hide the Details button, so the row itself opens the drawer.
     list.querySelectorAll('.cmp-row').forEach((r) =>
       r.addEventListener('click', () => { if (window.innerWidth <= 820) openDrawerEdit(r.dataset.id); })
     );
+  }
+
+  // Closing (or reopening) an item. Ticking both boxes no longer does this on
+  // its own — it only records the sign-offs — so this is the single place an
+  // item actually moves to Completed. The server re-checks the sign-offs and
+  // refuses if they aren't in, so this can't be used to skip the review step.
+  async function setComplete(btn, complete) {
+    const it = allItems.find((x) => x.id === btn.dataset.id);
+    if (!it || btn.classList.contains('pending')) return;
+    btn.classList.add('pending');
+    try {
+      const res = await api(`/api/admin/compliance/${encodeURIComponent(it.id)}`, {
+        method: 'POST', body: JSON.stringify({ complete }),
+      });
+      // Completing can materialize the next occurrence of a recurring item
+      // server-side, which only a full reload picks up.
+      if (res.created) {
+        await loadData();
+      } else {
+        Object.assign(it, res.item);
+        render();
+      }
+    } catch (err) {
+      btn.classList.remove('pending');
+      setStatus(`Could not save: ${err.message}`);
+    }
   }
 
   // Ticking writes today's date into that person's completion field (matching the
@@ -428,6 +526,46 @@
       btn.classList.remove('pending');
       setStatus(`Could not save: ${err.message}`);
     }
+  }
+
+  // ---------- Export ----------
+  // Exports what the tracker is currently showing (tab + search), not the whole
+  // register, so a filtered view can be handed over as-is.
+  function exportTracker() {
+    const rows = trackerRows();
+    const cols = ['Item', 'What to do', 'Due date', 'Frequency', 'Source', 'Mandated', 'Owner',
+      'Owner signed off', 'Reviewer', 'Reviewer signed off', 'Status', 'Completed', 'Waiting on', 'Notes'];
+    // RFC 4180 quoting — "What to do" and Notes are free text and routinely
+    // contain commas and line breaks, which would otherwise break the columns.
+    const cell = (v) => {
+      const s = v == null ? '' : String(v);
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [cols.join(',')];
+    rows.forEach((it) => {
+      lines.push([
+        it.item, it.whatToDo, it.dueDate, it.frequency, it.source,
+        it.mandated ? 'Required' : 'Best practice',
+        it.owner, it.ownerCompleted,
+        it.reviewerRequired ? it.reviewer : 'N/A',
+        it.reviewerRequired ? it.reviewerCompleted : '',
+        isClosed(it) ? 'COMPLETE' : 'OPEN',
+        it.completedAt || '',
+        isClosed(it) ? '' : (it.awaiting || (it.signedOff ? 'ready to complete' : '')),
+        it.notes,
+      ].map(cell).join(','));
+    });
+    // BOM + CRLF so Excel opens it as UTF-8 instead of mangling characters.
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `compliance-${trackerTab}-${todayIso()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus(`Exported ${rows.length} item${rows.length === 1 ? '' : 's'}.`);
   }
 
   // ---------- Dashboard ----------
@@ -490,7 +628,49 @@
   }
 
   // ---------- Calendar ----------
+  // Colour = whose turn. `awaiting` comes from the server (complianceAwaiting)
+  // so the client can't drift from the rule that decides it. Overdue outranks
+  // whose turn it is: being late is the more urgent fact.
+  function whoClass(name) {
+    const n = String(name || '').trim().toLowerCase();
+    if (n === 'jennifer' || n === 'jenn') return 'who-jennifer';
+    if (n === 'frank') return 'who-frank';
+    return 'who-other';
+  }
+
+  // Whose-turn sets the fill; overdue adds a red edge on top of it rather than
+  // replacing it, so a late item still says who it's waiting on.
+  function calItemClass(it) {
+    if (isClosed(it)) return 'done';
+    const who = it.awaiting ? whoClass(it.awaiting) : 'ready';
+    return dueBits(it).overdue ? `${who} over` : who;
+  }
+
+  function calItemTitle(it) {
+    if (isClosed(it)) return `${it.item} — completed`;
+    if (it.awaiting) return `${it.item} — waiting on ${it.awaiting}`;
+    if (it.signedOff) return `${it.item} — signed off, ready to complete`;
+    return it.item;
+  }
+
+  function renderCalendarLegend() {
+    const wrap = document.getElementById('cal-legend');
+    if (!wrap) return;
+    // Reads left-to-right in the order work actually flows.
+    const keys = [
+      ['who-frank', 'Frank'],
+      ['who-jennifer', 'Jennifer'],
+      ['ready', 'Ready to complete'],
+      ['done', 'Complete'],
+      ['over', 'Overdue (red edge)'],
+    ];
+    wrap.innerHTML = keys
+      .map(([cls, label]) => `<span><i class="cal-sw ${cls}"></i>${escapeHtml(label)}</span>`)
+      .join('');
+  }
+
   function renderCalendar() {
+    renderCalendarLegend();
     if (!calCursor) {
       const n = new Date();
       calCursor = new Date(n.getFullYear(), n.getMonth(), 1);
@@ -525,9 +705,9 @@
       html += `<div class="cal-day ${day.getMonth() === month ? '' : 'other'} ${key === todayKey ? 'today' : ''}">
         <span class="cal-num">${day.getDate()}</span>
         <div class="cal-items">${items.map((it) => {
-          const cls = isClosed(it) ? 'done' : (dueBits(it).overdue ? 'over' : '');
+          const cls = calItemClass(it);
           return `<button type="button" class="cal-item ${cls}" data-id="${escapeHtml(it.id)}"
-                    title="${escapeHtml(it.item)}">${escapeHtml(it.item)}</button>`;
+                    title="${escapeHtml(calItemTitle(it))}">${escapeHtml(it.item)}</button>`;
         }).join('')}</div>
       </div>`;
     }
@@ -588,12 +768,21 @@
       const line = (label, date, by) => `<dt>${label}</dt><dd>${
         date ? `${escapeHtml(fmtDay(date))}${by ? ` <span class="cmp-signoff">by ${escapeHtml(by)}</span>` : ''}`
              : '<span class="cmp-signoff">Not yet</span>'}</dd>`;
+      // "Waiting on" is the whole point of the calendar's colour coding, so the
+      // drawer states it in words rather than leaving it to be inferred.
+      const waiting = isClosed(it)
+        ? ''
+        : `<dt>Waiting on</dt><dd>${it.awaiting
+            ? escapeHtml(it.awaiting)
+            : '<span class="cmp-signoff">Signed off — ready to complete</span>'}</dd>`;
       document.getElementById('d-signoff').innerHTML =
-        `<dt>Status</dt><dd><span class="badge ${isClosed(it) ? 'badge-green' : 'badge-amber'}">${isClosed(it) ? 'CLOSED' : 'OPEN'}</span></dd>`
-        + line('Owner completed', it.ownerCompleted, it.ownerCompletedBy)
+        `<dt>Status</dt><dd><span class="badge ${isClosed(it) ? 'badge-green' : 'badge-amber'}">${isClosed(it) ? 'COMPLETE' : 'OPEN'}</span></dd>`
+        + waiting
+        + line('Owner signed off', it.ownerCompleted, it.ownerCompletedBy)
         + (it.reviewerRequired
-            ? line('Reviewer checked', it.reviewerCompleted, it.reviewerCompletedBy)
-            : '<dt>Reviewer checked</dt><dd><span class="cmp-signoff">No reviewer — closes on the owner alone</span></dd>');
+            ? line('Reviewer signed off', it.reviewerCompleted, it.reviewerCompletedBy)
+            : '<dt>Reviewer signed off</dt><dd><span class="cmp-signoff">No reviewer — owner sign-off is enough</span></dd>')
+        + line('Completed', it.completedAt, it.completedBy);
     }
     document.getElementById('d-delete').classList.toggle('hidden', drawerMode === 'new');
     // Only offered for a repeating item — otherwise clearing a monthly item means
@@ -736,6 +925,7 @@
   document.getElementById('cmp-refresh').addEventListener('click', () => loadData({ showStatus: true }));
   document.getElementById('cmp-new').addEventListener('click', openDrawerNew);
   document.getElementById('tr-search').addEventListener('input', renderTracker);
+  document.getElementById('tr-export').addEventListener('click', exportTracker);
   document.getElementById('d-save').addEventListener('click', saveDrawer);
   document.getElementById('d-delete').addEventListener('click', () => deleteItem());
   document.getElementById('d-delete-series').addEventListener('click', () => deleteItem({ series: true }));

@@ -62,9 +62,14 @@ function Import-ComplianceSeed {
         $null = $complianceItems.Add([ordered]@{
             id = $row.id; dueDate = $row.dueDate; item = $row.item; whatToDo = $row.whatToDo
             frequency = $row.frequency; source = $row.source; mandated = [bool]$row.mandated
-            owner = $row.owner; reviewer = $row.reviewer; notes = $row.notes
+            # Mirror worker.js: the seed still carries 'Both' rows, which become
+            # Frank owns / Jennifer reviews — that also gives them a review step.
+            owner = $(if (([string]$row.owner).Trim() -eq 'Both') { 'Frank' } else { $row.owner })
+            reviewer = $(if (([string]$row.owner).Trim() -eq 'Both' -and (([string]$row.reviewer).Trim() -eq 'N/A' -or -not ([string]$row.reviewer).Trim())) { 'Jennifer' } else { $row.reviewer })
+            notes = $row.notes
             ownerCompleted = ''; ownerCompletedBy = ''
             reviewerCompleted = ''; reviewerCompletedBy = ''
+            completedAt = ''; completedBy = ''
             createdAt = (Get-Date).ToString('o'); createdBy = 'seed'; updatedAt = $null
         })
     }
@@ -116,6 +121,7 @@ function New-ComplianceOccurrence($template, $dueDate, $seriesId) {
     $o['dueDate'] = $dueDate
     $o['ownerCompleted'] = ''; $o['ownerCompletedBy'] = ''
     $o['reviewerCompleted'] = ''; $o['reviewerCompletedBy'] = ''
+    $o['completedAt'] = ''; $o['completedBy'] = ''
     $o['createdAt'] = (Get-Date).ToString('o')
     $o['updatedAt'] = $null
     return $o
@@ -157,20 +163,35 @@ function Update-ComplianceSeries($it) {
     return 1
 }
 
-# Mirror worker.js complianceStatus/complianceReviewerRequired: status is DERIVED
-# from the two completion dates, never stored. Reviewer 'N/A' closes on the owner.
+# Mirror worker.js complianceStatus/complianceSignedOff/complianceAwaiting.
+# Status now keys off a STORED completedAt, not the two check-offs: signing off
+# records who approved, completing is a separate explicit act.
 function Get-ComplianceReviewerRequired($it) { return ([string]$it.reviewer).Trim() -ne 'N/A' }
-function Get-ComplianceStatus($it) {
+function Get-ComplianceSignedOff($it) {
     $ownerDone = [bool]([string]$it.ownerCompleted).Trim()
     $reviewerDone = [bool]([string]$it.reviewerCompleted).Trim()
-    if ($ownerDone -and ((-not (Get-ComplianceReviewerRequired $it)) -or $reviewerDone)) { return 'CLOSED' }
+    return ($ownerDone -and ((-not (Get-ComplianceReviewerRequired $it)) -or $reviewerDone))
+}
+function Get-ComplianceStatus($it) {
+    if ([string]$it.completedAt -and ([string]$it.completedAt).Trim()) { return 'CLOSED' }
     return 'OPEN'
+}
+# Whose turn: owner -> reviewer -> nobody. Drives the calendar colour coding.
+function Get-ComplianceAwaiting($it) {
+    if ((Get-ComplianceStatus $it) -eq 'CLOSED') { return '' }
+    if (-not ([string]$it.ownerCompleted).Trim()) { return ([string]$it.owner).Trim() }
+    if ((Get-ComplianceReviewerRequired $it) -and -not ([string]$it.reviewerCompleted).Trim()) {
+        return ([string]$it.reviewer).Trim()
+    }
+    return ''
 }
 function ConvertTo-CompliancePayload($it) {
     $o = [ordered]@{}
     foreach ($k in $it.Keys) { $o[$k] = $it[$k] }
     $o['status'] = Get-ComplianceStatus $it
     $o['reviewerRequired'] = Get-ComplianceReviewerRequired $it
+    $o['signedOff'] = Get-ComplianceSignedOff $it
+    $o['awaiting'] = Get-ComplianceAwaiting $it
     return $o
 }
 $contactStatuses = @('prospect', 'onboarding', 'active', 'inactive')
@@ -1413,7 +1434,7 @@ while ($listener.IsListening) {
             # Soonest due first, matching worker.js complianceSort.
             $sorted = @($complianceItems | Sort-Object -Property @{Expression={[string]$_.dueDate}}, @{Expression={[string]$_.item}})
             $payload = @($sorted | ForEach-Object { ConvertTo-CompliancePayload $_ })
-            Send-Json $ctx 200 @{ items = $payload; owners = @('Frank','Jennifer','Both')
+            Send-Json $ctx 200 @{ items = $payload; owners = @('Frank','Jennifer')
                                   reviewers = @('Frank','Jennifer','N/A'); frequencies = $complianceFrequencies }
         }
         elseif ($path -eq '/api/admin/compliance' -and $method -eq 'POST') {
@@ -1439,6 +1460,7 @@ while ($listener.IsListening) {
                 seriesStart = if ($step) { [string]$body.dueDate } else { '' }
                 ownerCompleted = ''; ownerCompletedBy = ''
                 reviewerCompleted = ''; reviewerCompletedBy = ''
+                completedAt = ''; completedBy = ''
                 createdAt = (Get-Date).ToString('o'); createdBy = $adminEmail; updatedAt = $null
             }
             $null = $complianceItems.Add($new)
@@ -1485,6 +1507,24 @@ while ($listener.IsListening) {
             if ($reviewerGiven) {
                 $it.reviewerCompleted = $reviewerVal
                 $it.reviewerCompletedBy = if ($reviewerVal) { $adminEmail } else { '' }
+            }
+            # Explicit complete / reopen, gated on every required sign-off being
+            # in so the button can't skip the review step it exists to protect.
+            if ($body.PSObject.Properties['complete']) {
+                if ([bool]$body.complete) {
+                    if (-not (Get-ComplianceSignedOff $it)) {
+                        Send-Json $ctx 400 @{ error = 'Both the owner and reviewer must sign off before this can be completed' }; continue
+                    }
+                    $it.completedAt = (Get-Date).ToString('yyyy-MM-dd')
+                    $it.completedBy = $adminEmail
+                } else {
+                    $it.completedAt = ''; $it.completedBy = ''
+                }
+            }
+            # Withdrawing a sign-off on a completed item withdraws completion too,
+            # rather than leaving it CLOSED with an incomplete audit trail.
+            if (($ownerGiven -or $reviewerGiven) -and [string]$it.completedAt -and -not (Get-ComplianceSignedOff $it)) {
+                $it.completedAt = ''; $it.completedBy = ''
             }
             $it.updatedAt = (Get-Date).ToString('o')
             # Setting a repeating frequency on a one-off item promotes it to a
