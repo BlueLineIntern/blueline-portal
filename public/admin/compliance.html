@@ -16,6 +16,46 @@
   .view-toggle button + button { border-left: 1px solid var(--border-strong); }
   .view-toggle button.active { background: var(--navy); color: #fff; }
 
+  /* Early-warning bar. Amber by default (a deadline approaching), red once
+     something is actually late — the escalation has to be visible without
+     reading the text, or the bar becomes wallpaper. Deliberately not
+     dismissible: a compliance warning you can click away defeats its purpose. */
+  .cmp-alert {
+    border: 1px solid var(--amber); border-left-width: 4px;
+    background: var(--amber-bg); border-radius: var(--radius);
+    padding: var(--sp-3) var(--sp-4); margin-bottom: var(--sp-4);
+  }
+  .cmp-alert.has-late { border-color: var(--red); background: var(--red-bg); }
+  .cmp-alert-head { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-2); }
+  .cmp-alert-head strong { color: var(--amber); font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: var(--ls-caps); }
+  .cmp-alert.has-late .cmp-alert-head strong { color: var(--red); }
+  .cmp-alert-head span { font-size: var(--fs-sm); color: var(--text); }
+  .cmp-alert-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); }
+  .ca-label {
+    font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: var(--ls-caps);
+    color: var(--muted); font-weight: var(--fw-semibold); min-width: 72px;
+  }
+  .cmp-alert-item {
+    display: inline-flex; align-items: baseline; gap: var(--sp-2); cursor: pointer;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius-pill); padding: 3px var(--sp-3);
+    font-family: var(--font-sans); font-size: var(--fs-xs); text-align: left;
+    max-width: 100%;
+  }
+  .cmp-alert-item:hover { border-color: var(--amber); }
+  .cmp-alert-item.late:hover { border-color: var(--red); }
+  /* Needs an explicit max-width, not just overflow:hidden — without a width to
+     truncate against, ellipsis never triggers and long item names wrapped the
+     bar to nearly 200px tall on a narrow screen. Full name is in the title. */
+  .ca-name {
+    font-weight: var(--fw-semibold); color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 34ch;
+  }
+  .ca-when { color: var(--amber); white-space: nowrap; font-weight: var(--fw-semibold); }
+  .cmp-alert-item.late .ca-when { color: var(--red); }
+  .ca-more { font-size: var(--fs-xs); color: var(--muted); }
+
   .cmp-searchrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
   /* flex:1 lets search take the slack so the period select and export button
      sit together at the right rather than being spread across the row. */
@@ -184,6 +224,10 @@
         <button type="button" class="btn btn-ghost btn-small" id="cmp-refresh">↻ Refresh</button>
       </div>
     </div>
+
+    <!-- Early warning. Sits above the view toggle so it's on every view: the
+         point is that nothing creeps up regardless of which tab you're on. -->
+    <div id="cmp-alert"></div>
 
     <div class="view-toggle" id="view-toggle">
       <button type="button" data-view="dashboard">▤ Dashboard</button>
@@ -400,6 +444,80 @@
     }
     if (period === 'year') return { from: `${year}-01-01`, to: `${year}-12-31` };
     return null;
+  }
+
+  // ---------- Early warning ----------
+  // A filing like 13F has to be worked before its due date, not on it, so the
+  // page leads with anything landing inside this window. Two weeks per the
+  // firm's own preference; one constant so it's a single edit to change.
+  const LEAD_DAYS = 14;
+  // Capped separately per group. A single shared cap sorted by urgency buried
+  // the upcoming filing under a dozen overdue rows — which defeats the point,
+  // since the approaching deadline is the thing this bar exists to surface and
+  // overdue is already loud everywhere else (red pill per row, dashboard tile).
+  const ALERT_SHOWN_SOON = 4;
+  const ALERT_SHOWN_LATE = 3;
+
+  // Anything still outstanding and either already late or due within the
+  // window. Overdue is included deliberately: "creeping up on me" and "already
+  // crept up" are the same failure, and a bar that shouted about one upcoming
+  // filing while silently sitting on late ones would be misleading by omission.
+  function alertItems() {
+    return allItems
+      .filter((it) => !isClosed(it))
+      .map((it) => ({ it, d: dueBits(it) }))
+      .filter(({ d }) => d.days !== null && d.days <= LEAD_DAYS)
+      .sort((a, b) => a.d.days - b.d.days); // most urgent (most overdue) first
+  }
+
+  function alertPhrase(days) {
+    if (days < 0) return `overdue by ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'}`;
+    if (days === 0) return 'due today';
+    if (days === 1) return 'due tomorrow';
+    return `due in ${days} days`;
+  }
+
+  function renderAlert() {
+    const wrap = document.getElementById('cmp-alert');
+    const rows = alertItems();
+    if (!rows.length) { wrap.innerHTML = ''; return; }
+    const lateRows = rows.filter((r) => r.d.days < 0);
+    const soonRows = rows.filter((r) => r.d.days >= 0);
+    // Headline states the split, so the count is never ambiguous about which
+    // kind of problem it is.
+    const parts = [];
+    if (soonRows.length) parts.push(`${soonRows.length} due within ${LEAD_DAYS} days`);
+    if (lateRows.length) parts.push(`${lateRows.length} overdue`);
+
+    const chip = ({ it, d }) => `
+      <button type="button" class="cmp-alert-item ${d.days < 0 ? 'late' : ''}" data-id="${escapeHtml(it.id)}"
+              title="${escapeHtml(it.item)}">
+        <span class="ca-name">${escapeHtml(it.item)}</span>
+        <span class="ca-when">${escapeHtml(alertPhrase(d.days))}</span>
+      </button>`;
+    const group = (label, list, cap) => {
+      if (!list.length) return '';
+      const shown = list.slice(0, cap);
+      const rest = list.length - shown.length;
+      return `<div class="cmp-alert-row">
+        <span class="ca-label">${escapeHtml(label)}</span>
+        ${shown.map(chip).join('')}
+        ${rest ? `<span class="ca-more">and ${rest} more</span>` : ''}
+      </div>`;
+    };
+
+    wrap.innerHTML = `<div class="cmp-alert ${lateRows.length ? 'has-late' : ''}">
+      <div class="cmp-alert-head">
+        <strong>Needs attention</strong>
+        <span>${escapeHtml(parts.join(' · '))}</span>
+      </div>
+      ${group('Coming up', soonRows, ALERT_SHOWN_SOON)}
+      ${group('Overdue', lateRows, ALERT_SHOWN_LATE)}
+    </div>`;
+    // Straight into the item's drawer — the point of the bar is to act on it.
+    wrap.querySelectorAll('.cmp-alert-item').forEach((b) =>
+      b.addEventListener('click', () => openDrawerEdit(b.dataset.id))
+    );
   }
 
   // ---------- Tracker ----------
@@ -970,6 +1088,7 @@
   }
 
   function render() {
+    renderAlert(); // above the toggle, so it shows on every view
     document.getElementById('dash-view').classList.toggle('hidden', currentView !== 'dashboard');
     document.getElementById('track-view').classList.toggle('hidden', currentView !== 'tracker');
     document.getElementById('cal-view').classList.toggle('hidden', currentView !== 'calendar');
