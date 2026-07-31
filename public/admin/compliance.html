@@ -86,11 +86,19 @@
   /* How often the item recurs. Neutral by design: this is a property of the
      item, not a status, and colouring it would compete with the due pill
      sitting immediately to its left. */
-  .freq-chip {
-    display: inline-block; margin-left: var(--sp-2);
+  .freq-chip, .source-chip {
+    display: inline-block;
     font-size: var(--fs-2xs); color: var(--muted);
     border: 1px solid var(--border); border-radius: var(--radius-pill);
     padding: 0 var(--sp-2); white-space: nowrap;
+  }
+  .freq-chip { margin-left: var(--sp-2); }
+  /* Source sits in its own narrow column, so it truncates rather than widening
+     it — "Cybersecurity Policy" is longer than the column at most widths. The
+     full value stays available via the title attribute. */
+  .source-chip {
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    vertical-align: bottom;
   }
   .cmp-sub { margin-top: 5px; display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
   .cmp-cell { display: flex; flex-direction: column; align-items: center; gap: 5px; }
@@ -194,7 +202,11 @@
   .cmp-signoff { font-size: var(--fs-sm); color: var(--muted); }
   .cmp-hint { font-size: var(--fs-xs); color: var(--muted); margin: 2px 0 0; }
 
-  @media (max-width: 1000px) {
+  /* 1150, not 1000: the seven fixed columns plus their gaps need ~670px, and
+     with the sidebar and panel padding the grid was still overflowing the page
+     between 1000 and ~1120. Drop the optional columns before that happens
+     rather than leaving a band where the table pushes the page sideways. */
+  @media (max-width: 1150px) {
     /* Source and Mandated are reference detail, not the working columns —
        they drop first and stay available in the drawer. */
     .cmp-grid { grid-template-columns: 1fr 92px 92px 104px 88px; }
@@ -637,7 +649,9 @@
             <span class="freq-chip">${escapeHtml(freqLabel(it.frequency))}</span>
           </div>
         </div>
-        <div class="cmp-source-cell cmp-sub">${it.source ? escapeHtml(it.source) : '<span class="cell-missing">—</span>'}</div>
+        <div class="cmp-source-cell">${it.source
+          ? `<span class="source-chip" title="${escapeHtml(it.source)}">${escapeHtml(it.source)}</span>`
+          : '<span class="cell-missing">—</span>'}</div>
         <div class="cmp-mandated-cell" style="text-align:center;">
           <!-- Yes/No rather than "Required"/"Best practice": "Best practice" is
                itself a real Source value on 43 seeded items, so labelling the
