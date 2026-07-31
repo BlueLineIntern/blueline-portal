@@ -65,7 +65,7 @@
   /* One grid shared by the header strip and every row, so the four columns line
      up without a <table> (rows need to be clickable blocks, not cells). */
   .cmp-grid {
-    display: grid; grid-template-columns: 1fr 130px 90px 92px 92px 104px 88px;
+    display: grid; grid-template-columns: 1fr 90px 92px 92px 104px 88px;
     align-items: center; gap: var(--sp-3);
   }
   .cmp-head {
@@ -92,14 +92,8 @@
     border: 1px solid var(--border); border-radius: var(--radius-pill);
     padding: 0 var(--sp-2); white-space: nowrap;
   }
-  .freq-chip { margin-left: var(--sp-2); }
-  /* Source sits in its own narrow column, so it truncates rather than widening
-     it — "Cybersecurity Policy" is longer than the column at most widths. The
-     full value stays available via the title attribute. */
-  .source-chip {
-    max-width: 100%; overflow: hidden; text-overflow: ellipsis;
-    vertical-align: bottom;
-  }
+  /* No margin on either: .cmp-sub is a flex row with its own gap, so an extra
+     margin here would space the first chip differently from the second. */
   .cmp-sub { margin-top: 5px; display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
   .cmp-cell { display: flex; flex-direction: column; align-items: center; gap: 5px; }
   .cmp-who { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
@@ -206,16 +200,18 @@
      with the sidebar and panel padding the grid was still overflowing the page
      between 1000 and ~1120. Drop the optional columns before that happens
      rather than leaving a band where the table pushes the page sideways. */
-  @media (max-width: 1150px) {
-    /* Source and Mandated are reference detail, not the working columns —
-       they drop first and stay available in the drawer. */
+  /* Source no longer has a column of its own — it rides in the item's sub-line
+     with the frequency chip — so only Mandated drops here. 1000px is enough
+     again now that the grid is one 130px column narrower. */
+  @media (max-width: 1000px) {
+    /* Mandated is reference detail, not a working column: it drops first and
+       stays available in the drawer. */
     .cmp-grid { grid-template-columns: 1fr 92px 92px 104px 88px; }
-    .cmp-head span:nth-child(2), .cmp-head span:nth-child(3),
-    .cmp-row .cmp-source-cell, .cmp-row .cmp-mandated-cell { display: none; }
+    .cmp-head span:nth-child(2), .cmp-row .cmp-mandated-cell { display: none; }
   }
   @media (max-width: 820px) {
     .cmp-grid { grid-template-columns: 1fr 70px 70px 92px; }
-    .cmp-head span:nth-child(7), .cmp-row .cmp-details-cell { display: none; }
+    .cmp-head span:nth-child(6), .cmp-row .cmp-details-cell { display: none; }
     .cmp-row { cursor: pointer; }
   }
 </style>
@@ -278,7 +274,7 @@
         <button type="button" class="btn btn-ghost btn-small" id="tr-export">↓ Export spreadsheet</button>
       </div>
       <div class="cmp-grid cmp-head" id="tr-head">
-        <span>Item</span><span>Source</span><span>Mandated</span><span>Owner</span><span>Reviewer</span><span>Status</span><span></span>
+        <span>Item</span><span>Mandated</span><span>Owner</span><span>Reviewer</span><span>Status</span><span></span>
       </div>
       <div class="panel" style="padding:0;"><div id="tr-list"></div></div>
     </div>
@@ -647,11 +643,9 @@
           <div class="cmp-sub">
             <span class="due due-${d.state}">${escapeHtml(d.text)}</span>
             <span class="freq-chip">${escapeHtml(freqLabel(it.frequency))}</span>
+            ${it.source ? `<span class="source-chip">${escapeHtml(it.source)}</span>` : ''}
           </div>
         </div>
-        <div class="cmp-source-cell">${it.source
-          ? `<span class="source-chip" title="${escapeHtml(it.source)}">${escapeHtml(it.source)}</span>`
-          : '<span class="cell-missing">—</span>'}</div>
         <div class="cmp-mandated-cell" style="text-align:center;">
           <!-- Yes/No rather than "Required"/"Best practice": "Best practice" is
                itself a real Source value on 43 seeded items, so labelling the
