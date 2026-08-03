@@ -727,14 +727,10 @@
       const res = await api(`/api/admin/compliance/${encodeURIComponent(it.id)}`, {
         method: 'POST', body: JSON.stringify({ complete }),
       });
-      // Completing can materialize the next occurrence of a recurring item
-      // server-side, which only a full reload picks up.
-      if (res.created) {
-        await loadData();
-      } else {
-        Object.assign(it, res.item);
-        render();
-      }
+      // Patch in place: completing no longer creates any other row, so there is
+      // nothing a full reload would pick up that this doesn't.
+      Object.assign(it, res.item);
+      render();
     } catch (err) {
       btn.classList.remove('pending');
       setStatus(`Could not save: ${err.message}`);
@@ -756,15 +752,9 @@
       const res = await api(`/api/admin/compliance/${encodeURIComponent(it.id)}`, {
         method: 'POST', body: JSON.stringify({ [field]: next }),
       });
-      // Completing the last sign-off can materialize a successor row server-side
-      // (see complianceAdvanceSeries in worker.js); a full reload is the only way
-      // the client picks that new row up, so don't just patch this one in place.
-      if (res.created) {
-        await loadData();
-      } else {
-        Object.assign(it, res.item);
-        render();
-      }
+      // Patch in place: a sign-off no longer generates any successor row.
+      Object.assign(it, res.item);
+      render();
     } catch (err) {
       btn.classList.remove('pending');
       setStatus(`Could not save: ${err.message}`);
@@ -1109,18 +1099,17 @@
 
   // Says plainly what picking a repeating frequency will do, so it's never a
   // surprise that only one row appears now and the next one waits for sign-off.
+  // Frequency is a label, not a schedule: nothing generates the next due date
+  // any more. Said plainly, because the previous wording promised an
+  // occurrence would appear on sign-off and that no longer happens — leaving
+  // it would mean the app tells you a future date is coming that never does.
   function updateFreqHint(it) {
     const freq = document.getElementById('d-frequency').value;
     const repeats = REPEATING.has(String(freq).trim().toLowerCase());
     const el = document.getElementById('d-freq-hint');
-    if (!repeats) {
-      el.textContent = drawerMode === 'new' ? 'Happens once — no repeats.' : '';
-      return;
-    }
-    const word = String(freq).toLowerCase();
-    el.textContent = it && it.seriesId
-      ? `Repeats ${word}. The next due date appears once this one is signed off.`
-      : `Repeats ${word} — saving creates just this one due date. The next one appears once it's signed off.`;
+    el.textContent = repeats
+      ? `Recorded as ${String(freq).toLowerCase()} — a label only. Add the next due date yourself, or import a spreadsheet with it.`
+      : (drawerMode === 'new' ? 'Happens once.' : '');
   }
 
   function populateDrawer(it) {
@@ -1225,20 +1214,16 @@
     const btn = document.getElementById('d-save');
     btn.disabled = true;
     try {
-      let created = 0;
       if (drawerMode === 'new') {
-        created = (await api('/api/admin/compliance', { method: 'POST', body: JSON.stringify(payload) })).created || 1;
+        await api('/api/admin/compliance', { method: 'POST', body: JSON.stringify(payload) });
       } else {
-        created = (await api(`/api/admin/compliance/${encodeURIComponent(drawerId)}`, {
+        await api(`/api/admin/compliance/${encodeURIComponent(drawerId)}`, {
           method: 'POST', body: JSON.stringify(payload),
-        })).created || 0;
+        });
       }
       closeDrawer();
-      // Reload rather than patching in place: saving a signed-off occurrence can
-      // generate its successor server-side, and the client has no way to know
-      // what that row is.
       await loadData();
-      setStatus(created > 1 ? `Saved — ${created} due dates created.` : '');
+      setStatus('');
     } catch (err) {
       setStatus(`Could not save: ${err.message}`);
     } finally {

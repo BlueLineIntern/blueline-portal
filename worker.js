@@ -2628,130 +2628,11 @@ const COMPLIANCE_REVIEWERS = ['Frank', 'Jennifer', 'N/A'];
 // needs. The alternative (one row plus a rule, expanded at render time) would
 // have nowhere to record who signed off which quarter.
 //
-// Occurrences are generated ONE AT A TIME, on completion, not in a batch up
-// front. Saving a new monthly item creates exactly one row (the entered due
-// date); the next month's row only appears once that one is fully signed off,
-// and so on indefinitely. This avoids a save instantly flooding the tracker
-// with up to a year of not-yet-due rows.
+// Frequency is DESCRIPTIVE ONLY. It records how often an obligation comes
+// round, but the app never materialises the next occurrence itself — future
+// due dates arrive by importing a spreadsheet that lists them. The date-
+// stepping machinery this used to need is gone with it.
 const COMPLIANCE_FREQUENCIES = ['One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually'];
-
-// Steps keyed by lowercased label. "One time" is deliberately absent — no step
-// means no repeat. The legacy spreadsheet wording is mapped too so an item
-// seeded as "Annual" still recurs correctly if someone turns it into a series.
-const COMPLIANCE_FREQ_STEPS = {
-  'weekly': { days: 7 },
-  'monthly': { months: 1 },
-  'quarterly': { months: 3 },
-  'semi-annually': { months: 6 },
-  'semi-annual': { months: 6 },
-  'annually': { months: 12 },
-  'annual': { months: 12 },
-};
-
-// Hard cap on how many steps ahead we'll search for the next occurrence date,
-// so a corrupted seriesStart can never turn into a runaway loop.
-const COMPLIANCE_MAX_OCCURRENCES = 200;
-
-function complianceFreqStep(frequency) {
-  return COMPLIANCE_FREQ_STEPS[String(frequency || '').trim().toLowerCase()] || null;
-}
-
-// Date-only maths done in UTC on purpose: these values have no time of day, and
-// doing it in local time would let a DST boundary shift a due date by a day.
-function isoAddDays(iso, days) {
-  const [y, m, d] = String(iso).split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() + days);
-  return dt.toISOString().slice(0, 10);
-}
-
-function isoAddMonths(iso, months) {
-  const [y, m, d] = String(iso).split('-').map(Number);
-  const target = m - 1 + months;
-  const ty = y + Math.floor(target / 12);
-  const tm = ((target % 12) + 12) % 12;
-  // Clamp to the month's length: Jan 31 + 1 month is Feb 28, not Mar 3.
-  const lastDay = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
-  return `${ty}-${String(tm + 1).padStart(2, '0')}-${String(Math.min(d, lastDay)).padStart(2, '0')}`;
-}
-
-// The next due date after `afterIso` in a series starting at `startIso`. Each
-// occurrence is stepped from the START rather than from the previous one, so a
-// monthly series beginning Jan 31 runs Jan 31, Feb 28, Mar 31 — stepping from
-// the previous date would clamp once and then stay stuck on the 28th.
-function complianceNextOccurrenceDate(startIso, frequency, afterIso) {
-  const step = complianceFreqStep(frequency);
-  if (!step) return null;
-  for (let i = 1; i <= COMPLIANCE_MAX_OCCURRENCES; i++) {
-    const iso = step.days ? isoAddDays(startIso, step.days * i) : isoAddMonths(startIso, step.months * i);
-    if (iso > afterIso) return iso;
-  }
-  return null;
-}
-
-function complianceOccurrenceFrom(template, dueDate, seriesId) {
-  return {
-    ...template,
-    id: `cx-${invTs()}-${randomHex(3)}`,
-    seriesId,
-    dueDate,
-    // A new occurrence is always outstanding — sign-offs belong to one date only.
-    ownerCompleted: '', ownerCompletedBy: '',
-    reviewerCompleted: '', reviewerCompletedBy: '',
-    completedAt: '', completedBy: '',
-    // Its own SharePoint mirror row, not a second reference to the template's.
-    sharePointItemId: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: null,
-  };
-}
-
-// Advance a series by exactly one occurrence, and only once the given item —
-// the latest occurrence in its series — is fully signed off (CLOSED). This is
-// what makes recurrence a drip feed instead of a batch: a monthly item never
-// has more than one open (not-yet-due) row waiting at a time.
-//
-// Only fires off the latest existing date in the series — never backfills —
-// and skips a date already taken by an item of the same name, which is what
-// stops a seeded quarterly item (already materialised four times by the
-// workbook) from gaining a duplicate if someone turns it into a series.
-// The other occurrences of the same recurring obligation. A series created in
-// the app is grouped by seriesId, but the 128 seeded rows have no seriesId at
-// all — there, same item NAME is the only thing tying occurrences together
-// (which is exactly how the workbook expressed a quarterly item: four rows
-// sharing a name).
-function complianceSeriesPeers(items, item) {
-  if (item.seriesId) return items.filter((x) => x.seriesId === item.seriesId);
-  const name = String(item.item).trim().toLowerCase();
-  return items.filter((x) => String(x.item).trim().toLowerCase() === name);
-}
-
-function complianceAdvanceSeries(items, item) {
-  if (!complianceFreqStep(item.frequency)) return null;
-  if (complianceStatus(item) !== 'CLOSED') return null;
-  // Only the newest occurrence advances, so closing an old backlog row doesn't
-  // graft an extra date onto a series that has already moved past it.
-  if (complianceSeriesPeers(items, item).some((x) => String(x.dueDate) > String(item.dueDate))) return null;
-
-  const start = item.seriesStart || item.dueDate;
-  const nextDate = complianceNextOccurrenceDate(start, item.frequency, item.dueDate);
-  if (!nextDate) return null;
-  const key = `${String(item.item).trim().toLowerCase()}|${nextDate}`;
-  if (items.some((x) => `${String(x.item).trim().toLowerCase()}|${x.dueDate}` === key)) return null;
-
-  // Promote to a real series on the way out. A seeded row carries a frequency
-  // ("Annual") but no seriesId, and without this it could never recur — signing
-  // it off would close it and nothing would replace it. Done only once we know
-  // an occurrence is actually being created, so a no-op advance leaves the
-  // record untouched.
-  if (!item.seriesId) {
-    item.seriesId = `cs-${invTs()}-${randomHex(3)}`;
-    item.seriesStart = item.seriesStart || item.dueDate;
-  }
-  const occurrence = complianceOccurrenceFrom(item, nextDate, item.seriesId);
-  items.push(occurrence);
-  return occurrence;
-}
 
 // An item needs a reviewer unless the reviewer is explicitly "N/A".
 function complianceReviewerRequired(item) {
@@ -2909,9 +2790,8 @@ function sanitizeComplianceFields(body, { requireCore = false } = {}) {
   if (body.whatToDo !== undefined) out.whatToDo = str(body.whatToDo, 2000);
   // Free text rather than a strict enum: the 128 seeded rows carry wordings the
   // dropdown doesn't offer ("Ongoing / target Dec 2026", "One-time: Jan 1,
-  // 2028"), and rejecting those would make those items unsaveable. Whether it
-  // repeats is decided by complianceFreqStep, which simply finds no step for
-  // anything it doesn't recognise.
+  // 2028"), and rejecting those would make those items unsaveable. Nothing
+  // parses it — it's a label shown on the row.
   if (body.frequency !== undefined) out.frequency = str(body.frequency, 100);
   if (body.source !== undefined) out.source = str(body.source, 100);
   if (body.notes !== undefined) out.notes = str(body.notes, 2000);
@@ -2949,18 +2829,14 @@ async function handleAdminComplianceCreate(request, env, cors) {
   if (error) return json({ error }, 400, cors);
 
   const items = await getComplianceItems(env);
-  const step = complianceFreqStep(fields.frequency);
-  // Only the one row the user actually entered is created here, even for a
-  // recurring frequency. seriesId/seriesStart mark it as the head of a series;
-  // the next occurrence is generated later, once this one is signed off (see
-  // complianceAdvanceSeries).
-  const seriesId = step ? `cs-${invTs()}-${randomHex(3)}` : '';
+  // Exactly one row is created, whatever the frequency. Frequency is now purely
+  // descriptive — it says how often the obligation recurs, but the app no
+  // longer materialises the next occurrence on its own. Future dates come from
+  // importing a spreadsheet that lists them.
   const base = {
     id: `cx-${invTs()}-${randomHex(3)}`,
     whatToDo: '', frequency: '', source: '', notes: '', mandated: false,
     ...fields,
-    seriesId,
-    seriesStart: step ? fields.dueDate : '',
     ownerCompleted: fields.ownerCompleted || '',
     ownerCompletedBy: '',
     reviewerCompleted: fields.reviewerCompleted || '',
@@ -2970,21 +2846,15 @@ async function handleAdminComplianceCreate(request, env, cors) {
     updatedAt: null,
   };
   items.push(base);
-  let created = 1;
-  const occurrence = complianceAdvanceSeries(items, base);
-  if (occurrence) created = 2;
 
   // Best-effort disaster-recovery mirror — see pushComplianceToSharePoint.
   // Runs before the KV write so a successful push's item id is captured
-  // immediately. base is a brand-new item, so this is always a create; a
-  // fresh occurrence (rare on create — it needs the new item already CLOSED)
-  // gets its own row too rather than waiting for its first edit.
+  // immediately rather than being left null until the next edit.
   Object.assign(base, await pushComplianceToSharePoint(env, base));
-  if (occurrence) Object.assign(occurrence, await pushComplianceToSharePoint(env, occurrence));
 
   await saveComplianceItems(env, items);
-  await logAudit(env, adminEmail, 'compliance-create', { id: base.id, item: base.item, occurrences: created });
-  return json({ item: withComplianceStatus(base), created }, 200, cors);
+  await logAudit(env, adminEmail, 'compliance-create', { id: base.id, item: base.item });
+  return json({ item: withComplianceStatus(base), created: 1 }, 200, cors);
 }
 
 async function handleAdminComplianceUpdate(request, env, cors, id) {
@@ -3034,33 +2904,14 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
   }
   items[idx] = next;
 
-  // Setting a recurring frequency on a one-off item promotes it to a series, so
-  // "make this monthly" works on the 128 seeded items too and not only on newly
-  // added ones. No occurrence is generated yet — that only happens once this
-  // item is signed off (see complianceAdvanceSeries below).
-  let created = 0;
-  if (fields.frequency !== undefined && complianceFreqStep(next.frequency) && !next.seriesId) {
-    next.seriesId = `cs-${invTs()}-${randomHex(3)}`;
-    next.seriesStart = next.dueDate;
-  }
-  // Dropping back to "One time" stops the series growing without touching the
-  // occurrences already generated (deleting dated sign-off records silently
-  // would destroy evidence).
-  if (fields.frequency !== undefined && !complianceFreqStep(next.frequency)) {
-    next.seriesId = '';
-    next.seriesStart = '';
-  }
-  // Completing this occurrence (owner + reviewer sign-off, or owner alone when
-  // no reviewer is required) drips the next due date into existence.
-  const occurrence = complianceAdvanceSeries(items, next);
-  if (occurrence) created = 1;
-
   // Best-effort disaster-recovery mirror — see pushComplianceToSharePoint.
   Object.assign(next, await pushComplianceToSharePoint(env, next));
-  if (occurrence) Object.assign(occurrence, await pushComplianceToSharePoint(env, occurrence));
 
   await saveComplianceItems(env, items);
-  return json({ item: withComplianceStatus(next), created }, 200, cors);
+  // created is always 0 now: completing an item no longer materialises its next
+  // occurrence. Kept in the response so the client's `if (res.created)` reload
+  // path stays valid rather than reading undefined.
+  return json({ item: withComplianceStatus(next), created: 0 }, 200, cors);
 }
 
 async function handleAdminComplianceDelete(request, env, cors, id) {
@@ -3131,15 +2982,10 @@ async function handleAdminComplianceImport(request, env, cors) {
   const dropped = items.filter((it) => complianceStatus(it) !== 'CLOSED');
 
   const created = prepared.map((fields) => {
-    const step = complianceFreqStep(fields.frequency);
     return {
       id: `cx-${invTs()}-${randomHex(3)}`,
       whatToDo: '', frequency: '', source: '', notes: '', mandated: false,
       ...fields,
-      // A recurring import row heads a new series; its next occurrence is
-      // dripped in when this one is signed off, same as a hand-added item.
-      seriesId: step ? `cs-${invTs()}-${randomHex(3)}` : '',
-      seriesStart: step ? fields.dueDate : '',
       // Imported rows always start outstanding. Sign-off columns in the file
       // are ignored on purpose: this is a reset, and honouring a "signed off"
       // column would let a spreadsheet edit close an item with no real

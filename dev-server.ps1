@@ -75,93 +75,10 @@ function Import-ComplianceSeed {
     }
 }
 
-# Mirror worker.js recurrence. Recurring items are MATERIALISED: one record per
-# due date, each with its own sign-offs, as the source workbook already did.
-# Occurrences drip one at a time, on completion, rather than in a batch up
-# front — see Update-ComplianceSeries below.
+# Frequency is DESCRIPTIVE ONLY, mirroring worker.js: it records how often an
+# obligation comes round, but nothing generates the next occurrence — future
+# due dates arrive by importing a spreadsheet listing them.
 $complianceFrequencies = @('One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually')
-$complianceMaxOccurrences = 200
-
-# Returns @{days=N} / @{months=N}, or $null when the frequency does not repeat.
-function Get-ComplianceFreqStep($frequency) {
-    switch (([string]$frequency).Trim().ToLower()) {
-        'weekly'         { return @{ days = 7 } }
-        'monthly'        { return @{ months = 1 } }
-        'quarterly'      { return @{ months = 3 } }
-        'semi-annually'  { return @{ months = 6 } }
-        'semi-annual'    { return @{ months = 6 } }
-        'annually'       { return @{ months = 12 } }
-        'annual'         { return @{ months = 12 } }
-        default          { return $null }
-    }
-}
-
-# The next due date after $afterIso in a series starting at $startIso. Stepped
-# from the SERIES START, not from the previous date, so a monthly series
-# beginning Jan 31 runs Jan 31, Feb 28, Mar 31 rather than sticking on the 28th
-# once it clamps. .NET AddMonths already clamps to the month length.
-function Get-ComplianceNextOccurrenceDate($startIso, $frequency, $afterIso) {
-    $step = Get-ComplianceFreqStep $frequency
-    if (-not $step) { return $null }
-    $start = [datetime]::ParseExact($startIso, 'yyyy-MM-dd', $null)
-    $after = [datetime]::ParseExact($afterIso, 'yyyy-MM-dd', $null)
-    for ($i = 1; $i -le $complianceMaxOccurrences; $i++) {
-        $d = if ($step.days) { $start.AddDays($step.days * $i) } else { $start.AddMonths($step.months * $i) }
-        if ($d -gt $after) { return $d.ToString('yyyy-MM-dd') }
-    }
-    return $null
-}
-
-function New-ComplianceOccurrence($template, $dueDate, $seriesId) {
-    $o = [ordered]@{}
-    foreach ($k in $template.Keys) { $o[$k] = $template[$k] }
-    $script:cmpCounter++
-    $o['id'] = 'cx-{0:d4}' -f $script:cmpCounter
-    $o['seriesId'] = $seriesId
-    $o['dueDate'] = $dueDate
-    $o['ownerCompleted'] = ''; $o['ownerCompletedBy'] = ''
-    $o['reviewerCompleted'] = ''; $o['reviewerCompletedBy'] = ''
-    $o['completedAt'] = ''; $o['completedBy'] = ''
-    $o['createdAt'] = (Get-Date).ToString('o')
-    $o['updatedAt'] = $null
-    return $o
-}
-
-# Mirror worker.js complianceSeriesPeers: seriesId groups an app-created series,
-# but seeded rows have none — there the item NAME is what ties occurrences
-# together, as it did in the workbook.
-function Get-ComplianceSeriesPeers($it) {
-    if ($it.seriesId) { return @($complianceItems | Where-Object { $_.seriesId -eq $it.seriesId }) }
-    $name = ([string]$it.item).Trim().ToLower()
-    return @($complianceItems | Where-Object { ([string]$_.item).Trim().ToLower() -eq $name })
-}
-
-# Mirror worker.js complianceAdvanceSeries: advance a series by exactly one
-# occurrence, and only once $it — the latest occurrence in its series — is
-# fully signed off (CLOSED). Returns 1 if an occurrence was added, else 0.
-function Update-ComplianceSeries($it) {
-    if (-not (Get-ComplianceFreqStep $it.frequency)) { return 0 }
-    if ((Get-ComplianceStatus $it) -ne 'CLOSED') { return 0 }
-    $later = Get-ComplianceSeriesPeers $it | Where-Object { [string]$_.dueDate -gt [string]$it.dueDate }
-    if ($later) { return 0 }
-
-    $start = if ($it.seriesStart) { $it.seriesStart } else { $it.dueDate }
-    $nextDate = Get-ComplianceNextOccurrenceDate $start $it.frequency $it.dueDate
-    if (-not $nextDate) { return 0 }
-    $key = "$(([string]$it.item).Trim().ToLower())|$nextDate"
-    $taken = $complianceItems | Where-Object { "$(([string]$_.item).Trim().ToLower())|$($_.dueDate)" -eq $key }
-    if ($taken) { return 0 }
-
-    # Promote to a real series on the way out: a seeded row carries a frequency
-    # but no seriesId, and without this it could never recur.
-    if (-not $it.seriesId) {
-        $script:cmpCounter++
-        $it['seriesId'] = 'cs-{0:d4}' -f $script:cmpCounter
-        if (-not $it.seriesStart) { $it['seriesStart'] = $it.dueDate }
-    }
-    $null = $complianceItems.Add((New-ComplianceOccurrence $it $nextDate $it.seriesId))
-    return 1
-}
 
 # Mirror worker.js complianceStatus/complianceSignedOff/complianceAwaiting.
 # Status now keys off a STORED completedAt, not the two check-offs: signing off
@@ -1478,7 +1395,6 @@ while ($listener.IsListening) {
             $newItems = New-Object System.Collections.ArrayList
             foreach ($r in $rows) {
                 $script:cmpCounter++
-                $step = Get-ComplianceFreqStep $r.frequency
                 $null = $newItems.Add([ordered]@{
                     id = 'cx-{0:d4}' -f $script:cmpCounter
                     dueDate = [string]$r.dueDate; item = ([string]$r.item).Trim()
@@ -1487,8 +1403,6 @@ while ($listener.IsListening) {
                     owner = ([string]$r.owner).Trim()
                     reviewer = if (([string]$r.reviewer).Trim()) { ([string]$r.reviewer).Trim() } else { 'N/A' }
                     notes = [string]$r.notes
-                    seriesId = if ($step) { 'cs-{0:d4}' -f $script:cmpCounter } else { '' }
-                    seriesStart = if ($step) { [string]$r.dueDate } else { '' }
                     ownerCompleted = ''; ownerCompletedBy = ''
                     reviewerCompleted = ''; reviewerCompletedBy = ''
                     completedAt = ''; completedBy = ''
@@ -1510,8 +1424,6 @@ while ($listener.IsListening) {
             if (([string]$body.dueDate) -notmatch '^\d{4}-\d{2}-\d{2}$') { Send-Json $ctx 400 @{ error = 'Due date must be YYYY-MM-DD' }; continue }
             if (-not ([string]$body.owner).Trim()) { Send-Json $ctx 400 @{ error = 'Owner is required' }; continue }
             $script:cmpCounter++
-            $step = Get-ComplianceFreqStep $body.frequency
-            $seriesId = if ($step) { 'cs-{0:d4}' -f $script:cmpCounter } else { '' }
             $new = [ordered]@{
                 id = 'cx-{0:d4}' -f $script:cmpCounter
                 dueDate = [string]$body.dueDate; item = ([string]$body.item).Trim()
@@ -1520,20 +1432,16 @@ while ($listener.IsListening) {
                 owner = ([string]$body.owner).Trim()
                 reviewer = if (([string]$body.reviewer).Trim()) { ([string]$body.reviewer).Trim() } else { 'N/A' }
                 notes = [string]$body.notes
-                seriesId = $seriesId
-                seriesStart = if ($step) { [string]$body.dueDate } else { '' }
                 ownerCompleted = ''; ownerCompletedBy = ''
                 reviewerCompleted = ''; reviewerCompletedBy = ''
                 completedAt = ''; completedBy = ''
                 createdAt = (Get-Date).ToString('o'); createdBy = $adminEmail; updatedAt = $null
             }
             $null = $complianceItems.Add($new)
-            # Only this one row is created, even for a recurring frequency. The
-            # next occurrence appears once this one is signed off.
-            $created = 1
-            if (Update-ComplianceSeries $new) { $created = 2 }
-            Write-Audit $adminEmail 'compliance-create' @{ id = $new.id; item = $new.item; occurrences = $created }
-            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $new); created = $created }
+            # Exactly one row, whatever the frequency — nothing generates the
+            # next occurrence any more.
+            Write-Audit $adminEmail 'compliance-create' @{ id = $new.id; item = $new.item }
+            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $new); created = 1 }
         }
         elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
@@ -1591,23 +1499,10 @@ while ($listener.IsListening) {
                 $it.completedAt = ''; $it.completedBy = ''
             }
             $it.updatedAt = (Get-Date).ToString('o')
-            # Setting a repeating frequency on a one-off item promotes it to a
-            # series, so "make this monthly" works on seeded items too. Dropping
-            # back to One time stops it growing but leaves already-generated dates
-            # alone (deleting dated sign-off records would destroy evidence).
-            $created = 0
-            if ($body.PSObject.Properties['frequency']) {
-                if ((Get-ComplianceFreqStep $it.frequency) -and -not $it.seriesId) {
-                    $script:cmpCounter++
-                    $it.seriesId = 'cs-{0:d4}' -f $script:cmpCounter
-                    $it.seriesStart = $it.dueDate
-                }
-                elseif (-not (Get-ComplianceFreqStep $it.frequency)) {
-                    $it.seriesId = ''; $it.seriesStart = ''
-                }
-            }
-            $created = Update-ComplianceSeries $it
-            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $it); created = $created }
+            # created is always 0: completing an item no longer materialises its
+            # next occurrence. Kept in the response so the client's
+            # `if (res.created)` reload path reads a real value, not undefined.
+            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $it); created = 0 }
         }
         elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'DELETE') {
             $adminEmail = Get-AdminEmail $ctx
