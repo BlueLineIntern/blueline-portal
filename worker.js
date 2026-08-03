@@ -2400,13 +2400,27 @@ async function deleteHouseholdFromSharePoint(env, household) {
 // holds the item name. Skips silently if SHAREPOINT_COMPLIANCE_LIST_ID isn't
 // configured, so this ships safely before that list exists.
 //
+// The list may live on its own site — see complianceSiteId below. Both ids are
+// discoverable without leaving the app: /api/admin/sharepoint/site?url=… turns
+// a site address into its Graph id, and /api/admin/sharepoint/lists?site=<id>
+// then names every list on it.
+//
 // Best-effort: any failure is logged and returns the item unchanged, so a
 // SharePoint outage can never block saving a compliance item in the app.
+// The compliance register can live on a DIFFERENT SharePoint site from the
+// rest of the integration — a dedicated compliance site keeps the register off
+// a general team site that other staff browse for unrelated reasons. Set
+// SHAREPOINT_COMPLIANCE_SITE_ID to point it elsewhere; unset, it falls back to
+// the main site, so this changes nothing for an existing deployment.
+function complianceSiteId(env) {
+  return env.SHAREPOINT_COMPLIANCE_SITE_ID || env.SHAREPOINT_SITE_ID;
+}
+
 async function pushComplianceToSharePoint(env, item) {
   if (!env.SHAREPOINT_COMPLIANCE_LIST_ID) return item;
   try {
     const token = await getGraphToken(env);
-    const siteId = env.SHAREPOINT_SITE_ID;
+    const siteId = complianceSiteId(env);
     const listId = env.SHAREPOINT_COMPLIANCE_LIST_ID;
     const fields = {
       Title: item.item,
@@ -2463,7 +2477,7 @@ async function deleteComplianceFromSharePoint(env, item) {
   if (!env.SHAREPOINT_COMPLIANCE_LIST_ID || !item || !item.sharePointItemId) return;
   try {
     const token = await getGraphToken(env);
-    const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists/${env.SHAREPOINT_COMPLIANCE_LIST_ID}/items/${item.sharePointItemId}`;
+    const url = `https://graph.microsoft.com/v1.0/sites/${complianceSiteId(env)}/lists/${env.SHAREPOINT_COMPLIANCE_LIST_ID}/items/${item.sharePointItemId}`;
     const res = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) console.error('Failed to delete compliance item from SharePoint:', res.status, await res.text());
   } catch (err) {
@@ -4406,21 +4420,62 @@ export default {
           return json({ error: 'Sync failed: ' + (err && err.message) }, 500, cors);
         }
       }
-      // One-off diagnostic: lists every SharePoint list in the configured site
-      // (name + id), so a new list's id can be found without re-pasting Azure
-      // credentials anywhere outside Cloudflare's own encrypted secrets.
+      // Resolves a SharePoint site URL to the opaque site id Graph wants, so
+      // pointing a feature at a different site doesn't require hunting that id
+      // down by hand. Pass the address bar URL:
+      //   /api/admin/sharepoint/site?url=https://contoso.sharepoint.com/sites/Compliance
+      if (url.pathname === '/api/admin/sharepoint/site' && request.method === 'GET') {
+        const adminEmail = await getAdminEmail(request, env);
+        if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        const raw = url.searchParams.get('url');
+        if (!raw) return json({ error: 'Pass ?url=<the site address>' }, 400, cors);
+        let host;
+        let path;
+        try {
+          const parsed = new URL(raw);
+          host = parsed.hostname;
+          // Graph wants the server-relative path with no trailing slash;
+          // everything after /sites/<name> (a library, a page) is not part of
+          // the site's own address and would make the lookup 404.
+          const m = parsed.pathname.match(/^\/sites\/[^/]+/) || parsed.pathname.match(/^\/teams\/[^/]+/);
+          path = m ? m[0] : '';
+        } catch {
+          return json({ error: 'That does not look like a URL' }, 400, cors);
+        }
+        try {
+          const token = await getGraphToken(env);
+          // No path = the tenant's root site, which Graph addresses differently.
+          const target = path
+            ? `https://graph.microsoft.com/v1.0/sites/${host}:${path}`
+            : `https://graph.microsoft.com/v1.0/sites/${host}`;
+          const resp = await fetch(target, { headers: { Authorization: `Bearer ${token}` } });
+          if (!resp.ok) {
+            return json({ error: `Graph could not find that site (${resp.status}). ${(await resp.text()).slice(0, 200)}` }, resp.status, cors);
+          }
+          const site = await resp.json();
+          return json({ id: site.id, name: site.displayName || site.name, webUrl: site.webUrl }, 200, cors);
+        } catch (err) {
+          return json({ error: 'Failed to resolve site: ' + (err && err.message) }, 500, cors);
+        }
+      }
+      // One-off diagnostic: lists every SharePoint list in a site (name + id),
+      // so a new list's id can be found without re-pasting Azure credentials
+      // anywhere outside Cloudflare's own encrypted secrets. Defaults to the
+      // main site; ?site=<id> targets any other one, which is what makes
+      // configuring a feature against a different site possible.
       if (url.pathname === '/api/admin/sharepoint/lists' && request.method === 'GET') {
         const adminEmail = await getAdminEmail(request, env);
         if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        const siteId = url.searchParams.get('site') || env.SHAREPOINT_SITE_ID;
         try {
           const token = await getGraphToken(env);
-          const resp = await fetch(`https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/lists`, {
+          const resp = await fetch(`https://graph.microsoft.com/v1.0/sites/${siteId}/lists`, {
             headers: { Authorization: `Bearer ${token}` },
           });
           if (!resp.ok) throw new Error('Graph API error: ' + resp.status);
           const data = await resp.json();
           const lists = (data.value || []).map((l) => ({ name: l.displayName, id: l.id }));
-          return json({ lists }, 200, cors);
+          return json({ site: siteId, lists }, 200, cors);
         } catch (err) {
           return json({ error: 'Failed to list SharePoint lists: ' + (err && err.message) }, 500, cors);
         }
