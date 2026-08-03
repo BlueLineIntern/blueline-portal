@@ -2385,13 +2385,14 @@ async function deleteHouseholdFromSharePoint(env, household) {
   }
 }
 
-// Push a compliance item's current state to a dedicated SharePoint list, as a
-// disaster-recovery mirror — same reasoning and same shape as household push:
-// if the Worker or KV is unavailable, the compliance register still needs to
-// be readable directly in SharePoint. Push-only, no pull: compliance items are
-// managed entirely in this app (checkboxes, the Complete button, the drawer),
-// so unlike contacts there is no reason to ever edit one directly in
-// SharePoint, and no conflict to resolve.
+// Mirror COMPLETED compliance items to a dedicated SharePoint list — a record
+// of finished work, not a live copy of the tracker. Outstanding items stay in
+// the app; what lands here is the evidence of what was actually signed off,
+// which is also the part that most needs to survive the app being unavailable.
+//
+// Push-only, no pull: compliance items are managed entirely in this app (the
+// checkboxes, the Complete button, the drawer), so unlike contacts there is no
+// reason to ever edit one directly in SharePoint and no conflict to resolve.
 //
 // Requires a SharePoint list already created with these columns (Text unless
 // noted): ComplianceId, WhatToDo (multi-line), DueDate, Frequency, Source,
@@ -2418,6 +2419,23 @@ function complianceSiteId(env) {
 
 async function pushComplianceToSharePoint(env, item) {
   if (!env.SHAREPOINT_COMPLIANCE_LIST_ID) return item;
+
+  // ONLY COMPLETED ITEMS ARE MIRRORED. The list is a record of finished work,
+  // not a live copy of the tracker.
+  //
+  // An item that is not (or no longer) complete must not just be skipped — if
+  // it already has a row, that row has to go, or reopening a completed item
+  // would leave SharePoint asserting it was signed off when it isn't. That is
+  // the one way this mirror could actively mislead, so removal is handled here
+  // rather than only on delete. Clearing sharePointItemId at the same time
+  // means completing it again creates a fresh row instead of PATCHing an id
+  // that no longer exists.
+  if (complianceStatus(item) !== 'CLOSED') {
+    if (!item.sharePointItemId) return item; // never mirrored; nothing to undo
+    await deleteComplianceFromSharePoint(env, item);
+    return { ...item, sharePointItemId: null };
+  }
+
   try {
     const token = await getGraphToken(env);
     const siteId = complianceSiteId(env);
@@ -3020,11 +3038,15 @@ async function handleAdminComplianceImport(request, env, cors) {
   // Mirrors are best-effort and run AFTER the authoritative save, so a
   // SharePoint problem can't roll back or block an import that already
   // succeeded locally. Sequential to avoid a burst of concurrent Graph calls.
+  //
+  // Only the deletes actually reach Graph: imported rows always start
+  // outstanding, and the mirror carries completed items only, so each push
+  // below returns immediately without a network call. Kept rather than removed
+  // so this stays correct if imports ever preserve completion.
   for (const it of dropped) await deleteComplianceFromSharePoint(env, it);
   for (let i = 0; i < created.length; i += 1) {
     created[i] = await pushComplianceToSharePoint(env, created[i]);
   }
-  // Re-save to persist the sharePointItemId each push captured.
   await saveComplianceItems(env, [...kept, ...created]);
 
   await logAudit(env, adminEmail, 'compliance-import', {
