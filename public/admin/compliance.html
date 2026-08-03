@@ -1276,7 +1276,15 @@
     // gesture and silently block one issued after an async gap. Navigated to
     // the real URL once the lookup resolves; closed instead if it fails, so a
     // popup-blocker exception doesn't leave a permanent blank tab behind.
-    const tab = window.open('', '_blank', 'noopener');
+    //
+    // No 'noopener' on THIS call: passing it makes window.open() return null
+    // in Chrome and Firefox (that's the whole point of noopener — it severs
+    // the reference), which silently broke the tab.location assignment below
+    // and left every click sitting on a permanent about:blank. Nulling
+    // tab.opener ourselves, once we have a real reference, gets the same
+    // security property without losing the handle we need to navigate it.
+    const tab = window.open('', '_blank');
+    if (tab) tab.opener = null;
     btn.disabled = true;
     const original = btn.textContent;
     btn.textContent = 'Opening…';
