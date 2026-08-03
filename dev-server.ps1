@@ -70,7 +70,6 @@ function Import-ComplianceSeed {
             ownerCompleted = ''; ownerCompletedBy = ''
             reviewerCompleted = ''; reviewerCompletedBy = ''
             completedAt = ''; completedBy = ''
-            attachments = @()
             createdAt = (Get-Date).ToString('o'); createdBy = 'seed'; updatedAt = $null
         })
     }
@@ -123,9 +122,6 @@ function New-ComplianceOccurrence($template, $dueDate, $seriesId) {
     $o['ownerCompleted'] = ''; $o['ownerCompletedBy'] = ''
     $o['reviewerCompleted'] = ''; $o['reviewerCompletedBy'] = ''
     $o['completedAt'] = ''; $o['completedBy'] = ''
-    # Mirror worker.js complianceOccurrenceFrom: evidence belongs to the
-    # occurrence it was filed for, so a new one starts with none.
-    $o['attachments'] = @()
     $o['createdAt'] = (Get-Date).ToString('o')
     $o['updatedAt'] = $null
     return $o
@@ -484,25 +480,6 @@ function Read-Body($ctx) {
     $reader = New-Object IO.StreamReader($ctx.Request.InputStream, $ctx.Request.ContentEncoding)
     $raw = $reader.ReadToEnd()
     if ($raw) { $raw | ConvertFrom-Json } else { $null }
-}
-
-# Enough multipart parsing to pull the filename and byte count out of a file
-# upload. The mock does NOT store the bytes: real uploads go to a SharePoint
-# document library via Graph (worker.js uploadComplianceAttachment), which the
-# dev server was never meant to stand in for. This exists so the attachment UI
-# — list, add, remove, counts — is exercisable locally.
-function Read-UploadInfo($ctx) {
-    $ms = New-Object IO.MemoryStream
-    $ctx.Request.InputStream.CopyTo($ms)
-    $bytes = $ms.ToArray()
-    # Single-byte encoding so byte offsets line up with character offsets while
-    # scanning for the header; the filename itself is ASCII in practice.
-    # GetEncoding(28591), not [Text.Encoding]::Latin1 — that static was added in
-    # .NET Core and is null on Windows PowerShell 5.1's .NET Framework.
-    $text = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
-    $name = 'attachment'
-    if ($text -match 'filename="([^"]*)"') { $name = $Matches[1] }
-    return @{ name = $name; size = $bytes.Length }
 }
 
 function Get-SessionEmail($ctx) {
@@ -1484,7 +1461,6 @@ while ($listener.IsListening) {
                 ownerCompleted = ''; ownerCompletedBy = ''
                 reviewerCompleted = ''; reviewerCompletedBy = ''
                 completedAt = ''; completedBy = ''
-                attachments = @()
                 createdAt = (Get-Date).ToString('o'); createdBy = $adminEmail; updatedAt = $null
             }
             $null = $complianceItems.Add($new)
@@ -1494,57 +1470,6 @@ while ($listener.IsListening) {
             if (Update-ComplianceSeries $new) { $created = 2 }
             Write-Audit $adminEmail 'compliance-create' @{ id = $new.id; item = $new.item; occurrences = $created }
             Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $new); created = $created }
-        }
-        # Attachment routes must precede the generic /compliance/(.+) below,
-        # which would otherwise swallow "/attachment" into the item id.
-        elseif ($path -match '^/api/admin/compliance/([^/]+)/attachment$' -and $method -eq 'POST') {
-            $adminEmail = Get-AdminEmail $ctx
-            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $cid = [Uri]::UnescapeDataString($Matches[1])
-            $it = $complianceItems | Where-Object { $_.id -eq $cid } | Select-Object -First 1
-            if (-not $it) { Send-Json $ctx 404 @{ error = 'Compliance item not found' }; continue }
-            $up = Read-UploadInfo $ctx
-            if ($up.size -eq 0) { Send-Json $ctx 400 @{ error = 'That file is empty' }; continue }
-            if ($up.size -gt (10 * 1024 * 1024)) { Send-Json $ctx 400 @{ error = 'Files must be under 10MB' }; continue }
-            $script:cmpCounter++
-            $att = @{
-                id = 'att-{0:d4}' -f $script:cmpCounter
-                name = $up.name; size = $up.size
-                url = 'https://example.invalid/mock/' + $up.name
-                uploadedAt = (Get-Date).ToString('o'); uploadedBy = $adminEmail
-            }
-            $it.attachments = @(@($it.attachments) | Where-Object { $_ }) + $att
-            $it.updatedAt = (Get-Date).ToString('o')
-            Write-Audit $adminEmail 'compliance-attach' @{ id = $cid; name = $att.name }
-            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $it) }
-        }
-        elseif ($path -match '^/api/admin/compliance/([^/]+)/attachment/(.+)$' -and $method -eq 'DELETE') {
-            $adminEmail = Get-AdminEmail $ctx
-            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $cid = [Uri]::UnescapeDataString($Matches[1])
-            $aid = [Uri]::UnescapeDataString($Matches[2])
-            $it = $complianceItems | Where-Object { $_.id -eq $cid } | Select-Object -First 1
-            if (-not $it) { Send-Json $ctx 404 @{ error = 'Compliance item not found' }; continue }
-            $existing = @(@($it.attachments) | Where-Object { $_ })
-            if (-not ($existing | Where-Object { $_.id -eq $aid })) { Send-Json $ctx 404 @{ error = 'Attachment not found' }; continue }
-            $it.attachments = @($existing | Where-Object { $_.id -ne $aid })
-            $it.updatedAt = (Get-Date).ToString('o')
-            Write-Audit $adminEmail 'compliance-detach' @{ id = $cid; attachment = $aid }
-            Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $it) }
-        }
-        # Mirror worker.js handleAdminComplianceAttachmentsFolder. Real Graph
-        # traffic there resolves a folder that genuinely exists in SharePoint;
-        # the mock has nothing to resolve, so it fakes a stable fictitious URL
-        # once at least one attachment exists anywhere, purely to exercise the
-        # button's open-a-new-tab-then-navigate flow locally.
-        elseif ($path -eq '/api/admin/compliance/attachments-folder' -and $method -eq 'GET') {
-            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $anyAttachments = $complianceItems | Where-Object { @($_.attachments | Where-Object { $_ }).Count -gt 0 } | Select-Object -First 1
-            if (-not $anyAttachments) {
-                Send-Json $ctx 404 @{ error = 'No compliance files have been attached yet — the folder is created on the first upload.' }
-                continue
-            }
-            Send-Json $ctx 200 @{ url = 'https://example.invalid/mock/Compliance%20Attachments' }
         }
         elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
