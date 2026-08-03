@@ -197,6 +197,18 @@
 
   .cmp-hint { font-size: var(--fs-xs); color: var(--muted); margin: 2px 0 0; }
 
+  /* Import preview */
+  .import-list { max-height: 260px; overflow-y: auto; margin: var(--sp-3) 0; }
+  .import-row {
+    display: flex; justify-content: space-between; gap: var(--sp-3);
+    padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm);
+  }
+  .import-row:last-child { border-bottom: none; }
+  .import-problems {
+    margin-top: var(--sp-3); padding-top: var(--sp-3); border-top: 1px solid var(--border);
+    font-size: var(--fs-xs); color: var(--amber);
+  }
+
   /* 1150, not 1000: the seven fixed columns plus their gaps need ~670px, and
      with the sidebar and panel padding the grid was still overflowing the page
      between 1000 and ~1120. Drop the optional columns before that happens
@@ -273,6 +285,8 @@
           <option value="year">Due this year</option>
         </select>
         <button type="button" class="btn btn-ghost btn-small" id="tr-export">↓ Export spreadsheet</button>
+        <button type="button" class="btn btn-ghost btn-small" id="tr-import" title="Replace every open item from a spreadsheet">↑ Import / reset</button>
+        <input type="file" id="tr-import-file" accept=".csv,text/csv" class="hidden" />
       </div>
       <div class="cmp-grid cmp-head" id="tr-head">
         <span>Item</span><span>Mandated</span><span>Owner</span><span>Reviewer</span><span>Status</span><span></span>
@@ -294,6 +308,22 @@
       <div class="cal-grid" id="cal-grid"></div>
     </div>
   </main>
+</div>
+
+<!-- Import is destructive and irreversible, so it never runs straight off the
+     file picker: this states exactly what will be destroyed and what survives,
+     and needs a separate deliberate click. -->
+<div class="modal-backdrop hidden" id="import-modal-backdrop">
+  <div class="modal">
+    <h2>Replace open compliance items</h2>
+    <p class="field-note" id="import-summary"></p>
+    <div id="import-preview"></div>
+    <p class="form-error" id="import-error"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="import-cancel">Cancel</button>
+      <button type="button" class="btn btn-danger" id="import-confirm">Replace open items</button>
+    </div>
+  </div>
 </div>
 
 <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
@@ -744,6 +774,154 @@
   // ---------- Export ----------
   // Exports what the tracker is currently showing (tab + search), not the whole
   // register, so a filtered view can be handed over as-is.
+  // ---------- Import (reset) ----------
+  // Minimal RFC 4180 parser: handles quoted fields containing commas, escaped
+  // quotes, and newlines. split(',') gets all three wrong, and "What to do"
+  // and Notes routinely contain commas — including in this page's own export.
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let cell = '';
+    let quoted = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { cell += '"'; i += 1; }
+          else quoted = false;
+        } else cell += ch;
+      } else if (ch === '"') quoted = true;
+      else if (ch === ',') { row.push(cell); cell = ''; }
+      else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      else if (ch !== '\r') cell += ch;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter((r) => r.some((v) => String(v).trim()));
+  }
+
+  // Excel writes dates in a lot of shapes depending on locale. Accept the ISO
+  // the export produces, plus the US M/D/YYYY Excel usually shows, rather than
+  // rejecting a file the user reasonably expected to work.
+  function normaliseDate(v) {
+    const s = String(v || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const us = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (us) {
+      const [, m, d, y] = us;
+      return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+    return '';
+  }
+
+  let importQueue = [];
+
+  document.getElementById('tr-import').addEventListener('click', () =>
+    document.getElementById('tr-import-file').click()
+  );
+
+  document.getElementById('tr-import-file').addEventListener('change', async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = ''; // so re-picking the same file still fires change
+    if (!file) return;
+    // A native .xlsx is a zip of XML — parsing it needs a library this app
+    // doesn't bundle. Say so specifically instead of failing as garbled text.
+    if (/\.(xlsx|xls)$/i.test(file.name)) {
+      setStatus('Save the spreadsheet as CSV first (in Excel: File → Save As → CSV UTF-8), then import that.');
+      return;
+    }
+    try {
+      const rows = parseCsv(await file.text());
+      if (rows.length < 2) throw new Error('That file has no data rows.');
+      const header = rows[0].map((h) => h.trim().toLowerCase().replace(/^﻿/, ''));
+      const col = (...names) => {
+        for (const n of names) {
+          const i = header.indexOf(n.toLowerCase());
+          if (i !== -1) return i;
+        }
+        return -1;
+      };
+      const iItem = col('Item');
+      const iDue = col('Due date', 'DueDate', 'Due');
+      const iOwner = col('Owner');
+      if (iItem === -1) throw new Error('No "Item" column found.');
+      if (iDue === -1) throw new Error('No "Due date" column found.');
+
+      importQueue = [];
+      const problems = [];
+      rows.slice(1).forEach((r, i) => {
+        const at = (idx) => (idx === -1 ? '' : String(r[idx] || '').trim());
+        const item = at(iItem);
+        const dueDate = normaliseDate(at(iDue));
+        if (!item) { problems.push(`Row ${i + 2}: no item name`); return; }
+        if (!dueDate) { problems.push(`Row ${i + 2}: "${at(iDue)}" isn't a date the importer understands`); return; }
+        const owner = at(iOwner) || owners[0];
+        const mandatedRaw = at(col('Mandated')).toLowerCase();
+        importQueue.push({
+          item,
+          dueDate,
+          owner,
+          reviewer: at(col('Reviewer')) || 'N/A',
+          whatToDo: at(col('What to do', 'WhatToDo')),
+          frequency: at(col('Frequency')) || 'One time',
+          source: at(col('Source')),
+          notes: at(col('Notes')),
+          // Export writes "Required"/"Best practice"; a hand-built sheet is
+          // more likely to say yes/true.
+          mandated: ['required', 'yes', 'true', 'y'].includes(mandatedRaw),
+        });
+      });
+
+      const openNow = allItems.filter((it) => !isClosed(it)).length;
+      const completedNow = allItems.filter(isClosed).length;
+      document.getElementById('import-summary').innerHTML =
+        `<strong>${escapeHtml(file.name)}</strong> — this will permanently delete the
+         <strong>${openNow} open item${openNow === 1 ? '' : 's'}</strong> currently in the tracker and replace them with
+         <strong>${importQueue.length}</strong> from the file.
+         ${completedNow ? `The ${completedNow} completed item${completedNow === 1 ? '' : 's'} will be kept — they are the record of what was signed off.` : ''}`;
+      document.getElementById('import-preview').innerHTML =
+        (importQueue.length
+          ? `<div class="import-list">${importQueue.slice(0, 10).map((r) => `
+              <div class="import-row"><span>${escapeHtml(r.item)}</span>
+                <span class="cmp-signoff">${escapeHtml(r.dueDate)} · ${escapeHtml(r.owner)}</span></div>`).join('')}
+             ${importQueue.length > 10 ? `<div class="import-row cmp-signoff">…and ${importQueue.length - 10} more</div>` : ''}</div>`
+          : '<p class="empty">Nothing importable in this file.</p>')
+        + (problems.length
+          ? `<div class="import-problems">${problems.slice(0, 6).map((p) => escapeHtml(p)).join('<br>')}
+             ${problems.length > 6 ? `<br>…and ${problems.length - 6} more` : ''}</div>`
+          : '');
+      document.getElementById('import-error').textContent = '';
+      document.getElementById('import-confirm').disabled = !importQueue.length;
+      document.getElementById('import-modal-backdrop').classList.remove('hidden');
+    } catch (err) {
+      setStatus(`Could not read that file: ${err.message}`);
+    }
+  });
+
+  const closeImport = () => document.getElementById('import-modal-backdrop').classList.add('hidden');
+  document.getElementById('import-cancel').addEventListener('click', closeImport);
+  document.getElementById('import-modal-backdrop').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeImport();
+  });
+
+  document.getElementById('import-confirm').addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'Replacing…';
+    try {
+      const res = await api('/api/admin/compliance/import', {
+        method: 'POST', body: JSON.stringify({ items: importQueue }),
+      });
+      closeImport();
+      await loadData();
+      setStatus(`Imported ${res.imported} item${res.imported === 1 ? '' : 's'}, replaced ${res.replaced}, kept ${res.keptCompleted} completed.`);
+    } catch (err) {
+      document.getElementById('import-error').textContent = err.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Replace open items';
+    }
+  });
+
   function exportTracker() {
     const rows = trackerRows();
     const cols = ['Item', 'What to do', 'Due date', 'Frequency', 'Source', 'Mandated', 'Owner',

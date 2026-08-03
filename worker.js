@@ -3099,6 +3099,82 @@ async function handleAdminComplianceDelete(request, env, cors, id) {
   return json({ ok: true, removed: removedCount }, 200, cors);
 }
 
+// Replace the whole open register from a spreadsheet — the "reset" import.
+//
+// COMPLETED ITEMS ARE KEPT. That is the one deliberate limit on how much this
+// wipes: a closed item is the evidence that a filing was actually signed off,
+// by whom, and on what date. Discarding that because a new spreadsheet was
+// imported would destroy the audit trail the register exists to produce, and
+// nothing in a fresh import can reconstruct it.
+//
+// Everything is validated BEFORE anything is deleted, so a bad row on line 40
+// cannot leave the register half-wiped with no way back.
+async function handleAdminComplianceImport(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const body = await request.json().catch(() => null);
+  if (!body || !Array.isArray(body.items)) return json({ error: 'Invalid JSON body' }, 400, cors);
+  if (!body.items.length) return json({ error: 'That file has no rows to import' }, 400, cors);
+  if (body.items.length > 1000) return json({ error: 'That file has more than 1000 rows' }, 400, cors);
+
+  // Validate every row first; report the row number so a failure is fixable.
+  const prepared = [];
+  for (let i = 0; i < body.items.length; i += 1) {
+    const { fields, error } = sanitizeComplianceFields(body.items[i], { requireCore: true });
+    if (error) return json({ error: `Row ${i + 2}: ${error}` }, 400, cors);
+    prepared.push(fields);
+  }
+
+  const items = await getComplianceItems(env);
+  // complianceStatus, not a stored flag — CLOSED is derived from completedAt.
+  const kept = items.filter((it) => complianceStatus(it) === 'CLOSED');
+  const dropped = items.filter((it) => complianceStatus(it) !== 'CLOSED');
+
+  const created = prepared.map((fields) => {
+    const step = complianceFreqStep(fields.frequency);
+    return {
+      id: `cx-${invTs()}-${randomHex(3)}`,
+      whatToDo: '', frequency: '', source: '', notes: '', mandated: false,
+      ...fields,
+      // A recurring import row heads a new series; its next occurrence is
+      // dripped in when this one is signed off, same as a hand-added item.
+      seriesId: step ? `cs-${invTs()}-${randomHex(3)}` : '',
+      seriesStart: step ? fields.dueDate : '',
+      // Imported rows always start outstanding. Sign-off columns in the file
+      // are ignored on purpose: this is a reset, and honouring a "signed off"
+      // column would let a spreadsheet edit close an item with no real
+      // sign-off behind it.
+      ownerCompleted: '', ownerCompletedBy: '',
+      reviewerCompleted: '', reviewerCompletedBy: '',
+      completedAt: '', completedBy: '',
+      sharePointItemId: null,
+      createdAt: new Date().toISOString(),
+      createdBy: adminEmail,
+      updatedAt: null,
+    };
+  });
+
+  const next = [...kept, ...created];
+  await saveComplianceItems(env, next);
+
+  // Mirrors are best-effort and run AFTER the authoritative save, so a
+  // SharePoint problem can't roll back or block an import that already
+  // succeeded locally. Sequential to avoid a burst of concurrent Graph calls.
+  for (const it of dropped) await deleteComplianceFromSharePoint(env, it);
+  for (let i = 0; i < created.length; i += 1) {
+    created[i] = await pushComplianceToSharePoint(env, created[i]);
+  }
+  // Re-save to persist the sharePointItemId each push captured.
+  await saveComplianceItems(env, [...kept, ...created]);
+
+  await logAudit(env, adminEmail, 'compliance-import', {
+    replaced: dropped.length, imported: created.length, keptCompleted: kept.length,
+  });
+  return json({
+    replaced: dropped.length, imported: created.length, keptCompleted: kept.length,
+  }, 200, cors);
+}
+
 // ---------- Advisor CRM: contacts ----------
 // contact:<email> holds the CRM fields an advisor manages about a person
 // (status, household, advisor, tags, …), stored encrypted. It exists
@@ -4510,6 +4586,11 @@ export default {
       }
       if (url.pathname === '/api/admin/compliance' && request.method === 'POST') {
         return await handleAdminComplianceCreate(request, env, cors);
+      }
+      // Before the generic /compliance/(.+) below, which would otherwise
+      // swallow "import" as an item id and route it into the update handler.
+      if (url.pathname === '/api/admin/compliance/import' && request.method === 'POST') {
+        return await handleAdminComplianceImport(request, env, cors);
       }
       const complianceMatch = url.pathname.match(/^\/api\/admin\/compliance\/(.+)$/);
       if (complianceMatch && request.method === 'POST') {

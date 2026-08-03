@@ -1437,6 +1437,70 @@ while ($listener.IsListening) {
             Send-Json $ctx 200 @{ items = $payload; owners = @('Frank','Jennifer')
                                   reviewers = @('Frank','Jennifer','N/A'); frequencies = $complianceFrequencies }
         }
+        # Mirror worker.js handleAdminComplianceImport. Must precede the generic
+        # /compliance/(.+) route, which would swallow "import" as an item id.
+        # Completed items are KEPT — a closed item is the evidence a filing was
+        # signed off, and no fresh import can reconstruct that.
+        elseif ($path -eq '/api/admin/compliance/import' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $body = Read-Body $ctx
+            # -not on an EMPTY array is $true in PowerShell, so testing
+            # `-not $body.items` would report "Invalid JSON body" for a
+            # well-formed body carrying zero rows — a different error than
+            # worker.js gives for the same input. Test for the property's
+            # presence instead, and let the count check below own the empty case.
+            # Also require it to actually BE an array: worker.js tests
+            # Array.isArray, and @() would happily wrap a bare string into a
+            # one-element list, turning a malformed body into a confusing
+            # per-row validation error instead of "Invalid JSON body".
+            if (-not $body -or -not $body.PSObject.Properties['items'] -or
+                -not ($body.items -is [System.Collections.IEnumerable]) -or ($body.items -is [string])) {
+                Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue
+            }
+            $rows = @($body.items)
+            if ($rows.Count -eq 0) { Send-Json $ctx 400 @{ error = 'That file has no rows to import' }; continue }
+            if ($rows.Count -gt 1000) { Send-Json $ctx 400 @{ error = 'That file has more than 1000 rows' }; continue }
+            # Validate everything BEFORE deleting anything, so a bad row can't
+            # leave the register half-wiped.
+            $rowNum = 1
+            $bad = $null
+            foreach ($r in $rows) {
+                $rowNum++
+                if (-not ([string]$r.item).Trim()) { $bad = "Row ${rowNum}: Item name is required"; break }
+                if (([string]$r.dueDate) -notmatch '^\d{4}-\d{2}-\d{2}$') { $bad = "Row ${rowNum}: Due date must be YYYY-MM-DD"; break }
+                if (-not ([string]$r.owner).Trim()) { $bad = "Row ${rowNum}: Owner is required"; break }
+            }
+            if ($bad) { Send-Json $ctx 400 @{ error = $bad }; continue }
+
+            $keptItems = @($complianceItems | Where-Object { (Get-ComplianceStatus $_) -eq 'CLOSED' })
+            $droppedCount = $complianceItems.Count - $keptItems.Count
+            $newItems = New-Object System.Collections.ArrayList
+            foreach ($r in $rows) {
+                $script:cmpCounter++
+                $step = Get-ComplianceFreqStep $r.frequency
+                $null = $newItems.Add([ordered]@{
+                    id = 'cx-{0:d4}' -f $script:cmpCounter
+                    dueDate = [string]$r.dueDate; item = ([string]$r.item).Trim()
+                    whatToDo = [string]$r.whatToDo; frequency = [string]$r.frequency
+                    source = [string]$r.source; mandated = [bool]$r.mandated
+                    owner = ([string]$r.owner).Trim()
+                    reviewer = if (([string]$r.reviewer).Trim()) { ([string]$r.reviewer).Trim() } else { 'N/A' }
+                    notes = [string]$r.notes
+                    seriesId = if ($step) { 'cs-{0:d4}' -f $script:cmpCounter } else { '' }
+                    seriesStart = if ($step) { [string]$r.dueDate } else { '' }
+                    ownerCompleted = ''; ownerCompletedBy = ''
+                    reviewerCompleted = ''; reviewerCompletedBy = ''
+                    completedAt = ''; completedBy = ''
+                    createdAt = (Get-Date).ToString('o'); createdBy = $adminEmail; updatedAt = $null
+                })
+            }
+            $complianceItems.Clear()
+            foreach ($k in $keptItems) { $null = $complianceItems.Add($k) }
+            foreach ($n in $newItems) { $null = $complianceItems.Add($n) }
+            Write-Audit $adminEmail 'compliance-import' @{ replaced = $droppedCount; imported = $newItems.Count; keptCompleted = $keptItems.Count }
+            Send-Json $ctx 200 @{ replaced = $droppedCount; imported = $newItems.Count; keptCompleted = $keptItems.Count }
+        }
         elseif ($path -eq '/api/admin/compliance' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
