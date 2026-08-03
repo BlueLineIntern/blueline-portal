@@ -194,6 +194,32 @@
   .dl dt { color: var(--muted); }
   .dl dd { color: var(--text); }
   .cmp-signoff { font-size: var(--fs-sm); color: var(--muted); }
+
+  /* Evidence files in the drawer */
+  .d-file {
+    display: flex; align-items: baseline; gap: var(--sp-2);
+    padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-sm);
+  }
+  .d-file:last-of-type { border-bottom: none; }
+  .d-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .d-file-meta { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
+  /* The uploader's email is the long part of the meta and the least urgent —
+     on a narrow drawer it would squeeze the filename it sits beside, so it
+     drops and the file size stays. Still recorded, still in the audit log. */
+  @media (max-width: 560px) {
+    .d-file-who { display: none; }
+  }
+  .d-file-del {
+    border: 1px solid var(--border-strong); background: var(--panel); color: var(--muted);
+    border-radius: var(--radius-sm); cursor: pointer; width: 24px; height: 24px;
+    line-height: 1; font-size: var(--fs-md); flex-shrink: 0;
+  }
+  .d-file-del:hover { border-color: var(--red); color: var(--red); }
+  .d-file-add { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); flex-wrap: wrap; }
+  #d-file-status.err { color: var(--red); font-weight: var(--fw-semibold); }
+  /* Attachment count on a tracker row. Neutral like the other chips — having
+     evidence is a property of the item, not a status. */
+  .clip-chip { font-size: var(--fs-2xs); color: var(--muted); white-space: nowrap; }
   .cmp-hint { font-size: var(--fs-xs); color: var(--muted); margin: 2px 0 0; }
 
   /* 1150, not 1000: the seven fixed columns plus their gaps need ~670px, and
@@ -347,6 +373,18 @@
     <div class="field">
       <label for="d-notes">Notes</label>
       <textarea id="d-notes" rows="3" maxlength="2000" placeholder="e.g. deferred to Q3, see email from custodian"></textarea>
+    </div>
+
+    <!-- Hidden while creating: there's no item id to attach a file to until
+         the item has been saved once. -->
+    <div class="drawer-section" id="d-files-section">
+      <h3>Evidence</h3>
+      <div id="d-files"></div>
+      <div class="d-file-add">
+        <button type="button" class="btn btn-ghost btn-small" id="d-file-btn">+ Attach file</button>
+        <input type="file" id="d-file-input" class="hidden" />
+        <span class="cmp-hint" id="d-file-status"></span>
+      </div>
     </div>
 
     <div class="drawer-section" id="d-signoff-section">
@@ -644,6 +682,9 @@
             <span class="due due-${d.state}">${escapeHtml(d.text)}</span>
             <span class="freq-chip">${escapeHtml(freqLabel(it.frequency))}</span>
             ${it.source ? `<span class="source-chip">${escapeHtml(it.source)}</span>` : ''}
+            ${(it.attachments || []).length
+              ? `<span class="clip-chip" title="${(it.attachments || []).length} file(s) attached">📎 ${(it.attachments || []).length}</span>`
+              : ''}
           </div>
         </div>
         <div class="cmp-mandated-cell" style="text-align:center;">
@@ -921,6 +962,98 @@
     );
   }
 
+  // ---------- Evidence files ----------
+  // Files live in the SharePoint site's document library, not in this app —
+  // evidence that only exists inside the app is unreachable exactly when the
+  // app is down. Only metadata comes back here; the link opens SharePoint.
+  const MAX_ATTACH_MB = 10;
+
+  function fmtBytes(n) {
+    const b = Number(n) || 0;
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`;
+    return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  function renderFiles(it) {
+    const wrap = document.getElementById('d-files');
+    const files = Array.isArray(it.attachments) ? it.attachments : [];
+    if (!files.length) {
+      wrap.innerHTML = '<p class="cmp-signoff">No files attached.</p>';
+      return;
+    }
+    wrap.innerHTML = files.map((f) => `
+      <div class="d-file">
+        <a href="${escapeHtml(f.url || '#')}" target="_blank" rel="noopener" class="d-file-name"
+           title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</a>
+        <span class="d-file-meta">${escapeHtml(fmtBytes(f.size))}${f.uploadedBy
+          ? `<span class="d-file-who"> · ${escapeHtml(f.uploadedBy)}</span>` : ''}</span>
+        <button type="button" class="d-file-del" data-att="${escapeHtml(f.id)}" title="Remove this file">&times;</button>
+      </div>`).join('');
+    wrap.querySelectorAll('.d-file-del').forEach((b) =>
+      b.addEventListener('click', () => removeFile(b.dataset.att))
+    );
+  }
+
+  const fileStatus = (msg, isErr) => {
+    const el = document.getElementById('d-file-status');
+    el.textContent = msg || '';
+    el.classList.toggle('err', !!isErr);
+  };
+
+  document.getElementById('d-file-btn').addEventListener('click', () =>
+    document.getElementById('d-file-input').click()
+  );
+
+  document.getElementById('d-file-input').addEventListener('change', async (ev) => {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = ''; // so re-picking the same file still fires change
+    if (!file || !drawerId) return;
+    if (file.size === 0) return fileStatus('That file is empty.', true);
+    // Checked here as well as server-side so an oversized file fails instantly
+    // instead of after uploading megabytes only to be refused.
+    if (file.size > MAX_ATTACH_MB * 1024 * 1024) {
+      return fileStatus(`Files must be under ${MAX_ATTACH_MB}MB — that one is ${fmtBytes(file.size)}.`, true);
+    }
+    const btn = document.getElementById('d-file-btn');
+    btn.disabled = true;
+    fileStatus(`Uploading ${file.name}…`);
+    try {
+      const body = new FormData();
+      body.append('file', file);
+      // No Content-Type header: the browser must set it so the multipart
+      // boundary is included, and api() would otherwise force JSON.
+      const res = await api(`/api/admin/compliance/${encodeURIComponent(drawerId)}/attachment`, { method: 'POST', body });
+      const it = allItems.find((x) => x.id === drawerId);
+      if (it) { Object.assign(it, res.item); renderFiles(it); }
+      fileStatus(`Attached ${res.item.attachments[res.item.attachments.length - 1].name}.`);
+      render();
+    } catch (err) {
+      fileStatus(`Could not attach: ${err.message}`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  async function removeFile(attachmentId) {
+    if (!drawerId) return;
+    // The file is deleted from SharePoint, not just unlinked — worth confirming.
+    if (!confirm('Remove this file? It is deleted from SharePoint too.')) return;
+    fileStatus('Removing…');
+    try {
+      const res = await api(
+        `/api/admin/compliance/${encodeURIComponent(drawerId)}/attachment/${encodeURIComponent(attachmentId)}`,
+        { method: 'DELETE' }
+      );
+      const it = allItems.find((x) => x.id === drawerId);
+      if (it) { Object.assign(it, res.item); renderFiles(it); }
+      fileStatus('File removed.');
+      render();
+    } catch (err) {
+      fileStatus(`Could not remove: ${err.message}`, true);
+    }
+  }
+
   // ---------- Drawer ----------
   function fillSelect(id, values, selected) {
     document.getElementById(id).innerHTML = values
@@ -962,6 +1095,11 @@
     fillSelect('d-frequency', [...new Set([...frequencies, it.frequency].filter(Boolean))],
       it.frequency || 'One time');
     updateFreqHint(it);
+
+    // Attaching needs an id to attach to, which a not-yet-saved item lacks.
+    document.getElementById('d-files-section').classList.toggle('hidden', drawerMode === 'new');
+    document.getElementById('d-file-status').textContent = '';
+    if (drawerMode !== 'new') renderFiles(it);
 
     const sec = document.getElementById('d-signoff-section');
     if (drawerMode === 'new') {

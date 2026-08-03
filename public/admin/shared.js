@@ -33,7 +33,11 @@ function logoutLocal() {
 // revoked) — clear the stale local copy and return to login.
 async function api(path, opts = {}) {
   const headers = { Authorization: `Bearer ${SESSION.token}`, ...(opts.headers || {}) };
-  if (opts.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  // FormData must set its own Content-Type: the header carries the multipart
+  // boundary the browser generates, and forcing application/json here makes the
+  // body unparseable on the server.
+  const isForm = typeof FormData !== 'undefined' && opts.body instanceof FormData;
+  if (opts.body && !isForm && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
   const res = await fetch(path, { ...opts, headers });
   if (res.status === 401) {
     logoutLocal();

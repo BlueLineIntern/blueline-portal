@@ -2423,6 +2423,10 @@ async function pushComplianceToSharePoint(env, item) {
       Status: complianceStatus(item),
       CompletedAt: item.completedAt || '',
       Notes: item.notes || '',
+      // Names only. The files themselves live in the site's document library
+      // (see uploadComplianceAttachment), so during an outage this row says
+      // what evidence exists and the library is where to go find it.
+      Attachments: (Array.isArray(item.attachments) ? item.attachments : []).map((a) => a.name).join(', '),
     };
 
     if (item.sharePointItemId) {
@@ -2469,6 +2473,149 @@ async function deleteComplianceFromSharePoint(env, item) {
   } catch (err) {
     console.error('Error deleting compliance item from SharePoint:', err);
   }
+}
+
+// ---------- Compliance attachments ----------
+// Evidence for a compliance item — the filed 13F confirmation, a signed
+// attestation, a screenshot of a completed review. Stored in the SharePoint
+// site's DEFAULT document library rather than KV or a new bucket:
+//
+//  - It's the same disaster-recovery argument as the rest of this integration:
+//    evidence that only exists inside the app is evidence you can't reach when
+//    the app is down, which for a compliance record is the worst possible time.
+//  - It needs no new configuration. The default drive is addressable straight
+//    off SHAREPOINT_SITE_ID, which is already set, so there's no extra library
+//    to create or secret to wire up before this works.
+//  - Files land under a readable path (Compliance Attachments/<item>/<file>),
+//    so they're navigable in SharePoint by a person, not just by id.
+//
+// Only metadata is kept in KV — name, size, webUrl, and the drive item id used
+// to delete it later. The bytes never touch the compliance blob, which is read
+// in full on every page load.
+const COMPLIANCE_ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB
+const COMPLIANCE_ATTACH_ROOT = 'Compliance Attachments';
+
+// SharePoint rejects " * : < > ? / \ | and leading/trailing dots or spaces in
+// a file or folder name. Strip rather than reject: the advisor picked the file
+// on their own machine and shouldn't have to rename it to attach it.
+function safeSharePointName(name, fallback) {
+  const cleaned = String(name || '')
+    .replace(/[\\/:*?"<>|#%]/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+    .slice(0, 120);
+  return cleaned || fallback;
+}
+
+async function uploadComplianceAttachment(env, item, filename, body) {
+  const token = await getGraphToken(env);
+  // Folder per item so a library with hundreds of files stays navigable, named
+  // with the item text (truncated) rather than only its opaque id.
+  const folder = safeSharePointName(`${item.item} (${item.id})`, item.id);
+  const file = safeSharePointName(filename, 'attachment');
+  const path = `${COMPLIANCE_ATTACH_ROOT}/${folder}/${file}`;
+  // @microsoft.graph.conflictBehavior=rename: attaching a second file with the
+  // same name gets "doc 1.pdf" rather than silently replacing the first, which
+  // for evidence would destroy the earlier record.
+  const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/drive/root:/${
+    path.split('/').map(encodeURIComponent).join('/')
+  }:/content?@microsoft.graph.conflictBehavior=rename`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+    body,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    console.error('Failed to upload compliance attachment:', res.status, text);
+    throw new Error(`SharePoint rejected the upload (${res.status})`);
+  }
+  const drive = await res.json();
+  return {
+    id: drive.id,
+    name: drive.name || file,
+    url: drive.webUrl || '',
+    size: drive.size || 0,
+  };
+}
+
+async function deleteComplianceAttachmentFile(env, driveItemId) {
+  try {
+    const token = await getGraphToken(env);
+    const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/drive/items/${encodeURIComponent(driveItemId)}`;
+    const res = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    // 404 means it's already gone, which is the desired end state either way.
+    if (!res.ok && res.status !== 404) {
+      console.error('Failed to delete compliance attachment:', res.status, await res.text());
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('Error deleting compliance attachment:', err);
+    return false;
+  }
+}
+
+async function handleAdminComplianceAttach(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!env.SHAREPOINT_SITE_ID) {
+    return json({ error: 'SharePoint is not configured, so files cannot be attached' }, 400, cors);
+  }
+  const items = await getComplianceItems(env);
+  const idx = items.findIndex((x) => x.id === id);
+  if (idx < 0) return json({ error: 'Compliance item not found' }, 404, cors);
+
+  const form = await request.formData().catch(() => null);
+  const file = form && form.get('file');
+  if (!file || typeof file === 'string') return json({ error: 'No file received' }, 400, cors);
+  if (file.size === 0) return json({ error: 'That file is empty' }, 400, cors);
+  if (file.size > COMPLIANCE_ATTACH_MAX_BYTES) {
+    return json({ error: `Files must be under ${COMPLIANCE_ATTACH_MAX_BYTES / 1024 / 1024}MB` }, 400, cors);
+  }
+
+  let uploaded;
+  try {
+    uploaded = await uploadComplianceAttachment(env, items[idx], file.name, await file.arrayBuffer());
+  } catch (err) {
+    // Unlike the mirrors elsewhere in this file, an upload failure IS reported:
+    // the advisor explicitly asked for this file to be stored, so silently
+    // succeeding would leave them believing evidence is filed when it isn't.
+    return json({ error: err.message }, 502, cors);
+  }
+
+  const next = { ...items[idx] };
+  next.attachments = [
+    ...(Array.isArray(next.attachments) ? next.attachments : []),
+    { ...uploaded, uploadedAt: new Date().toISOString(), uploadedBy: adminEmail },
+  ];
+  next.updatedAt = new Date().toISOString();
+  items[idx] = next;
+  await saveComplianceItems(env, items);
+  await logAudit(env, adminEmail, 'compliance-attach', { id, name: uploaded.name });
+  return json({ item: withComplianceStatus(next) }, 200, cors);
+}
+
+async function handleAdminComplianceDetach(request, env, cors, id, attachmentId) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const items = await getComplianceItems(env);
+  const idx = items.findIndex((x) => x.id === id);
+  if (idx < 0) return json({ error: 'Compliance item not found' }, 404, cors);
+  const existing = Array.isArray(items[idx].attachments) ? items[idx].attachments : [];
+  const target = existing.find((a) => a.id === attachmentId);
+  if (!target) return json({ error: 'Attachment not found' }, 404, cors);
+
+  // Remove the file first. If SharePoint refuses, keep the record pointing at
+  // it rather than orphaning a file nothing references any more.
+  const removed = await deleteComplianceAttachmentFile(env, attachmentId);
+  if (!removed) return json({ error: 'Could not remove the file from SharePoint' }, 502, cors);
+
+  const next = { ...items[idx], attachments: existing.filter((a) => a.id !== attachmentId), updatedAt: new Date().toISOString() };
+  items[idx] = next;
+  await saveComplianceItems(env, items);
+  await logAudit(env, adminEmail, 'compliance-detach', { id, name: target.name });
+  return json({ item: withComplianceStatus(next) }, 200, cors);
 }
 
 // ---------- Learning resources (SharePoint document library) ----------
@@ -2698,6 +2845,13 @@ function complianceOccurrenceFrom(template, dueDate, seriesId) {
     // A new occurrence is always outstanding — sign-offs belong to one date only.
     ownerCompleted: '', ownerCompletedBy: '',
     reviewerCompleted: '', reviewerCompletedBy: '',
+    completedAt: '', completedBy: '',
+    // Evidence belongs to the occurrence it was filed for. Inheriting it would
+    // show next quarter's 13F as already having this quarter's confirmation
+    // attached — and worse, deleting either row would delete the shared file.
+    attachments: [],
+    // Its own SharePoint mirror row, not a second reference to the template's.
+    sharePointItemId: null,
     createdAt: new Date().toISOString(),
     updatedAt: null,
   };
@@ -3088,7 +3242,14 @@ async function handleAdminComplianceDelete(request, env, cors, id) {
   // Best-effort — see deleteComplianceFromSharePoint. Sequential, not
   // Promise.all: a whole series can be dozens of rows, and this must never
   // fire that many concurrent Graph calls at once.
-  for (const it of removedItems) await deleteComplianceFromSharePoint(env, it);
+  for (const it of removedItems) {
+    await deleteComplianceFromSharePoint(env, it);
+    // Delete the evidence with the record it belonged to, rather than leaving
+    // files in the library that nothing references any more.
+    for (const a of (Array.isArray(it.attachments) ? it.attachments : [])) {
+      await deleteComplianceAttachmentFile(env, a.id);
+    }
+  }
   await saveComplianceItems(env, items);
   await logAudit(env, adminEmail, 'compliance-delete', {
     id, item: target.item, series: wholeSeries, removed: removedCount,
@@ -4507,6 +4668,19 @@ export default {
       }
       if (url.pathname === '/api/admin/compliance' && request.method === 'POST') {
         return await handleAdminComplianceCreate(request, env, cors);
+      }
+      // Attachment routes come first: the generic /compliance/(.+) below would
+      // otherwise swallow "/attachment" into the item id and route an upload
+      // into handleAdminComplianceUpdate.
+      const attachMatch = url.pathname.match(/^\/api\/admin\/compliance\/([^/]+)\/attachment$/);
+      if (attachMatch && request.method === 'POST') {
+        return await handleAdminComplianceAttach(request, env, cors, decodeURIComponent(attachMatch[1]));
+      }
+      const detachMatch = url.pathname.match(/^\/api\/admin\/compliance\/([^/]+)\/attachment\/(.+)$/);
+      if (detachMatch && request.method === 'DELETE') {
+        return await handleAdminComplianceDetach(
+          request, env, cors, decodeURIComponent(detachMatch[1]), decodeURIComponent(detachMatch[2])
+        );
       }
       const complianceMatch = url.pathname.match(/^\/api\/admin\/compliance\/(.+)$/);
       if (complianceMatch && request.method === 'POST') {
