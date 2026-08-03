@@ -1,4 +1,4 @@
-# Local dev server for the BlueLine portal frontend.
+﻿# Local dev server for the BlueLine portal frontend.
 # Serves public/ and mocks the Worker API in-memory (no Cloudflare needed).
 # The real API lives in worker.js — keep computed fields here in sync with it.
 # Run: powershell -NoProfile -ExecutionPolicy Bypass -File dev-server.ps1
@@ -1531,6 +1531,20 @@ while ($listener.IsListening) {
             $it.updatedAt = (Get-Date).ToString('o')
             Write-Audit $adminEmail 'compliance-detach' @{ id = $cid; attachment = $aid }
             Send-Json $ctx 200 @{ item = (ConvertTo-CompliancePayload $it) }
+        }
+        # Mirror worker.js handleAdminComplianceAttachmentsFolder. Real Graph
+        # traffic there resolves a folder that genuinely exists in SharePoint;
+        # the mock has nothing to resolve, so it fakes a stable fictitious URL
+        # once at least one attachment exists anywhere, purely to exercise the
+        # button's open-a-new-tab-then-navigate flow locally.
+        elseif ($path -eq '/api/admin/compliance/attachments-folder' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $anyAttachments = $complianceItems | Where-Object { @($_.attachments | Where-Object { $_ }).Count -gt 0 } | Select-Object -First 1
+            if (-not $anyAttachments) {
+                Send-Json $ctx 404 @{ error = 'No compliance files have been attached yet — the folder is created on the first upload.' }
+                continue
+            }
+            Send-Json $ctx 200 @{ url = 'https://example.invalid/mock/Compliance%20Attachments' }
         }
         elseif ($path -match '^/api/admin/compliance/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx

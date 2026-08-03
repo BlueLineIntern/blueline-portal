@@ -255,6 +255,9 @@
       </div>
       <div class="page-actions">
         <button type="button" class="btn btn-primary btn-small" id="cmp-new">+ Add item</button>
+        <!-- No one has to remember or hunt for "Compliance Attachments" among
+             everything else under Documents — this resolves and opens it. -->
+        <button type="button" class="btn btn-ghost btn-small" id="cmp-open-folder" title="Open the evidence folder in SharePoint">📁 Attachments folder</button>
         <button type="button" class="btn btn-ghost btn-small" id="cmp-refresh">↻ Refresh</button>
       </div>
     </div>
@@ -1265,6 +1268,29 @@
     b.addEventListener('click', () => { currentView = b.dataset.view; render(); })
   );
   document.getElementById('cmp-refresh').addEventListener('click', () => loadData({ showStatus: true }));
+
+  document.getElementById('cmp-open-folder').addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    // Opened synchronously, inside the click handler, before the await below —
+    // some browsers only allow window.open() as a direct result of a user
+    // gesture and silently block one issued after an async gap. Navigated to
+    // the real URL once the lookup resolves; closed instead if it fails, so a
+    // popup-blocker exception doesn't leave a permanent blank tab behind.
+    const tab = window.open('', '_blank', 'noopener');
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = 'Opening…';
+    try {
+      const res = await api('/api/admin/compliance/attachments-folder');
+      if (tab) tab.location = res.url;
+    } catch (err) {
+      if (tab) tab.close();
+      setStatus(err.message || 'Could not open the attachments folder.');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
   document.getElementById('cmp-new').addEventListener('click', openDrawerNew);
   document.getElementById('tr-search').addEventListener('input', renderTracker);
   document.getElementById('tr-export').addEventListener('click', exportTracker);

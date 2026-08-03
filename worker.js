@@ -2618,6 +2618,34 @@ async function handleAdminComplianceDetach(request, env, cors, id, attachmentId)
   return json({ item: withComplianceStatus(next) }, 200, cors);
 }
 
+// So nobody has to remember (or hunt for) the folder name among everything
+// else under Documents: this resolves the real webUrl of the root evidence
+// folder on demand, and the client opens it directly. No caching — a folder
+// doesn't move often enough to justify the staleness risk, and this is one
+// cheap Graph call triggered by an explicit click, not something on a hot path.
+async function handleAdminComplianceAttachmentsFolder(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!env.SHAREPOINT_SITE_ID) return json({ error: 'SharePoint is not configured' }, 400, cors);
+  try {
+    const token = await getGraphToken(env);
+    const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}/drive/root:/${encodeURIComponent(COMPLIANCE_ATTACH_ROOT)}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (res.status === 404) {
+      return json({ error: 'No compliance files have been attached yet — the folder is created on the first upload.' }, 404, cors);
+    }
+    if (!res.ok) {
+      console.error('Failed to resolve compliance attachments folder:', res.status, await res.text());
+      return json({ error: 'Could not reach SharePoint' }, 502, cors);
+    }
+    const folder = await res.json();
+    return json({ url: folder.webUrl || '' }, 200, cors);
+  } catch (err) {
+    console.error('Error resolving compliance attachments folder:', err);
+    return json({ error: 'Could not reach SharePoint' }, 502, cors);
+  }
+}
+
 // ---------- Learning resources (SharePoint document library) ----------
 // Staff training material — videos and documents — kept in a SharePoint
 // document library ("Learning Resources") and listed read-only in the admin
@@ -4681,6 +4709,11 @@ export default {
         return await handleAdminComplianceDetach(
           request, env, cors, decodeURIComponent(detachMatch[1]), decodeURIComponent(detachMatch[2])
         );
+      }
+      // Also before the generic /compliance/(.+) route, which would otherwise
+      // swallow "attachments-folder" as an item id.
+      if (url.pathname === '/api/admin/compliance/attachments-folder' && request.method === 'GET') {
+        return await handleAdminComplianceAttachmentsFolder(request, env, cors);
       }
       const complianceMatch = url.pathname.match(/^\/api\/admin\/compliance\/(.+)$/);
       if (complianceMatch && request.method === 'POST') {
