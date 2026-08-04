@@ -737,6 +737,12 @@
   const FILTER_DEFAULTS = {
     employee: 'all', role: 'either', requirement: 'all',
     frequency: 'all', area: 'all', source: 'all', workflow: 'all',
+    // "Only what `employee` can act on right now", in either role. Distinct
+    // from role: role asks whose NAME is in a field, this asks whose TURN it
+    // is — the difference between everything with my name on it and my to-do
+    // list. Has no control in the panel; it's what My Work switches on, and
+    // the chip is how it's turned off.
+    mine: false,
   };
   let filters = { ...FILTER_DEFAULTS };
   // The quick view most recently applied, remembered rather than re-derived.
@@ -770,12 +776,18 @@
       // Employee + role. Role decides which field the name has to appear in;
       // filtering on the name alone can't tell "my work" from "my reviews".
       if (filters.employee !== 'all') {
-        const isOwner = String(it.owner || '').trim() === filters.employee;
-        const isReviewer = String(it.reviewer || '').trim() === filters.employee;
-        const match = filters.role === 'owner' ? isOwner
-          : filters.role === 'reviewer' ? isReviewer
-            : (isOwner || isReviewer);
-        if (!match) return false;
+        // `mine` supersedes role: it already implies either role, and asks the
+        // stronger question of whether this person can act on it now.
+        if (filters.mine) {
+          if (!isMyWork(it, filters.employee)) return false;
+        } else {
+          const isOwner = String(it.owner || '').trim() === filters.employee;
+          const isReviewer = String(it.reviewer || '').trim() === filters.employee;
+          const match = filters.role === 'owner' ? isOwner
+            : filters.role === 'reviewer' ? isReviewer
+              : (isOwner || isReviewer);
+          if (!match) return false;
+        }
       }
 
       if (filters.requirement !== 'all' && String(it.requirement || '') !== filters.requirement) return false;
@@ -825,7 +837,7 @@
     if (trackerTab === 'completed' && !filtersActive()) return 'completed';
     if (trackerTab !== 'open') return '';
     if (trackerPeriod === 'overdue' && filters.employee === 'all') return 'overdue';
-    if (filters.employee === who && filters.role === 'owner' && trackerPeriod === 'all') return 'mywork';
+    if (filters.employee === who && filters.mine && trackerPeriod === 'all') return 'mywork';
     if (filters.employee === who && filters.role === 'reviewer' && trackerPeriod === 'all') return 'myreviews';
     if (!filtersActive()) return 'open';
     return '';
@@ -877,6 +889,9 @@
    ['f-workflow', 'workflow']].forEach(([id, key]) => {
     document.getElementById(id).addEventListener('change', (e) => {
       filters[key] = e.target.value;
+      // `mine` supersedes role, so leaving it on would make the Role and
+      // Assigned-to dropdowns look broken — changed by hand, no visible effect.
+      if (key === 'role' || key === 'employee') filters.mine = false;
       lastQuickView = ''; // hand-edited: no longer one of the quick views
       renderTracker();
     });
@@ -910,6 +925,30 @@
   // Counts shown on the quick-view buttons. Each is what that view would
   // actually return, so a button reading 0 is honest rather than inviting a
   // click into an empty list.
+  // Is this item waiting on `who` to do something, in EITHER role?
+  //
+  // Deliberately not "every item with my name on it": an item I own and have
+  // already signed off is sitting with the reviewer, and counting it as my
+  // work would inflate the number with things I cannot action. The count is
+  // meant to answer "what do I have to do", so it has to be things I can
+  // actually pick up right now.
+  function isMyWork(it, who) {
+    if (isClosed(it)) return false;
+    const owner = String(it.owner || '').trim();
+    const reviewer = String(it.reviewer || '').trim();
+    const ownerSigned = !!String(it.ownerCompleted || '').trim();
+    const reviewerSigned = !!String(it.reviewerCompleted || '').trim();
+    // Mine to complete: I own it and haven't signed off yet.
+    if (owner === who && !ownerSigned) return true;
+    // Mine to review: I'm the reviewer and the owner has handed it over.
+    if (it.reviewerRequired && reviewer === who && ownerSigned && !reviewerSigned) return true;
+    // Signed off by everyone but not closed — someone still has to press
+    // Complete. That falls to whoever signed last, so it doesn't fall through
+    // the gap and end up on nobody's list.
+    if (it.signedOff) return (it.reviewerRequired ? reviewer : owner) === who;
+    return false;
+  }
+
   function quickViewCounts() {
     const today = todayIso();
     const open = allItems.filter((it) => !isClosed(it));
@@ -918,10 +957,9 @@
       open: open.length,
       completed: allItems.filter(isClosed).length,
       overdue: open.filter((it) => it.dueDate && String(it.dueDate) < today).length,
-      mywork: open.filter((it) => String(it.owner || '').trim() === who).length,
-      // Reviews the reviewer can actually act on: the owner has signed off and
-      // the review is outstanding. Showing everything they merely might review
-      // one day would make the number meaningless as a to-do count.
+      mywork: open.filter((it) => isMyWork(it, who)).length,
+      // A subset of My Work: specifically the review queue, for answering
+      // "what is waiting for me to review" separately from "what do I owe".
       myreviews: open.filter((it) => String(it.reviewer || '').trim() === who
         && String(it.ownerCompleted || '').trim()
         && !String(it.reviewerCompleted || '').trim()).length,
@@ -936,7 +974,7 @@
     if (id === 'open') trackerTab = 'open';
     else if (id === 'completed') trackerTab = 'completed';
     else if (id === 'overdue') { trackerTab = 'open'; trackerPeriod = 'overdue'; }
-    else if (id === 'mywork') { trackerTab = 'open'; filters.employee = who; filters.role = 'owner'; }
+    else if (id === 'mywork') { trackerTab = 'open'; filters.employee = who; filters.mine = true; }
     else if (id === 'myreviews') {
       trackerTab = 'open';
       filters.employee = who;
@@ -974,7 +1012,8 @@
     const chips = [];
     if (trackerPeriod !== 'all') chips.push({ k: 'period', label: PERIOD_LABELS[trackerPeriod] || trackerPeriod });
     if (filters.employee !== 'all') {
-      const role = filters.role === 'either' ? 'owner or reviewer' : filters.role;
+      const role = filters.mine ? 'to do'
+        : filters.role === 'either' ? 'owner or reviewer' : filters.role;
       chips.push({ k: 'employee', label: `${filters.employee} (${role})` });
     } else if (filters.role !== 'either') {
       chips.push({ k: 'role', label: `Role: ${filters.role}` });
@@ -988,7 +1027,9 @@
     wrap.querySelectorAll('.fchip').forEach((b) => b.addEventListener('click', () => {
       const k = b.dataset.k;
       if (k === 'period') trackerPeriod = 'all';
-      else if (k === 'employee') { filters.employee = 'all'; filters.role = 'either'; }
+      // Clearing the person clears `mine` with it — it means nothing without
+      // someone to be "mine" for, and leaving it set would filter to nobody.
+      else if (k === 'employee') { filters.employee = 'all'; filters.role = 'either'; filters.mine = false; }
       else filters[k] = FILTER_DEFAULTS[k];
       syncFilterControls();
       renderTracker();
