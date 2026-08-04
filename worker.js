@@ -2447,7 +2447,17 @@ async function pushComplianceToSharePoint(env, item) {
       DueDate: item.dueDate || '',
       Frequency: item.frequency || '',
       Source: item.source || '',
-      Mandated: item.mandated ? 'Yes' : 'No',
+      // The existing SharePoint column keeps its name so no list change is
+      // needed; only the VALUE changes, from Yes/No to Required/Best practice,
+      // so the mirror says what the app says.
+      //
+      // complianceArea is deliberately NOT sent. Graph rejects the whole write
+      // with a 400 when a field isn't in the list schema — the same failure
+      // that broke the contacts push over the Tags column — so adding it here
+      // would silently stop every completed item mirroring for any list
+      // without that column. Add a ComplianceArea column to the list first,
+      // then it can be included.
+      Mandated: item.requirement || (item.mandated ? 'Required' : 'Best practice'),
       Owner: item.owner || '',
       OwnerCompleted: item.ownerCompleted || '',
       Reviewer: item.reviewer || '',
@@ -2664,7 +2674,44 @@ const COMPLIANCE_REVIEWERS = ['Frank', 'Jennifer', 'N/A'];
 // round, but the app never materialises the next occurrence itself — future
 // due dates arrive by importing a spreadsheet that lists them. The date-
 // stepping machinery this used to need is gone with it.
-const COMPLIANCE_FREQUENCIES = ['One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually'];
+const COMPLIANCE_FREQUENCIES = ['Quarterly', 'Annual', 'One-time', 'Ongoing', 'Monthly', 'Semi-annual', 'Weekly'];
+
+// Exactly six, deliberately. AI, cybersecurity, privacy, BCP, vendors and
+// device/technology matters all live together under Technology, Privacy &
+// Resilience rather than splintering into their own top-level areas — six
+// stable categories people can hold in their head beats fifteen precise ones.
+const COMPLIANCE_AREAS = [
+  'Governance & Regulatory',
+  'Trading & Investments',
+  'Fees & Client Accounts',
+  'Marketing & Communications',
+  'Personnel & Ethics',
+  'Technology, Privacy & Resilience',
+];
+
+const COMPLIANCE_REQUIREMENTS = ['Required', 'Best practice'];
+
+// Lowercased item name -> area, built from the seed. Used only to backfill
+// records written before complianceArea existed; new items carry their own.
+const COMPLIANCE_AREA_BY_ITEM = new Map(
+  COMPLIANCE_SEED.filter((r) => r.complianceArea)
+    .map((r) => [String(r.item).trim().toLowerCase(), r.complianceArea])
+);
+
+// "One-time: target Q3 2027" -> One-time. Matches scripts/add-compliance-area.js
+// so a record migrated on read lands on the same value the seed already has.
+function normaliseComplianceFrequency(raw) {
+  const s = String(raw || '').trim();
+  const l = s.toLowerCase();
+  if (l.startsWith('one-time') || l.startsWith('one time')) return 'One-time';
+  if (l.startsWith('ongoing')) return 'Ongoing';
+  if (l.startsWith('quarterly')) return 'Quarterly';
+  if (l.startsWith('annual')) return 'Annual';
+  if (l.startsWith('semi-annual')) return 'Semi-annual';
+  if (l.startsWith('monthly')) return 'Monthly';
+  if (l.startsWith('weekly')) return 'Weekly';
+  return s || 'One-time';
+}
 
 // An item needs a reviewer unless the reviewer is explicitly "N/A".
 function complianceReviewerRequired(item) {
@@ -2707,10 +2754,38 @@ function complianceSort(items) {
     String(a.dueDate).localeCompare(String(b.dueDate)) || String(a.item).localeCompare(String(b.item)));
 }
 
+// The user-facing workflow stage, distinct from the coarse OPEN/CLOSED status
+// the rest of the app keys off.
+//
+// Deliberately FOUR values, not the five requested: "Owner complete" and
+// "Awaiting review" describe the identical condition (owner has signed, review
+// hasn't happened), and shipping both would put two labels on one state with
+// no rule for choosing between them. "Awaiting review" is the one kept, per the
+// stated preference for it as the user-facing wording.
+const COMPLIANCE_WORKFLOW = ['Open', 'Waiting', 'Awaiting review', 'Completed'];
+
+function complianceWorkflow(item) {
+  if (complianceStatus(item) === 'CLOSED') return 'Completed';
+  // Blocked on someone/something else, recorded explicitly rather than inferred.
+  if (String(item.waitingOn || '').trim()) return 'Waiting';
+  // Owner has signed off and a reviewer is still owed — the stage the reviewer
+  // queue is built from.
+  if (String(item.ownerCompleted || '').trim()
+      && complianceReviewerRequired(item)
+      && !String(item.reviewerCompleted || '').trim()) {
+    return 'Awaiting review';
+  }
+  // Signed off by everyone but not yet closed also reads as awaiting review:
+  // the outstanding action is the review sign-off being turned into a close.
+  if (complianceSignedOff(item)) return 'Awaiting review';
+  return 'Open';
+}
+
 function withComplianceStatus(item) {
   return {
     ...item,
     status: complianceStatus(item),
+    workflow: complianceWorkflow(item),
     reviewerRequired: complianceReviewerRequired(item),
     // Both surfaced so the client doesn't re-derive them and drift from here.
     signedOff: complianceSignedOff(item),
@@ -2753,6 +2828,39 @@ function migrateComplianceItems(items) {
       next.completedBy = wasClosed ? String(next.reviewerCompletedBy || next.ownerCompletedBy || '') : '';
       changed = true;
     }
+    // mandated (boolean) -> requirement (label). "Best practice" rather than
+    // "No": the firm still elects to do these, they just aren't externally
+    // mandated, and "No" reads as "unnecessary".
+    if (next.requirement === undefined) {
+      next.requirement = next.mandated ? 'Required' : 'Best practice';
+      delete next.mandated;
+      changed = true;
+    }
+    // Split the free-text frequency into a filterable value plus the original
+    // wording, so "One-time: target Q3 2027" can be filtered as One-time
+    // without losing the target date.
+    if (next.frequencyDetail === undefined) {
+      const norm = normaliseComplianceFrequency(next.frequency);
+      next.frequencyDetail = norm === String(next.frequency || '').trim() ? '' : String(next.frequency || '').trim();
+      next.frequency = norm;
+      changed = true;
+    }
+    // Area is stored, never derived at render time. Records predating the field
+    // are matched to the seed by item name — the same basis the seed itself was
+    // classified on, so a recurring obligation's rows all agree.
+    if (next.complianceArea === undefined) {
+      next.complianceArea = COMPLIANCE_AREA_BY_ITEM.get(String(next.item || '').trim().toLowerCase()) || '';
+      changed = true;
+    }
+    if (next.waitingOn === undefined) {
+      next.waitingOn = '';
+      changed = true;
+    }
+    // "Jenn" and "Jennifer" must not coexist as separate values — a filter on
+    // one would silently miss the other's items.
+    ['owner', 'reviewer'].forEach((k) => {
+      if (String(next[k] || '').trim() === 'Jenn') { next[k] = 'Jennifer'; changed = true; }
+    });
     return next;
   });
   return { items: migrated, changed };
@@ -2824,10 +2932,37 @@ function sanitizeComplianceFields(body, { requireCore = false } = {}) {
   // dropdown doesn't offer ("Ongoing / target Dec 2026", "One-time: Jan 1,
   // 2028"), and rejecting those would make those items unsaveable. Nothing
   // parses it — it's a label shown on the row.
-  if (body.frequency !== undefined) out.frequency = str(body.frequency, 100);
+  // Normalised on the way in so a hand-typed or imported "One-time: Jan 2028"
+  // is filterable, with the original wording kept alongside it.
+  if (body.frequency !== undefined) {
+    const raw = str(body.frequency, 100);
+    const norm = normaliseComplianceFrequency(raw);
+    out.frequency = norm;
+    out.frequencyDetail = norm === raw ? '' : raw;
+  }
+  // An explicit frequencyDetail wins over the one inferred above, so a caller
+  // that already split the two doesn't get its detail overwritten.
+  if (body.frequencyDetail !== undefined) out.frequencyDetail = str(body.frequencyDetail, 200);
   if (body.source !== undefined) out.source = str(body.source, 100);
   if (body.notes !== undefined) out.notes = str(body.notes, 2000);
-  if (body.mandated !== undefined) out.mandated = !!body.mandated;
+  if (body.waitingOn !== undefined) out.waitingOn = str(body.waitingOn, 200);
+  if (body.complianceArea !== undefined) {
+    const v = str(body.complianceArea, 60);
+    // Rejected rather than coerced: a typo'd area would silently vanish from
+    // its filter, and there are only six valid values.
+    if (v && !COMPLIANCE_AREAS.includes(v)) return { error: 'Unknown compliance area' };
+    out.complianceArea = v;
+  }
+  if (body.requirement !== undefined) {
+    const v = str(body.requirement, 30);
+    if (v && !COMPLIANCE_REQUIREMENTS.includes(v)) return { error: 'Requirement must be Required or Best practice' };
+    out.requirement = v || 'Best practice';
+  }
+  // Legacy boolean, still accepted so an older client or a stored payload
+  // doesn't lose the distinction on save.
+  if (body.mandated !== undefined && body.requirement === undefined) {
+    out.requirement = body.mandated ? 'Required' : 'Best practice';
+  }
 
   // The two check-offs. An empty string clears one (re-opening the item);
   // anything else must be a real date, so a stray value can't silently close it.
@@ -2844,11 +2979,18 @@ async function handleAdminComplianceList(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const items = await getComplianceItems(env);
+  const shaped = complianceSort(items).map(withComplianceStatus);
   return json({
-    items: complianceSort(items).map(withComplianceStatus),
+    items: shaped,
     owners: COMPLIANCE_OWNERS,
     reviewers: COMPLIANCE_REVIEWERS,
     frequencies: COMPLIANCE_FREQUENCIES,
+    areas: COMPLIANCE_AREAS,
+    requirements: COMPLIANCE_REQUIREMENTS,
+    workflows: COMPLIANCE_WORKFLOW,
+    // Source values come from the data rather than a fixed list — the set grows
+    // as policies are added, and a hardcoded list would quietly omit new ones.
+    sources: [...new Set(shaped.map((i) => String(i.source || '').trim()).filter(Boolean))].sort(),
   }, 200, cors);
 }
 
@@ -2867,7 +3009,9 @@ async function handleAdminComplianceCreate(request, env, cors) {
   // importing a spreadsheet that lists them.
   const base = {
     id: `cx-${invTs()}-${randomHex(3)}`,
-    whatToDo: '', frequency: '', source: '', notes: '', mandated: false,
+    whatToDo: '', frequency: 'One-time', frequencyDetail: '',
+      source: '', notes: '', waitingOn: '',
+      complianceArea: '', requirement: 'Best practice',
     ...fields,
     ownerCompleted: fields.ownerCompleted || '',
     ownerCompletedBy: '',
@@ -3016,7 +3160,9 @@ async function handleAdminComplianceImport(request, env, cors) {
   const created = prepared.map((fields) => {
     return {
       id: `cx-${invTs()}-${randomHex(3)}`,
-      whatToDo: '', frequency: '', source: '', notes: '', mandated: false,
+      whatToDo: '', frequency: 'One-time', frequencyDetail: '',
+      source: '', notes: '', waitingOn: '',
+      complianceArea: '', requirement: 'Best practice',
       ...fields,
       // Imported rows always start outstanding. Sign-off columns in the file
       // are ignored on purpose: this is a reset, and honouring a "signed off"

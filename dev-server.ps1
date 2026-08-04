@@ -61,7 +61,12 @@ function Import-ComplianceSeed {
     foreach ($row in (ConvertFrom-Json $json)) {
         $null = $complianceItems.Add([ordered]@{
             id = $row.id; dueDate = $row.dueDate; item = $row.item; whatToDo = $row.whatToDo
-            frequency = $row.frequency; source = $row.source; mandated = [bool]$row.mandated
+            # The seed already carries normalised frequency, frequencyDetail,
+            # complianceArea and requirement — see scripts/add-compliance-area.js.
+            frequency = $row.frequency; frequencyDetail = $row.frequencyDetail
+            complianceArea = $row.complianceArea
+            source = $row.source; requirement = $row.requirement
+            waitingOn = ''
             # Mirror worker.js: the seed still carries 'Both' rows, which become
             # Frank owns / Jennifer reviews — that also gives them a review step.
             owner = $(if (([string]$row.owner).Trim() -eq 'Both') { 'Frank' } else { $row.owner })
@@ -78,7 +83,11 @@ function Import-ComplianceSeed {
 # Frequency is DESCRIPTIVE ONLY, mirroring worker.js: it records how often an
 # obligation comes round, but nothing generates the next occurrence — future
 # due dates arrive by importing a spreadsheet listing them.
-$complianceFrequencies = @('One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually')
+$complianceFrequencies = @('Quarterly', 'Annual', 'One-time', 'Ongoing', 'Monthly', 'Semi-annual', 'Weekly')
+# Exactly six, mirroring worker.js COMPLIANCE_AREAS.
+$complianceAreas = @('Governance & Regulatory', 'Trading & Investments', 'Fees & Client Accounts', 'Marketing & Communications', 'Personnel & Ethics', 'Technology, Privacy & Resilience')
+$complianceRequirements = @('Required', 'Best practice')
+$complianceWorkflows = @('Open', 'Waiting', 'Awaiting review', 'Completed')
 
 # Mirror worker.js complianceStatus/complianceSignedOff/complianceAwaiting.
 # Status now keys off a STORED completedAt, not the two check-offs: signing off
@@ -102,10 +111,21 @@ function Get-ComplianceAwaiting($it) {
     }
     return ''
 }
+# Mirror worker.js complianceWorkflow. FOUR states, not five: "Owner complete"
+# and "Awaiting review" describe the same condition, so only the latter ships.
+function Get-ComplianceWorkflow($it) {
+    if ((Get-ComplianceStatus $it) -eq 'CLOSED') { return 'Completed' }
+    if (([string]$it.waitingOn).Trim()) { return 'Waiting' }
+    if (([string]$it.ownerCompleted).Trim() -and (Get-ComplianceReviewerRequired $it) `
+        -and -not ([string]$it.reviewerCompleted).Trim()) { return 'Awaiting review' }
+    if (Get-ComplianceSignedOff $it) { return 'Awaiting review' }
+    return 'Open'
+}
 function ConvertTo-CompliancePayload($it) {
     $o = [ordered]@{}
     foreach ($k in $it.Keys) { $o[$k] = $it[$k] }
     $o['status'] = Get-ComplianceStatus $it
+    $o['workflow'] = Get-ComplianceWorkflow $it
     $o['reviewerRequired'] = Get-ComplianceReviewerRequired $it
     $o['signedOff'] = Get-ComplianceSignedOff $it
     $o['awaiting'] = Get-ComplianceAwaiting $it
@@ -1352,7 +1372,10 @@ while ($listener.IsListening) {
             $sorted = @($complianceItems | Sort-Object -Property @{Expression={[string]$_.dueDate}}, @{Expression={[string]$_.item}})
             $payload = @($sorted | ForEach-Object { ConvertTo-CompliancePayload $_ })
             Send-Json $ctx 200 @{ items = $payload; owners = @('Frank','Jennifer')
-                                  reviewers = @('Frank','Jennifer','N/A'); frequencies = $complianceFrequencies }
+                                  reviewers = @('Frank','Jennifer','N/A'); frequencies = $complianceFrequencies
+                                  areas = $complianceAreas; requirements = $complianceRequirements
+                                  workflows = $complianceWorkflows
+                                  sources = @($complianceItems | ForEach-Object { [string]$_.source } | Where-Object { $_ } | Sort-Object -Unique) }
         }
         # Mirror worker.js handleAdminComplianceImport. Must precede the generic
         # /compliance/(.+) route, which would swallow "import" as an item id.
@@ -1399,7 +1422,8 @@ while ($listener.IsListening) {
                     id = 'cx-{0:d4}' -f $script:cmpCounter
                     dueDate = [string]$r.dueDate; item = ([string]$r.item).Trim()
                     whatToDo = [string]$r.whatToDo; frequency = [string]$r.frequency
-                    source = [string]$r.source; mandated = [bool]$r.mandated
+                    source = [string]$r.source; requirement = $(if ([string]$r.requirement) { [string]$r.requirement } else { 'Best practice' })
+                    complianceArea = [string]$r.complianceArea; frequencyDetail = [string]$r.frequencyDetail; waitingOn = ''
                     owner = ([string]$r.owner).Trim()
                     reviewer = if (([string]$r.reviewer).Trim()) { ([string]$r.reviewer).Trim() } else { 'N/A' }
                     notes = [string]$r.notes
@@ -1428,7 +1452,8 @@ while ($listener.IsListening) {
                 id = 'cx-{0:d4}' -f $script:cmpCounter
                 dueDate = [string]$body.dueDate; item = ([string]$body.item).Trim()
                 whatToDo = [string]$body.whatToDo; frequency = [string]$body.frequency
-                source = [string]$body.source; mandated = [bool]$body.mandated
+                source = [string]$body.source; requirement = $(if ([string]$body.requirement) { [string]$body.requirement } else { 'Best practice' })
+                complianceArea = [string]$body.complianceArea; frequencyDetail = [string]$body.frequencyDetail; waitingOn = ''
                 owner = ([string]$body.owner).Trim()
                 reviewer = if (([string]$body.reviewer).Trim()) { ([string]$body.reviewer).Trim() } else { 'N/A' }
                 notes = [string]$body.notes
@@ -1469,7 +1494,9 @@ while ($listener.IsListening) {
             foreach ($f in @('item','whatToDo','dueDate','frequency','source','notes','owner','reviewer')) {
                 if ($body.PSObject.Properties[$f]) { $it[$f] = [string]$body.$f }
             }
-            if ($body.PSObject.Properties['mandated']) { $it.mandated = [bool]$body.mandated }
+            if ($body.PSObject.Properties['requirement']) { $it.requirement = [string]$body.requirement }
+            if ($body.PSObject.Properties['complianceArea']) { $it.complianceArea = [string]$body.complianceArea }
+            if ($body.PSObject.Properties['waitingOn']) { $it.waitingOn = [string]$body.waitingOn }
             # Empty clears a check-off (re-opening the item); the stamp of who
             # ticked it is cleared with it.
             if ($ownerGiven) {

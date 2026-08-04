@@ -56,6 +56,68 @@
   .cmp-alert-item.late .ca-when { color: var(--red); }
   .ca-more { font-size: var(--fs-xs); color: var(--muted); }
 
+  /* Quick views. Real buttons, so they're keyboard-reachable and announce a
+     pressed state without extra scripting. */
+  .qv-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; margin-bottom: var(--sp-3); }
+  .qv {
+    display: inline-flex; align-items: baseline; gap: var(--sp-2); cursor: pointer;
+    border: 1px solid var(--border-strong); background: var(--panel); color: var(--text);
+    border-radius: var(--radius); padding: var(--sp-2) var(--sp-3);
+    font-family: var(--font-sans); font-size: var(--fs-sm);
+  }
+  .qv:hover { border-color: var(--sky); }
+  .qv.active { background: var(--navy); border-color: var(--navy); color: #fff; }
+  .qv-n { font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; }
+  .qv.active .qv-n { color: #fff; }
+  .qv-l { color: var(--muted); }
+  .qv.active .qv-l { color: rgba(255,255,255,0.85); }
+  .qv-sep { width: 1px; height: 22px; background: var(--border-strong); margin: 0 var(--sp-1); }
+  .qv-as { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--muted); margin-left: auto; }
+  .qv-as select { width: auto; }
+
+  /* Filter panel. Labels are visible, not placeholder-only. */
+  .f-panel { border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: var(--sp-4); margin-bottom: var(--sp-3); }
+  .f-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--sp-3); }
+  .f-field { min-width: 0; }
+  .f-field > label { display: block; font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--muted); margin-bottom: 3px; }
+  .f-field select, .f-field input { width: 100%; }
+  .f-wide { grid-column: span 2; }
+  @media (max-width: 620px) { .f-wide { grid-column: span 1; } }
+  .f-daterow { display: flex; align-items: center; gap: var(--sp-2); }
+  .f-daterow span { font-size: var(--fs-xs); color: var(--muted); }
+  .f-inline { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--muted); }
+  .f-inline select { width: auto; }
+  /* Visually hidden but still read aloud — the search box has a placeholder,
+     but a placeholder is not a label. */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  .chip-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+  .fchip {
+    display: inline-flex; align-items: center; gap: var(--sp-2); cursor: pointer;
+    background: var(--sky-bg); color: var(--sky-dark); border: 1px solid var(--sky);
+    border-radius: var(--radius-pill); padding: 2px var(--sp-3);
+    font-family: var(--font-sans); font-size: var(--fs-xs); font-weight: var(--fw-semibold);
+  }
+  .fchip:hover { background: var(--panel); }
+  .cmp-count { font-size: var(--fs-xs); color: var(--muted); margin: 0 0 var(--sp-2); }
+
+  /* Compliance area tags. Muted tints, and the name is always written out —
+     six colours is already more than anyone will reliably memorise. */
+  .area-chip {
+    display: inline-block; font-size: var(--fs-2xs); border-radius: var(--radius-pill);
+    padding: 0 var(--sp-2); white-space: nowrap; border: 1px solid transparent;
+  }
+  .area-gov    { background: #e7ebf3; color: var(--navy); }
+  .area-trade  { background: var(--teal-bg); color: var(--teal); }
+  .area-fees   { background: var(--violet-bg); color: var(--violet); }
+  .area-mkt    { background: var(--sky-bg); color: var(--sky-dark); }
+  .area-people { background: var(--amber-bg); color: var(--amber); }
+  .area-tech   { background: var(--slate-bg); color: var(--slate); }
+  .area-none   { background: var(--gray-bg); color: var(--muted); }
+
   .cmp-searchrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
   /* flex:1 lets search take the slack so the period select and export button
      sit together at the right rather than being spread across the row. */
@@ -275,21 +337,101 @@
 
     <!-- ---------- Tracker ---------- -->
     <div id="track-view">
-      <div class="filter-row" id="tr-filters"></div>
+      <!-- Row 1: the questions asked most often, one click each. -->
+      <div class="qv-row">
+        <button type="button" class="qv" data-qv="open" id="qv-open"><span class="qv-n" id="qv-open-n">–</span><span class="qv-l">Open</span></button>
+        <button type="button" class="qv" data-qv="completed" id="qv-completed"><span class="qv-n" id="qv-completed-n">–</span><span class="qv-l">Completed</span></button>
+        <span class="qv-sep" aria-hidden="true"></span>
+        <button type="button" class="qv" data-qv="mywork"><span class="qv-n" id="qv-mywork-n">–</span><span class="qv-l">My Work</span></button>
+        <button type="button" class="qv" data-qv="myreviews"><span class="qv-n" id="qv-myreviews-n">–</span><span class="qv-l">My Reviews</span></button>
+        <button type="button" class="qv" data-qv="overdue"><span class="qv-n" id="qv-overdue-n">–</span><span class="qv-l">Overdue</span></button>
+        <!-- Owners are free-text names while logins are email addresses, so
+             there is no reliable mapping from the signed-in user to Frank or
+             Jennifer. Until there is, "my" is whoever is selected here. -->
+        <label class="qv-as">Viewing as
+          <select class="input" id="tr-viewas"></select>
+        </label>
+      </div>
+
+      <!-- Row 2: search, the one filter used constantly, and the rest behind a panel. -->
       <div class="cmp-searchrow">
-        <input type="search" class="input" id="tr-search" placeholder="Search compliance items…" />
-        <select class="input" id="tr-period" title="Filter by when the item is due">
-          <option value="all" selected>All due dates</option>
-          <option value="month">Due this month</option>
-          <option value="quarter">Due this quarter</option>
-          <option value="year">Due this year</option>
-        </select>
+        <label class="sr-only" for="tr-search">Search compliance items</label>
+        <input type="search" class="input" id="tr-search" placeholder="Search items, notes, owner, area…" />
+        <label class="f-inline" for="tr-period">Due
+          <select class="input" id="tr-period">
+            <option value="all" selected>All due dates</option>
+            <option value="overdue">Overdue</option>
+            <option value="today">Due today</option>
+            <option value="30">Next 30 days</option>
+            <option value="90">Next 90 days</option>
+            <option value="quarter">This quarter</option>
+            <option value="year">This year</option>
+            <option value="custom">Custom range…</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-ghost btn-small" id="tr-allfilters" aria-expanded="false" aria-controls="tr-panel">⚙ All filters</button>
+        <button type="button" class="btn btn-ghost btn-small hidden" id="tr-reset">Reset filters</button>
         <button type="button" class="btn btn-ghost btn-small" id="tr-export">↓ Export spreadsheet</button>
         <button type="button" class="btn btn-ghost btn-small" id="tr-import" title="Replace every open item from a spreadsheet">↑ Import / reset</button>
         <input type="file" id="tr-import-file" accept=".csv,text/csv" class="hidden" />
       </div>
+
+      <!-- Everything else lives here so the page doesn't become a wall of
+           dropdowns. Every control has a visible label, not just a placeholder. -->
+      <div class="f-panel hidden" id="tr-panel">
+        <div class="f-grid">
+          <div class="f-field">
+            <label for="f-employee">Assigned to</label>
+            <select class="input" id="f-employee"></select>
+          </div>
+          <div class="f-field">
+            <label for="f-role">Role</label>
+            <select class="input" id="f-role">
+              <option value="either" selected>Either</option>
+              <option value="owner">Owner</option>
+              <option value="reviewer">Reviewer</option>
+            </select>
+          </div>
+          <div class="f-field">
+            <label for="f-requirement">Requirement</label>
+            <select class="input" id="f-requirement">
+              <option value="all" selected>All</option>
+              <option value="Required">Required</option>
+              <option value="Best practice">Best practice</option>
+            </select>
+          </div>
+          <div class="f-field">
+            <label for="f-frequency">Frequency</label>
+            <select class="input" id="f-frequency"></select>
+          </div>
+          <div class="f-field f-wide">
+            <label for="f-area">Compliance area</label>
+            <select class="input" id="f-area"></select>
+          </div>
+          <div class="f-field">
+            <label for="f-source">Source</label>
+            <select class="input" id="f-source"></select>
+          </div>
+          <div class="f-field">
+            <label for="f-workflow">Status</label>
+            <select class="input" id="f-workflow"></select>
+          </div>
+          <div class="f-field f-dates hidden" id="f-custom">
+            <label for="f-from">Custom range</label>
+            <div class="f-daterow">
+              <input type="date" class="input" id="f-from" aria-label="From date" />
+              <span>to</span>
+              <input type="date" class="input" id="f-to" aria-label="To date" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="chip-row" id="tr-chips"></div>
+      <p class="cmp-count" id="tr-count"></p>
+
       <div class="cmp-grid cmp-head" id="tr-head">
-        <span>Item</span><span>Mandated</span><span>Owner</span><span>Reviewer</span><span>Status</span><span></span>
+        <span>Item</span><span>Requirement</span><span>Owner</span><span>Reviewer</span><span>Status</span><span></span>
       </div>
       <div class="panel" style="padding:0;"><div id="tr-list"></div></div>
     </div>
@@ -368,12 +510,21 @@
         <input type="text" id="d-source" maxlength="100" placeholder="e.g. Compliance Manual" />
       </div>
       <div class="field">
-        <label for="d-mandated">Mandated</label>
-        <select id="d-mandated">
-          <option value="no">No — best practice</option>
-          <option value="yes">Yes — required</option>
+        <label for="d-requirement">Requirement</label>
+        <select id="d-requirement">
+          <option value="Best practice">Best practice</option>
+          <option value="Required">Required</option>
         </select>
       </div>
+    </div>
+    <div class="field">
+      <label for="d-area">Compliance area</label>
+      <select id="d-area"></select>
+    </div>
+    <div class="field">
+      <label for="d-waiting">Waiting on</label>
+      <input type="text" id="d-waiting" maxlength="200" placeholder="e.g. custodian report, pending legal review" />
+      <p class="cmp-hint">Fill this in only while the item is blocked — it moves the item to the Waiting status.</p>
     </div>
     <div class="field">
       <label for="d-notes">Notes</label>
@@ -408,7 +559,11 @@
   // migrated server-side to Frank owns / Jennifer reviews.
   let owners = ['Frank', 'Jennifer'];
   let reviewers = ['Frank', 'Jennifer', 'N/A'];
-  let frequencies = ['One time', 'Weekly', 'Monthly', 'Quarterly', 'Semi-annually', 'Annually'];
+  let frequencies = ['Quarterly', 'Annual', 'One-time', 'Ongoing'];
+  let areas = [];
+  let requirements = ['Required', 'Best practice'];
+  let workflows = ['Open', 'Waiting', 'Awaiting review', 'Completed'];
+  let sources = [];
   // Which frequencies actually repeat. Mirrors worker.js COMPLIANCE_FREQ_STEPS —
   // used only to word the hint under the dropdown; the server decides what recurs.
   const REPEATING = new Set(['weekly', 'monthly', 'quarterly', 'semi-annually', 'semi-annual', 'annually', 'annual']);
@@ -482,6 +637,21 @@
       return { from: iso(year, q, 1), to: iso(year, q + 2, lastDay(year, q + 2)) };
     }
     if (period === 'year') return { from: `${year}-01-01`, to: `${year}-12-31` };
+    // Rolling windows are inclusive of BOTH today and the final day, per spec:
+    // "Next 30 days: today through the applicable future date, inclusive."
+    if (period === '30' || period === '90') {
+      const end = new Date(year, month, now.getDate() + Number(period));
+      return { from: todayIso(), to: iso(end.getFullYear(), end.getMonth(), end.getDate()) };
+    }
+    if (period === 'today') return { from: todayIso(), to: todayIso() };
+    if (period === 'custom') {
+      const from = document.getElementById('f-from').value;
+      const to = document.getElementById('f-to').value;
+      if (!from && !to) return null;
+      // A one-sided range is still useful ("everything after March"), so the
+      // missing end is opened rather than treated as no filter at all.
+      return { from: from || '0000-01-01', to: to || '9999-12-31' };
+    }
     return null;
   }
 
@@ -560,48 +730,282 @@
   }
 
   // ---------- Tracker ----------
+  // Every filter except search and the Open/Completed tab. Kept in one object
+  // so "is anything filtering?" and "reset" are single, honest checks rather
+  // than a growing list of individual comparisons that is easy to forget to
+  // update when a filter is added.
+  const FILTER_DEFAULTS = {
+    employee: 'all', role: 'either', requirement: 'all',
+    frequency: 'all', area: 'all', source: 'all', workflow: 'all',
+  };
+  let filters = { ...FILTER_DEFAULTS };
+  // The quick view most recently applied, remembered rather than re-derived.
+  // Deriving it at the moment "Viewing as" changes compares the NEW name
+  // against filters still holding the OLD one, so it never matches and the
+  // personal views silently stopped following the selector. Cleared whenever a
+  // filter is changed by hand, so it can't claim a view the list isn't showing.
+  let lastQuickView = 'open';
+
+  const filtersActive = () =>
+    Object.keys(FILTER_DEFAULTS).some((k) => filters[k] !== FILTER_DEFAULTS[k]) || trackerPeriod !== 'all';
+
+  // Applies everything EXCEPT the free-text search, so search can be layered on
+  // top and genuinely operate "within the currently filtered results".
+  function applyFilters(list) {
+    const range = periodRange(trackerPeriod);
+    const today = todayIso();
+    return list.filter((it) => {
+      // Open/Completed tab.
+      if (trackerTab === 'completed' ? !isClosed(it) : isClosed(it)) return false;
+
+      // Due date. "Overdue" is its own rule rather than a range: it means
+      // before today AND not completed, so a completed late item is not overdue.
+      if (trackerPeriod === 'overdue') {
+        if (isClosed(it) || !it.dueDate || String(it.dueDate) >= today) return false;
+      } else if (range) {
+        const d = String(it.dueDate || '');
+        if (!d || d < range.from || d > range.to) return false;
+      }
+
+      // Employee + role. Role decides which field the name has to appear in;
+      // filtering on the name alone can't tell "my work" from "my reviews".
+      if (filters.employee !== 'all') {
+        const isOwner = String(it.owner || '').trim() === filters.employee;
+        const isReviewer = String(it.reviewer || '').trim() === filters.employee;
+        const match = filters.role === 'owner' ? isOwner
+          : filters.role === 'reviewer' ? isReviewer
+            : (isOwner || isReviewer);
+        if (!match) return false;
+      }
+
+      if (filters.requirement !== 'all' && String(it.requirement || '') !== filters.requirement) return false;
+      if (filters.frequency !== 'all' && String(it.frequency || '') !== filters.frequency) return false;
+      if (filters.area !== 'all' && String(it.complianceArea || '') !== filters.area) return false;
+      if (filters.source !== 'all' && String(it.source || '') !== filters.source) return false;
+      if (filters.workflow !== 'all' && String(it.workflow || '') !== filters.workflow) return false;
+      return true;
+    });
+  }
+
+  // Overdue first, oldest first — the thing most at risk leads. Then upcoming
+  // by due date. Completed defaults to most recently completed first, since
+  // that list is read as a record of what just happened.
+  function sortRows(rows) {
+    const today = todayIso();
+    if (trackerTab === 'completed') {
+      return rows.slice().sort((a, b) =>
+        String(b.completedAt || '').localeCompare(String(a.completedAt || ''))
+        || String(a.item).localeCompare(String(b.item)));
+    }
+    return rows.slice().sort((a, b) => {
+      const aOver = a.dueDate && String(a.dueDate) < today;
+      const bOver = b.dueDate && String(b.dueDate) < today;
+      if (aOver !== bOver) return aOver ? -1 : 1;
+      return String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999'))
+        || String(a.item).localeCompare(String(b.item));
+    });
+  }
+
   function trackerRows() {
     const q = document.getElementById('tr-search').value.trim().toLowerCase();
-    // Containment in the calendar period, NOT "due by then" — an item that
-    // slipped from an earlier month is not due this month, and saying it was
-    // would make the filter label untrue. Overdue is what surfaces those.
-    const range = periodRange(trackerPeriod);
-    return allItems
-      .filter((it) => (trackerTab === 'completed' ? isClosed(it) : !isClosed(it)))
-      .filter((it) => {
-        if (!range) return true;
-        const d = String(it.dueDate || '');
-        return d >= range.from && d <= range.to;
-      })
-      .filter((it) => !q || [it.item, it.whatToDo, it.owner, it.reviewer, it.frequency, it.source, it.notes]
+    const filtered = applyFilters(allItems);
+    const searched = !q ? filtered : filtered.filter((it) =>
+      [it.item, it.whatToDo, it.notes, it.owner, it.reviewer, it.source, it.complianceArea,
+        it.frequency, it.frequencyDetail, it.waitingOn]
         .some((v) => String(v || '').toLowerCase().includes(q)));
+    return sortRows(searched);
+  }
+
+  // Which quick view the current filter combination corresponds to, so the
+  // active one can be highlighted. Derived from the filters rather than stored
+  // separately — otherwise changing a filter by hand would leave a quick view
+  // looking active while showing something else.
+  function activeQuickView() {
+    const who = viewAs();
+    if (trackerTab === 'completed' && !filtersActive()) return 'completed';
+    if (trackerTab !== 'open') return '';
+    if (trackerPeriod === 'overdue' && filters.employee === 'all') return 'overdue';
+    if (filters.employee === who && filters.role === 'owner' && trackerPeriod === 'all') return 'mywork';
+    if (filters.employee === who && filters.role === 'reviewer' && trackerPeriod === 'all') return 'myreviews';
+    if (!filtersActive()) return 'open';
+    return '';
+  }
+
+  const viewAs = () => document.getElementById('tr-viewas').value;
+
+  // Options come from the server's vocabularies so a value can't exist in the
+  // data without appearing in its filter. Selections survive a rebuild.
+  function buildFilterOptions() {
+    const fill = (id, values, allLabel) => {
+      const el = document.getElementById(id);
+      const keep = el.value;
+      el.innerHTML = (allLabel ? `<option value="all">${allLabel}</option>` : '')
+        + values.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+      if (keep && [...el.options].some((o) => o.value === keep)) el.value = keep;
+    };
+    fill('f-employee', owners, 'All employees');
+    fill('f-frequency', frequencies, 'All frequencies');
+    fill('f-area', areas, 'All areas');
+    fill('f-source', sources, 'All sources');
+    fill('f-workflow', workflows, 'All statuses');
+    fill('f-requirement', requirements, 'All');
+    const va = document.getElementById('tr-viewas');
+    if (!va.options.length) {
+      va.innerHTML = owners.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+    }
+  }
+
+  // ---------- Filter control wiring ----------
+  document.querySelectorAll('.qv').forEach((b) =>
+    b.addEventListener('click', () => applyQuickView(b.dataset.qv)));
+
+  // Changing who "my" refers to has to re-run whichever personal view is open,
+  // or the list would keep showing the previous person's work under the new name.
+  document.getElementById('tr-viewas').addEventListener('change', () => {
+    if (lastQuickView === 'mywork' || lastQuickView === 'myreviews') applyQuickView(lastQuickView);
+    else renderTracker();
+  });
+
+  document.getElementById('tr-allfilters').addEventListener('click', (ev) => {
+    const panel = document.getElementById('tr-panel');
+    const open = panel.classList.toggle('hidden');
+    ev.currentTarget.setAttribute('aria-expanded', String(!open));
+  });
+
+  [['f-employee', 'employee'], ['f-role', 'role'], ['f-requirement', 'requirement'],
+   ['f-frequency', 'frequency'], ['f-area', 'area'], ['f-source', 'source'],
+   ['f-workflow', 'workflow']].forEach(([id, key]) => {
+    document.getElementById(id).addEventListener('change', (e) => {
+      filters[key] = e.target.value;
+      lastQuickView = ''; // hand-edited: no longer one of the quick views
+      renderTracker();
+    });
+  });
+
+  document.getElementById('tr-period').addEventListener('change', (e) => {
+    trackerPeriod = e.target.value;
+    lastQuickView = '';
+    document.getElementById('f-custom').classList.toggle('hidden', trackerPeriod !== 'custom');
+    // A custom range with no dates yet filters nothing, so open the panel where
+    // the date inputs live rather than appearing to do nothing.
+    if (trackerPeriod === 'custom') {
+      document.getElementById('tr-panel').classList.remove('hidden');
+      document.getElementById('tr-allfilters').setAttribute('aria-expanded', 'true');
+    }
+    renderTracker();
+  });
+  ['f-from', 'f-to'].forEach((id) =>
+    document.getElementById(id).addEventListener('change', renderTracker));
+
+  document.getElementById('tr-reset').addEventListener('click', () => {
+    lastQuickView = 'open'; // reset returns to the default Open view
+    filters = { ...FILTER_DEFAULTS };
+    trackerPeriod = 'all';
+    trackerTab = 'open';
+    document.getElementById('tr-search').value = '';
+    syncFilterControls();
+    renderTracker();
+  });
+
+  // Counts shown on the quick-view buttons. Each is what that view would
+  // actually return, so a button reading 0 is honest rather than inviting a
+  // click into an empty list.
+  function quickViewCounts() {
+    const today = todayIso();
+    const open = allItems.filter((it) => !isClosed(it));
+    const who = viewAs();
+    return {
+      open: open.length,
+      completed: allItems.filter(isClosed).length,
+      overdue: open.filter((it) => it.dueDate && String(it.dueDate) < today).length,
+      mywork: open.filter((it) => String(it.owner || '').trim() === who).length,
+      // Reviews the reviewer can actually act on: the owner has signed off and
+      // the review is outstanding. Showing everything they merely might review
+      // one day would make the number meaningless as a to-do count.
+      myreviews: open.filter((it) => String(it.reviewer || '').trim() === who
+        && String(it.ownerCompleted || '').trim()
+        && !String(it.reviewerCompleted || '').trim()).length,
+    };
+  }
+
+  function applyQuickView(id) {
+    lastQuickView = id;
+    const who = viewAs();
+    filters = { ...FILTER_DEFAULTS };
+    trackerPeriod = 'all';
+    if (id === 'open') trackerTab = 'open';
+    else if (id === 'completed') trackerTab = 'completed';
+    else if (id === 'overdue') { trackerTab = 'open'; trackerPeriod = 'overdue'; }
+    else if (id === 'mywork') { trackerTab = 'open'; filters.employee = who; filters.role = 'owner'; }
+    else if (id === 'myreviews') {
+      trackerTab = 'open';
+      filters.employee = who;
+      filters.role = 'reviewer';
+      // The reviewer's queue is specifically what's waiting on them, which is
+      // exactly the Awaiting review stage.
+      filters.workflow = 'Awaiting review';
+    }
+    syncFilterControls();
+    renderTracker();
+  }
+
+  // Push filter state into the controls, so quick views and Reset visibly move
+  // the dropdowns rather than leaving them contradicting the list.
+  function syncFilterControls() {
+    document.getElementById('f-employee').value = filters.employee;
+    document.getElementById('f-role').value = filters.role;
+    document.getElementById('f-requirement').value = filters.requirement;
+    document.getElementById('f-frequency').value = filters.frequency;
+    document.getElementById('f-area').value = filters.area;
+    document.getElementById('f-source').value = filters.source;
+    document.getElementById('f-workflow').value = filters.workflow;
+    document.getElementById('tr-period').value = trackerPeriod;
+    document.getElementById('f-custom').classList.toggle('hidden', trackerPeriod !== 'custom');
+  }
+
+  const PERIOD_LABELS = {
+    overdue: 'Overdue', today: 'Due today', 30: 'Next 30 days', 90: 'Next 90 days',
+    quarter: 'This quarter', year: 'This year', custom: 'Custom range',
+  };
+
+  // One removable chip per active filter. Chips are the only place the full
+  // active state is visible at once when the panel is closed.
+  function renderChips() {
+    const chips = [];
+    if (trackerPeriod !== 'all') chips.push({ k: 'period', label: PERIOD_LABELS[trackerPeriod] || trackerPeriod });
+    if (filters.employee !== 'all') {
+      const role = filters.role === 'either' ? 'owner or reviewer' : filters.role;
+      chips.push({ k: 'employee', label: `${filters.employee} (${role})` });
+    } else if (filters.role !== 'either') {
+      chips.push({ k: 'role', label: `Role: ${filters.role}` });
+    }
+    ['requirement', 'frequency', 'area', 'source', 'workflow'].forEach((k) => {
+      if (filters[k] !== 'all') chips.push({ k, label: filters[k] });
+    });
+    const wrap = document.getElementById('tr-chips');
+    wrap.innerHTML = chips.map((c) =>
+      `<button type="button" class="fchip" data-k="${c.k}" title="Remove this filter">${escapeHtml(c.label)}<span aria-hidden="true">×</span></button>`).join('');
+    wrap.querySelectorAll('.fchip').forEach((b) => b.addEventListener('click', () => {
+      const k = b.dataset.k;
+      if (k === 'period') trackerPeriod = 'all';
+      else if (k === 'employee') { filters.employee = 'all'; filters.role = 'either'; }
+      else filters[k] = FILTER_DEFAULTS[k];
+      syncFilterControls();
+      renderTracker();
+    }));
+    document.getElementById('tr-reset').classList.toggle('hidden', !filtersActive());
   }
 
   function renderTrackerFilters() {
-    // Counted within the active due-date period, not across everything —
-    // "Open (127)" sitting above a three-row list reads as a bug.
-    const range = periodRange(trackerPeriod);
-    const inPeriod = (it) => {
-      if (!range) return true;
-      const d = String(it.dueDate || '');
-      return d >= range.from && d <= range.to;
-    };
-    const scoped = allItems.filter(inPeriod);
-    const open = scoped.filter((it) => !isClosed(it)).length;
-    const done = scoped.filter(isClosed).length;
-    const pills = [
-      { id: 'open', label: `Open (${open})` },
-      // Closed items leave the working list entirely and live here, so a finished
-      // item is still reachable without cluttering what's outstanding.
-      { id: 'completed', label: `Completed (${done})` },
-    ];
-    const wrap = document.getElementById('tr-filters');
-    wrap.innerHTML = pills
-      .map((p) => `<button type="button" class="filter-pill ${trackerTab === p.id ? 'active' : ''}" data-tab="${p.id}">${p.label}</button>`)
-      .join('');
-    wrap.querySelectorAll('.filter-pill').forEach((b) =>
-      b.addEventListener('click', () => { trackerTab = b.dataset.tab; renderTracker(); })
-    );
+    const counts = quickViewCounts();
+    Object.entries(counts).forEach(([k, n]) => {
+      const el = document.getElementById(`qv-${k}-n`);
+      if (el) el.textContent = n;
+    });
+    const active = activeQuickView();
+    document.querySelectorAll('.qv').forEach((b) =>
+      b.classList.toggle('active', b.dataset.qv === active));
+    renderChips();
   }
 
   // A blank frequency means the item never repeats. Saying "One time" is more
@@ -642,10 +1046,29 @@
     return '<span class="badge badge-amber">OPEN</span>';
   }
 
+  // Restrained, and never the only signal: the area name is always spelled out
+  // in the chip, so the colour is an aid to scanning rather than something to
+  // memorise. Six areas, six muted tints.
+  const AREA_CLASS = {
+    'Governance & Regulatory': 'area-gov',
+    'Trading & Investments': 'area-trade',
+    'Fees & Client Accounts': 'area-fees',
+    'Marketing & Communications': 'area-mkt',
+    'Personnel & Ethics': 'area-people',
+    'Technology, Privacy & Resilience': 'area-tech',
+  };
+  const areaClass = (a) => AREA_CLASS[a] || 'area-none';
+
   function renderTracker() {
     renderTrackerFilters();
     const list = document.getElementById('tr-list');
     const rows = trackerRows();
+    // The count must always describe what is on screen — it is the check that
+    // the filters did what the chips claim.
+    const total = allItems.filter((it) => (trackerTab === 'completed' ? isClosed(it) : !isClosed(it))).length;
+    document.getElementById('tr-count').textContent = rows.length === total
+      ? `${rows.length} ${trackerTab === 'completed' ? 'completed' : 'open'} item${rows.length === 1 ? '' : 's'}`
+      : `${rows.length} of ${total} ${trackerTab === 'completed' ? 'completed' : 'open'} items`;
     document.getElementById('tr-head').classList.toggle('hidden', !rows.length);
     if (!rows.length) {
       // Name the period when one is filtering, otherwise "nothing matches that
@@ -671,19 +1094,21 @@
       return `<div class="cmp-grid cmp-row ${closed ? 'done' : ''} ${awaitingComplete ? 'signed' : ''}" data-id="${escapeHtml(it.id)}">
         <div>
           <div class="cmp-title">${escapeHtml(it.item)}</div>
+          <!-- Tag order: when it's due, how often, which area, which policy. -->
           <div class="cmp-sub">
             <span class="due due-${d.state}">${escapeHtml(d.text)}</span>
-            <span class="freq-chip">${escapeHtml(freqLabel(it.frequency))}</span>
+            <span class="freq-chip" title="${escapeHtml(it.frequencyDetail || freqLabel(it.frequency))}">${escapeHtml(freqLabel(it.frequency))}</span>
+            ${it.complianceArea ? `<span class="area-chip ${areaClass(it.complianceArea)}">${escapeHtml(it.complianceArea)}</span>` : ''}
             ${it.source ? `<span class="source-chip">${escapeHtml(it.source)}</span>` : ''}
           </div>
         </div>
         <div class="cmp-mandated-cell" style="text-align:center;">
-          <!-- Yes/No rather than "Required"/"Best practice": "Best practice" is
-               itself a real Source value on 43 seeded items, so labelling the
-               not-mandated case that way put the same words in two adjacent
-               columns and read as a duplicated cell. -->
-          <span class="badge ${it.mandated ? 'badge-navy' : 'badge-gray'}"
-                title="${it.mandated ? 'Required by a governing document' : 'Not mandated — best practice'}">${it.mandated ? 'Yes' : 'No'}</span>
+          <!-- Required / Best practice, never Yes/No: "No" reads as "this is
+               unnecessary", when in fact the firm has chosen to do it — it just
+               isn't externally mandated. The column is headed Requirement, so
+               the words no longer collide with the Source chip beside it. -->
+          <span class="badge ${it.requirement === 'Required' ? 'badge-navy' : 'badge-gray'}"
+                title="${it.requirement === 'Required' ? 'Required by a governing document' : 'Not externally mandated — BlueLine has elected to do it'}">${escapeHtml(it.requirement || 'Best practice')}</span>
         </div>
         ${checkCell(it, 'owner')}
         ${checkCell(it, 'reviewer')}
@@ -845,7 +1270,7 @@
         if (!item) { problems.push(`Row ${i + 2}: no item name`); return; }
         if (!dueDate) { problems.push(`Row ${i + 2}: "${at(iDue)}" isn't a date the importer understands`); return; }
         const owner = at(iOwner) || owners[0];
-        const mandatedRaw = at(col('Mandated')).toLowerCase();
+        const reqRaw = at(col('Requirement', 'Mandated')).toLowerCase();
         importQueue.push({
           item,
           dueDate,
@@ -857,7 +1282,8 @@
           notes: at(col('Notes')),
           // Export writes "Required"/"Best practice"; a hand-built sheet is
           // more likely to say yes/true.
-          mandated: ['required', 'yes', 'true', 'y'].includes(mandatedRaw),
+          requirement: ['required', 'yes', 'true', 'y'].includes(reqRaw) ? 'Required' : 'Best practice',
+          complianceArea: at(col('Compliance area', 'ComplianceArea')),
         });
       });
 
@@ -914,8 +1340,11 @@
 
   function exportTracker() {
     const rows = trackerRows();
-    const cols = ['Item', 'What to do', 'Due date', 'Frequency', 'Source', 'Mandated', 'Owner',
-      'Owner signed off', 'Reviewer', 'Reviewer signed off', 'Status', 'Completed', 'Waiting on', 'Notes'];
+    // Every underlying field, including ones the table doesn't show — the
+    // export is the full record, not a screenshot of the columns on screen.
+    const cols = ['Item', 'What to do', 'Due date', 'Frequency', 'Frequency detail',
+      'Compliance area', 'Source', 'Requirement', 'Owner', 'Owner signed off',
+      'Reviewer', 'Reviewer signed off', 'Status', 'Completed', 'Waiting on', 'Notes'];
     // RFC 4180 quoting — "What to do" and Notes are free text and routinely
     // contain commas and line breaks, which would otherwise break the columns.
     const cell = (v) => {
@@ -925,14 +1354,17 @@
     const lines = [cols.join(',')];
     rows.forEach((it) => {
       lines.push([
-        it.item, it.whatToDo, it.dueDate, it.frequency, it.source,
-        it.mandated ? 'Required' : 'Best practice',
+        it.item, it.whatToDo, it.dueDate, it.frequency, it.frequencyDetail || '',
+        it.complianceArea || '', it.source,
+        it.requirement || 'Best practice',
         it.owner, it.ownerCompleted,
         it.reviewerRequired ? it.reviewer : 'N/A',
         it.reviewerRequired ? it.reviewerCompleted : '',
-        isClosed(it) ? 'COMPLETE' : 'OPEN',
+        // The workflow stage, not just OPEN/COMPLETE — that's the status the
+        // filters use, so an export should be filterable the same way.
+        it.workflow || (isClosed(it) ? 'Completed' : 'Open'),
         it.completedAt || '',
-        isClosed(it) ? '' : (it.awaiting || (it.signedOff ? 'ready to complete' : '')),
+        it.waitingOn || (isClosed(it) ? '' : (it.awaiting || '')),
         it.notes,
       ].map(cell).join(','));
     });
@@ -1118,7 +1550,12 @@
     document.getElementById('d-due').value = it.dueDate || '';
     document.getElementById('d-source').value = it.source || '';
     document.getElementById('d-notes').value = it.notes || '';
-    document.getElementById('d-mandated').value = it.mandated ? 'yes' : 'no';
+    document.getElementById('d-requirement').value = it.requirement || 'Best practice';
+    document.getElementById('d-waiting').value = it.waitingOn || '';
+    // Rebuilt each open so a newly added area shows without a reload.
+    document.getElementById('d-area').innerHTML =
+      '<option value="">— not set —</option>' + areas.map((a) =>
+        `<option value="${escapeHtml(a)}"${a === it.complianceArea ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('');
     // Union so an owner/reviewer name not in the standard list (added later, or
     // renamed) still appears and isn't silently reassigned on save.
     fillSelect('d-owner', [...new Set([...owners, it.owner].filter(Boolean))], it.owner || owners[0]);
@@ -1166,7 +1603,7 @@
     drawerMode = 'new';
     drawerId = null;
     document.getElementById('drawer-title').textContent = 'New compliance item';
-    populateDrawer({ dueDate: todayIso(), owner: owners[0], reviewer: 'N/A', mandated: false });
+    populateDrawer({ dueDate: todayIso(), owner: owners[0], reviewer: 'N/A', requirement: 'Best practice', complianceArea: '', waitingOn: '' });
     openDrawer();
     document.getElementById('d-item').focus();
   }
@@ -1207,7 +1644,9 @@
       notes: document.getElementById('d-notes').value.trim(),
       owner: document.getElementById('d-owner').value,
       reviewer: document.getElementById('d-reviewer').value,
-      mandated: document.getElementById('d-mandated').value === 'yes',
+      requirement: document.getElementById('d-requirement').value,
+      complianceArea: document.getElementById('d-area').value,
+      waitingOn: document.getElementById('d-waiting').value.trim(),
     };
     if (!payload.item) { setStatus('Item name is required.'); return; }
     if (!payload.dueDate) { setStatus('Due date is required.'); return; }
@@ -1279,6 +1718,11 @@
       if (Array.isArray(data.owners) && data.owners.length) owners = data.owners;
       if (Array.isArray(data.reviewers) && data.reviewers.length) reviewers = data.reviewers;
       if (Array.isArray(data.frequencies) && data.frequencies.length) frequencies = data.frequencies;
+      if (Array.isArray(data.areas) && data.areas.length) areas = data.areas;
+      if (Array.isArray(data.requirements) && data.requirements.length) requirements = data.requirements;
+      if (Array.isArray(data.workflows) && data.workflows.length) workflows = data.workflows;
+      if (Array.isArray(data.sources)) sources = data.sources;
+      buildFilterOptions();
       sortItems();
       render();
       setStatus(showStatus ? `Last updated ${new Date().toLocaleTimeString()}` : '');
@@ -1294,10 +1738,6 @@
   document.getElementById('cmp-new').addEventListener('click', openDrawerNew);
   document.getElementById('tr-search').addEventListener('input', renderTracker);
   document.getElementById('tr-export').addEventListener('click', exportTracker);
-  document.getElementById('tr-period').addEventListener('change', (e) => {
-    trackerPeriod = e.target.value;
-    renderTracker();
-  });
   document.getElementById('d-save').addEventListener('click', saveDrawer);
   document.getElementById('d-delete').addEventListener('click', () => deleteItem());
   document.getElementById('d-delete-series').addEventListener('click', () => deleteItem({ series: true }));
