@@ -282,7 +282,6 @@ const NAV_ITEMS = [
   { id: 'contacts', href: '/admin/contacts.html', icon: 'users', label: 'Contacts' },
   { id: 'operations', href: '/admin/operations.html', icon: 'check-square', label: 'Tasks' },
   { id: 'calendar', href: '/admin/calendar.html', icon: 'calendar', label: 'Calendar' },
-  { id: 'onboarding', href: '/admin/onboarding.html', icon: 'log-in', label: 'Onboarding' },
   { id: 'compliance', href: '/admin/compliance.html', icon: 'shield', label: 'Compliance' },
   { id: 'learning', href: '/admin/learning.html', icon: 'book', label: 'Learning' },
   { id: 'settings', href: '/admin/settings.html', icon: 'settings', label: 'Settings' },

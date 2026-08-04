@@ -648,7 +648,7 @@
       document.getElementById('stat-tiles').innerHTML = [
         tile(byStatus('active'), 'Active Clients', '/admin/contacts.html'),
         tile(byStatus('prospect'), 'Prospects', '/admin/contacts.html'),
-        tile(byStatus('onboarding'), 'Onboarding', '/admin/contacts.html'),
+        tile(byStatus('onboarding'), 'Onboarding', '/admin/onboarding.html'),
         tile(dueToday.length, 'Due Today', '/admin/operations.html?filter=today'),
         tile(overdue.length, 'Overdue', '/admin/operations.html?filter=overdue', overdue.length > 0),
       ].join('');
