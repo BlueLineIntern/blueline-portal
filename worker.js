@@ -2450,14 +2450,15 @@ async function pushComplianceToSharePoint(env, item) {
       // The existing SharePoint column keeps its name so no list change is
       // needed; only the VALUE changes, from Yes/No to Required/Best practice,
       // so the mirror says what the app says.
-      //
-      // complianceArea is deliberately NOT sent. Graph rejects the whole write
-      // with a 400 when a field isn't in the list schema — the same failure
-      // that broke the contacts push over the Tags column — so adding it here
-      // would silently stop every completed item mirroring for any list
-      // without that column. Add a ComplianceArea column to the list first,
-      // then it can be included.
       Mandated: item.requirement || (item.mandated ? 'Required' : 'Best practice'),
+      // Sent only if the list has the column. SharePoint decides a column's
+      // INTERNAL name when it's created and it doesn't always match what was
+      // typed, so a display name of "ComplianceArea" is likely but not
+      // guaranteed to be the field name Graph wants. sendComplianceFields
+      // below retries without this key if the write is rejected, so a mismatch
+      // costs one extra request rather than silently stopping every completed
+      // item from mirroring — the failure mode that hid the Tags column bug.
+      ComplianceArea: item.complianceArea || '',
       Owner: item.owner || '',
       OwnerCompleted: item.ownerCompleted || '',
       Reviewer: item.reviewer || '',
@@ -2467,13 +2468,37 @@ async function pushComplianceToSharePoint(env, item) {
       Notes: item.notes || '',
     };
 
+    // Writes `fields`, and if Graph rejects it, writes again without the
+    // optional keys. A column whose internal name differs from its display
+    // name (or that hasn't been added yet) then costs one wasted request
+    // instead of stopping the mirror entirely — the whole record still lands,
+    // just without that one value.
+    const OPTIONAL_FIELDS = ['ComplianceArea'];
+    const sendFields = async (url, method, wrap) => {
+      const attempt = async (payload) => fetch(url, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(wrap ? { fields: payload } : payload),
+      });
+      let res = await attempt(fields);
+      if (res.ok || !OPTIONAL_FIELDS.some((k) => k in fields)) return res;
+      const rejected = await res.text();
+      const reduced = { ...fields };
+      OPTIONAL_FIELDS.forEach((k) => delete reduced[k]);
+      const retry = await attempt(reduced);
+      if (retry.ok) {
+        console.error(
+          `SharePoint rejected the compliance write including ${OPTIONAL_FIELDS.join(', ')} — `
+          + 'succeeded without it, so the column is missing or its internal name differs from its display name. '
+          + 'Response was:', rejected
+        );
+      }
+      return retry;
+    };
+
     if (item.sharePointItemId) {
       const patchUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${item.sharePointItemId}/fields`;
-      const patchRes = await fetch(patchUrl, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(fields),
-      });
+      const patchRes = await sendFields(patchUrl, 'PATCH', false);
       if (patchRes.ok) return { ...item, sharePointItemId: item.sharePointItemId };
       // The row may have been removed independently on the SharePoint side
       // (manual cleanup, list rebuilt) — recreate rather than fail outright.
@@ -2481,11 +2506,7 @@ async function pushComplianceToSharePoint(env, item) {
     }
 
     const createUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`;
-    const createRes = await fetch(createUrl, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields }),
-    });
+    const createRes = await sendFields(createUrl, 'POST', true);
     if (!createRes.ok) {
       console.error('Failed to create compliance item in SharePoint:', createRes.status, await createRes.text());
       return item;
