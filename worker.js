@@ -3731,14 +3731,47 @@ async function handleAdminArchiveContact(request, env, cors, targetEmail, archiv
 // Keyed by generated id, NOT by email: a household has no mailbox of its own,
 // and its members' addresses already key their own contact records. The
 // optional email here is a shared address (thesmiths@…), not an identity.
+// A grouping is either a **family** (the original household) or a **company**.
+// Both are the same record — a name, members with roles, a shared email, status,
+// tags — so `kind` discriminates them instead of a second entity with its own
+// KV prefix, endpoints and SharePoint mirror to keep in step. Only the member
+// roles and the labels differ.
+//
+// `kind` is deliberately NOT pushed to SharePoint: the Households list has no
+// Kind column, and Graph fails the whole PATCH on an unknown field, which would
+// break the mirror for every grouping. It lives app-side only, like
+// importantDates on a contact. A record written before `kind` existed has none,
+// and reads as a family (see handleAdminListHouseholds).
+const GROUP_KINDS = ['family', 'company'];
 const HOUSEHOLD_ROLES = ['head', 'spouse', 'partner', 'child', 'dependent', 'other'];
+const COMPANY_ROLES = ['primary', 'owner', 'officer', 'employee', 'other'];
 const HOUSEHOLD_EMAIL_TYPES = ['', 'work', 'home', 'other'];
 
-function sanitizeHouseholdFields(body) {
+function rolesForKind(kind) {
+  return kind === 'company' ? COMPANY_ROLES : HOUSEHOLD_ROLES;
+}
+
+function groupKindOf(record) {
+  return record && record.kind === 'company' ? 'company' : 'family';
+}
+
+// `existingKind` is the kind already on the record being updated, so a PATCH
+// that doesn't mention `kind` still validates member roles against the right
+// list. Creates pass nothing and default to family.
+function sanitizeHouseholdFields(body, existingKind) {
   const out = {};
+  // Resolved first: the member roles below are validated against it.
+  let kind = existingKind === 'company' ? 'company' : 'family';
+  if (body.kind !== undefined) {
+    const k = String(body.kind || '').trim().toLowerCase();
+    if (!GROUP_KINDS.includes(k)) return { error: 'Invalid kind — must be family or company' };
+    kind = k;
+    out.kind = k;
+  }
+  const noun = kind === 'company' ? 'Company' : 'Family';
   if (body.name !== undefined) {
     const n = String(body.name || '').trim();
-    if (!n) return { error: 'Household name is required' };
+    if (!n) return { error: `${noun} name is required` };
     out.name = n.slice(0, 200);
   }
   if (body.members !== undefined) {
@@ -3752,17 +3785,21 @@ function sanitizeHouseholdFields(body) {
       if (!isValidEmail(email)) return { error: `Member "${email}" is not a valid email` };
       // One row per person: two roles for the same member is contradictory
       // rather than additive, and the UI has no way to show both.
-      if (seen.has(email)) return { error: 'A person can only appear once in a household' };
+      if (seen.has(email)) return { error: `A person can only appear once in a ${noun.toLowerCase()}` };
       seen.add(email);
       const role = String(m.role || '').trim().toLowerCase();
-      members.push({ email, role: HOUSEHOLD_ROLES.includes(role) ? role : 'other' });
+      // An unrecognised role falls back to "other" rather than erroring, which
+      // is also what makes changing a record's kind non-destructive: roles the
+      // new kind doesn't have simply land on Other.
+      const valid = rolesForKind(kind);
+      members.push({ email, role: valid.includes(role) ? role : 'other' });
       if (members.length >= 20) break;
     }
     out.members = members;
   }
   if (body.email !== undefined) {
     const e = String(body.email || '').trim().toLowerCase();
-    if (e && !isValidEmail(e)) return { error: 'Household email is not valid' };
+    if (e && !isValidEmail(e)) return { error: `${noun} email is not valid` };
     out.email = e.slice(0, 200);
   }
   if (body.emailType !== undefined) {
@@ -3792,7 +3829,10 @@ async function handleAdminListHouseholds(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const { items, errors } = await readAllEncrypted(env, 'household:');
-  return json({ households: items, decryptErrors: errors }, 200, cors);
+  // Normalized here rather than in the page: records predate `kind`, and every
+  // consumer would otherwise need the same `kind || 'family'` fallback.
+  const households = items.map((h) => ({ ...h, kind: groupKindOf(h) }));
+  return json({ households, decryptErrors: errors }, 200, cors);
 }
 
 async function handleAdminCreateHousehold(request, env, cors) {
@@ -3802,11 +3842,15 @@ async function handleAdminCreateHousehold(request, env, cors) {
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const { fields, error } = sanitizeHouseholdFields(body);
   if (error) return json({ error }, 400, cors);
-  if (!fields.name) return json({ error: 'Household name is required' }, 400, cors);
+  const kind = fields.kind || 'family';
+  if (!fields.name) {
+    return json({ error: `${kind === 'company' ? 'Company' : 'Family'} name is required` }, 400, cors);
+  }
   const id = `hh-${randomHex(6)}`;
   let record = {
     id,
     type: 'household',
+    kind,
     name: fields.name,
     members: fields.members || [],
     email: fields.email || '',
@@ -3830,7 +3874,7 @@ async function handleAdminCreateHousehold(request, env, cors) {
   // null until the next edit.
   record = await pushHouseholdToSharePoint(env, record);
   await env.PORTAL_KV.put(`household:${id}`, await encryptJSON(env, record));
-  await logAudit(env, adminEmail, 'create-household', { id, name: record.name });
+  await logAudit(env, adminEmail, 'create-household', { id, name: record.name, kind });
   return json({ household: record }, 200, cors);
 }
 
@@ -3842,7 +3886,7 @@ async function handleAdminUpdateHousehold(request, env, cors, id) {
   const existing = await decryptToObject(env, raw);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
-  const { fields, error } = sanitizeHouseholdFields(body);
+  const { fields, error } = sanitizeHouseholdFields(body, groupKindOf(existing));
   if (error) return json({ error }, 400, cors);
   // Archive is a soft-delete toggle, handled here rather than as its own route
   // because a household has no portal account to keep consistent.
@@ -3850,7 +3894,14 @@ async function handleAdminUpdateHousehold(request, env, cors, id) {
     fields.archived = !!body.archived;
     fields.archivedAt = body.archived ? new Date().toISOString() : null;
   }
-  let record = { ...existing, ...fields, id, type: 'household', updatedAt: new Date().toISOString() };
+  let record = {
+    ...existing,
+    ...fields,
+    id,
+    type: 'household',
+    kind: fields.kind || groupKindOf(existing),
+    updatedAt: new Date().toISOString(),
+  };
   // sharePointItemId carries over from `existing` via the spread above. Push
   // may return this record unchanged (pushed successfully), with a fresh
   // sharePointItemId (first push, or the prior one went stale), or merged

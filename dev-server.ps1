@@ -188,12 +188,17 @@ $eventStatuses = @('', 'unconfirmed', 'confirmed', 'cancelled')
 $households = @{}   # id -> household record (worker stores these encrypted in KV)
 $script:householdCounter = 0
 $householdRoles = @('head', 'spouse', 'partner', 'child', 'dependent', 'other')
+$companyRoles = @('primary', 'owner', 'officer', 'employee', 'other')
+$groupKinds = @('family', 'company')
 
 # Mirror worker.js sanitizeHouseholdFields' member handling: valid emails only,
 # a known role, and no one listed twice.
-function ConvertTo-HouseholdMembers($raw) {
+function ConvertTo-HouseholdMembers($raw, $kind) {
     $out = @()
     $seen = @{}
+    # Roles are validated against the record's kind, mirroring rolesForKind() in
+    # worker.js: an unrecognised role becomes 'other' rather than an error.
+    $valid = if ($kind -eq 'company') { $companyRoles } else { $householdRoles }
     foreach ($m in @($raw)) {
         if (-not $m) { continue }
         $email = ([string]$m.email).Trim().ToLower()
@@ -202,11 +207,17 @@ function ConvertTo-HouseholdMembers($raw) {
         if ($seen.ContainsKey($email)) { return @{ error = 'A person can only appear once in a household' } }
         $seen[$email] = $true
         $role = ([string]$m.role).Trim().ToLower()
-        if ($householdRoles -notcontains $role) { $role = 'other' }
+        if ($valid -notcontains $role) { $role = 'other' }
         $out += @{ email = $email; role = $role }
         if ($out.Count -ge 20) { break }
     }
     return @{ members = $out }
+}
+
+# A grouping is a family or a company - same record, different label and roles.
+function Get-GroupKind($rec) {
+    if ($rec -and ([string]$rec.kind) -eq 'company') { return 'company' }
+    return 'family'
 }
 
 # Assignees are admin accounts only (board lists are a separate grouping).
@@ -1092,6 +1103,12 @@ while ($listener.IsListening) {
         # ---- Households (mirror of worker.js handleAdminListHouseholds etc.) ----
         elseif ($path -eq '/api/admin/households' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            # kind is normalised on the way out, matching worker.js - a record
+            # written before kind existed reads as a family. Written back onto
+            # the stored record rather than a copy: OrderedDictionary has no
+            # Clone() through PowerShell's adapter, and the normalised value is
+            # the same one the record would have been saved with anyway.
+            foreach ($h in @($households.Values)) { $h.kind = (Get-GroupKind $h) }
             Send-Json $ctx 200 @{ households = @($households.Values) }
         }
         elseif ($path -eq '/api/admin/households' -and $method -eq 'POST') {
@@ -1099,9 +1116,17 @@ while ($listener.IsListening) {
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $body = Read-Body $ctx
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
+            $kind = 'family'
+            if ($body.PSObject.Properties['kind']) {
+                $kind = ([string]$body.kind).Trim().ToLower()
+                if ($groupKinds -notcontains $kind) {
+                    Send-Json $ctx 400 @{ error = 'Invalid kind - must be family or company' }; continue
+                }
+            }
+            $noun = if ($kind -eq 'company') { 'Company' } else { 'Family' }
             $name = ([string]$body.name).Trim()
-            if (-not $name) { Send-Json $ctx 400 @{ error = 'Household name is required' }; continue }
-            $mem = ConvertTo-HouseholdMembers $body.members
+            if (-not $name) { Send-Json $ctx 400 @{ error = "$noun name is required" }; continue }
+            $mem = ConvertTo-HouseholdMembers $body.members $kind
             if ($mem.error) { Send-Json $ctx 400 @{ error = $mem.error }; continue }
             # worker.js rejects an unknown status rather than coercing it, so
             # this must too — silently defaulting here would let a bad value
@@ -1112,7 +1137,7 @@ while ($listener.IsListening) {
             $script:householdCounter++
             $id = 'hh-{0:d6}' -f $script:householdCounter
             $rec = [ordered]@{
-                id = $id; type = 'household'; name = $name
+                id = $id; type = 'household'; kind = $kind; name = $name
                 members = @($mem.members)
                 email = ([string]$body.email).Trim().ToLower()
                 emailType = ([string]$body.emailType).Trim().ToLower()
@@ -1128,7 +1153,7 @@ while ($listener.IsListening) {
                 createdAt = (Get-Date).ToString('o'); updatedAt = $null
             }
             $households[$id] = $rec
-            Write-Audit $adminEmail 'create-household' @{ id = $id; name = $name }
+            Write-Audit $adminEmail 'create-household' @{ id = $id; name = $name; kind = $kind }
             Send-Json $ctx 200 @{ household = $rec }
         }
         elseif ($path -match '^/api/admin/households/(hh-[a-z0-9]+)$' -and $method -eq 'POST') {
@@ -1139,13 +1164,24 @@ while ($listener.IsListening) {
             $body = Read-Body $ctx
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
             $rec = $households[$id]
+            # Resolved before members: their roles are validated against it.
+            $kind = Get-GroupKind $rec
+            if ($body.PSObject.Properties['kind']) {
+                $k = ([string]$body.kind).Trim().ToLower()
+                if ($groupKinds -notcontains $k) {
+                    Send-Json $ctx 400 @{ error = 'Invalid kind - must be family or company' }; continue
+                }
+                $kind = $k
+            }
+            $rec.kind = $kind
+            $noun = if ($kind -eq 'company') { 'Company' } else { 'Family' }
             if ($body.PSObject.Properties['name']) {
                 $n = ([string]$body.name).Trim()
-                if (-not $n) { Send-Json $ctx 400 @{ error = 'Household name is required' }; continue }
+                if (-not $n) { Send-Json $ctx 400 @{ error = "$noun name is required" }; continue }
                 $rec.name = $n
             }
             if ($body.PSObject.Properties['members']) {
-                $mem = ConvertTo-HouseholdMembers $body.members
+                $mem = ConvertTo-HouseholdMembers $body.members $kind
                 if ($mem.error) { Send-Json $ctx 400 @{ error = $mem.error }; continue }
                 $rec.members = @($mem.members)
             }

@@ -248,10 +248,53 @@ Client portal is untouched and keeps its own look.
   counts/alerts/queues, and global search; the profile has an Archive/Unarchive
   button. Route matched **before** the greedy upsert route so the `/archive`
   suffix isn't swallowed; upsert preserves the `archived` flag. UI: filter pills
-  with counts, search, New/Edit Contact modal, tabbed profile (Overview,
-  Assessments incl. assignment editor, Tasks, Notes, Timeline, Documents = signed
-  agreements from linked onboardings, Activity Log = audit entries for this
-  contact).
+  with counts, search, New/Edit Contact modal, tabbed profile in the advisor's
+  working order — **Overview, Notes, Tasks, Meetings, Timeline, Activity Log,
+  Documents** (signed agreements from linked onboardings) **| Onboarding,
+  Assessments** (incl. the assignment editor). The divider separates what's
+  looked at on every visit from the two records opened deliberately. **Meetings
+  sits where an Emails tab would go**: there is no mail integration — no Graph
+  `Mail.Read`, no message store — so an Emails tab would have nothing to render.
+- **Families and companies** (`household:<id>` KV, **encrypted**, id `hh-…`): a
+  grouping of people advised together. Its own record, not the free-text
+  `household` label that rides on a contact — it holds a name, members with
+  roles, a shared email, status, tags and background. Keyed by generated id, not
+  email: a grouping has no mailbox of its own. CRUD under
+  `/api/admin/households[/:id]` (audit `create-household`/`update-household`/
+  `delete-household`); deleting one keeps every member's contact record.
+  - **`kind` discriminates family from company** — same record, same endpoints,
+    same SharePoint mirror. A second entity would have duplicated all of that to
+    express what is only a label and a role list. Roles: family = head/spouse/
+    partner/child/dependent/other, company = primary/owner/officer/employee/
+    other (`rolesForKind()`). A role the kind doesn't have is stored as `other`
+    rather than rejected, which is also what makes changing a record's kind
+    non-destructive.
+  - **`kind` is NOT pushed to SharePoint.** The Households list has no Kind
+    column and Graph fails the whole PATCH on an unknown field, which would
+    break the mirror for every grouping. It is app-side only, like a contact's
+    `importantDates`. Records written before `kind` existed have none and are
+    normalized to `family` on read (one place: `handleAdminListHouseholds`).
+  - **List UI is an accordion.** Each family/company is a header row; its
+    members render nested underneath when expanded, and a person inside a
+    visible grouping is *not* also shown at the top level (the same contact
+    twice reads as two records). Open state lives outside the render so the 20s
+    background poll can't collapse what was just opened. A search or tag filter
+    force-opens every grouping in view — otherwise searching a member's name
+    appears to return nothing — and disables Expand all while it's on.
+    "People only" renders no groupings, so everyone appears flat there.
+  - **Type is colour-coded three ways** (colour alone would fail anyone who
+    can't separate the hues): glyph + avatar colour + a type badge, with a key in
+    the toolbar. Person = sky (already the name-link colour, so people read as
+    the default), family = green, company = violet. A grouping's block carries
+    its colour as a left bar down every row, which is what marks where one
+    grouping's members end. A person's profile shows the same colour-coded chip
+    for each grouping they belong to, with their role, linking to its form.
+  - The list count counts **records in view, not rows on screen** — members
+    inside a collapsed grouping are still in view. CSV export likewise contains
+    every visible person, so the file doesn't depend on which carets were open;
+    its `Type` column reads Person/Family/Company.
+  - Not yet: a grouping has no profile page of its own (the name link opens its
+    form), and there is no UI to convert a family into a company.
 - **Tasks** (`task:<invTs>-<rand>` KV, **encrypted**): title, description,
   client, assignee (admin), **`list`** (board-column id, see below), due,
   priority (low/medium/high), category

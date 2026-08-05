@@ -38,6 +38,67 @@
   .kv-row span { color: var(--muted); }
   .kv-row strong { font-weight: var(--fw-semibold); text-align: right; }
 
+  /* ---------- Record type colour code (person / family / company) ----------
+     Three signals per row, not one: glyph, avatar colour, and — on a grouping —
+     a type badge. Colour alone would fail for anyone who can't separate the
+     hues, and the glyph alone is a 17px difference at a glance. Sky is reused
+     for people deliberately: it's already the name-link colour, so people read
+     as the page's default and the two grouping types as the marked cases. */
+  .avatar-person { background: var(--sky-bg); color: var(--sky-dark); }
+  .avatar-family { background: var(--green-bg); color: var(--green); }
+  .avatar-company { background: var(--violet-bg); color: var(--violet); }
+  .badge-type-family { background: var(--green-bg); color: var(--green); }
+  .badge-type-company { background: var(--violet-bg); color: var(--violet); }
+
+  .type-legend { display: flex; align-items: center; gap: var(--sp-3); margin-left: auto; }
+  .type-legend-item { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: var(--fs-xs); }
+  .type-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot-person { background: var(--sky-dark); }
+  .dot-family { background: var(--green); }
+  .dot-company { background: var(--violet); }
+
+  /* ---------- Grouping accordion ----------
+     A family/company row owns the members listed under it, so the group row
+     carries a left colour bar down the whole block: it's what tells you where
+     one grouping's members stop and the next top-level row starts, which
+     indentation alone does too weakly in a bordered table. */
+  .group-row > td { background: var(--panel-subtle); }
+  .group-row.kind-family > td:first-child { box-shadow: inset 3px 0 0 var(--green); }
+  .group-row.kind-company > td:first-child { box-shadow: inset 3px 0 0 var(--violet); }
+  .member-row > td:first-child { padding-left: var(--sp-6); }
+  .member-row.kind-family > td:first-child { box-shadow: inset 3px 0 0 var(--green-bg); }
+  .member-row.kind-company > td:first-child { box-shadow: inset 3px 0 0 var(--violet-bg); }
+  /* Last member of a grouping closes the block with a firmer rule, so the next
+     top-level row doesn't look like another member. */
+  .member-row.member-last > td { border-bottom-color: var(--border-strong); }
+
+  .acc-caret {
+    flex-shrink: 0; width: 22px; height: 22px; padding: 0; border: none; background: none;
+    color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    border-radius: var(--radius-sm); transition: transform var(--transition), color var(--transition);
+  }
+  .acc-caret:hover { color: var(--text); background: var(--gray-bg); }
+  .acc-caret svg { width: 15px; height: 15px; }
+  .acc-caret.open { transform: rotate(90deg); }
+  /* Members-count line under a grouping's name. */
+  .group-meta { color: var(--muted); font-size: var(--fs-sm); margin-top: 2px; }
+  .member-role { margin-left: 6px; }
+
+  /* Divider between the everyday tabs and the two deliberate ones. */
+  .tab-divider {
+    align-self: center; width: 1px; height: 20px; margin: 0 var(--sp-3);
+    background: var(--border-strong); flex-shrink: 0;
+  }
+
+  /* Grouping chips on a person's profile — same colours as the list rows, but
+     clickable (they open the family/company form), hence the button reset. */
+  .detail-group-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: none; cursor: pointer; font-family: inherit; font-size: var(--fs-xs);
+  }
+  .detail-group-chip:hover { text-decoration: underline; }
+  .detail-group-chip svg { width: 13px; height: 13px; }
+
   /* Assignment editor */
   .assignment-group { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-top: 14px; }
   .assignment-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px; }
@@ -58,11 +119,13 @@
       <div class="page-head">
         <div>
           <h1>Contacts</h1>
-          <p class="sub">Clients and prospects. Click a row to open their profile.</p>
+          <p class="sub">People, families and companies. Click a person to open their profile;
+          click a family or company to see who's in it, or its name to edit it.</p>
         </div>
         <div class="page-actions">
-          <input type="search" class="input search-input" id="contact-search" placeholder="Search name, email, household, tag…" />
-          <button type="button" class="btn btn-ghost" id="new-household-btn">+ New Household</button>
+          <input type="search" class="input search-input" id="contact-search" placeholder="Search name, email, family, company, tag…" />
+          <button type="button" class="btn btn-ghost" id="new-family-btn">+ New Family</button>
+          <button type="button" class="btn btn-ghost" id="new-company-btn">+ New Company</button>
           <button type="button" class="btn btn-primary" id="new-contact-btn">+ New Person</button>
         </div>
       </div>
@@ -71,12 +134,22 @@
            rail's first panel; inside .list-main it pushed the table down by
            its own height and the two columns no longer lined up. -->
       <div class="list-toolbar">
-        <select id="type-filter" class="input" title="Show people, households, or both">
+        <select id="type-filter" class="input" title="Show people, families, companies, or all three">
           <option value="all" selected>All contacts</option>
-          <option value="people">People</option>
-          <option value="households">Households</option>
+          <option value="people">People only</option>
+          <option value="families">Families</option>
+          <option value="companies">Companies</option>
         </select>
+        <button type="button" class="btn btn-ghost btn-small hidden" id="expand-all-btn">Expand all</button>
         <span class="list-count" id="list-count"></span>
+        <!-- The colour code is only self-explanatory once you've been told what
+             it means, so the key says it rather than leaving it to be inferred
+             from three icons. -->
+        <div class="type-legend" aria-hidden="true">
+          <span class="type-legend-item"><span class="type-dot dot-person"></span>Person</span>
+          <span class="type-legend-item"><span class="type-dot dot-family"></span>Family</span>
+          <span class="type-legend-item"><span class="type-dot dot-company"></span>Company</span>
+        </div>
         <div class="filter-row" id="status-filters"></div>
       </div>
 
@@ -152,16 +225,21 @@
         </div>
       </div>
 
+      <!-- Order is the advisor's working order: what you look at on every visit
+           first, then the two records you only open deliberately (Onboarding,
+           Assessments) after the divider. Meetings sits where an Emails tab
+           would go — see STATUS.md; there is no mail integration yet. -->
       <div class="tabs" id="profile-tabs">
         <button type="button" class="tab active" data-tab="overview">Overview</button>
-        <button type="button" class="tab" data-tab="assessments">Assessments</button>
+        <button type="button" class="tab" data-tab="notes">Notes</button>
         <button type="button" class="tab" data-tab="tasks">Tasks</button>
         <button type="button" class="tab" data-tab="meetings">Meetings</button>
-        <button type="button" class="tab" data-tab="onboarding">Onboarding</button>
-        <button type="button" class="tab" data-tab="notes">Notes</button>
         <button type="button" class="tab" data-tab="timeline">Timeline</button>
-        <button type="button" class="tab" data-tab="documents">Documents</button>
         <button type="button" class="tab" data-tab="activity">Activity Log</button>
+        <button type="button" class="tab" data-tab="documents">Documents</button>
+        <span class="tab-divider" aria-hidden="true"></span>
+        <button type="button" class="tab" data-tab="onboarding">Onboarding</button>
+        <button type="button" class="tab" data-tab="assessments">Assessments</button>
       </div>
 
       <div id="tab-overview"></div>
@@ -191,21 +269,21 @@
   </main>
 </div>
 
-<!-- Create/edit household modal -->
+<!-- Create/edit family or company modal. One form for both: the two records
+     differ only in their labels and their member roles (see openGroupModal). -->
 <div class="modal-backdrop hidden" id="household-modal-backdrop">
   <div class="modal">
-    <h2 id="hm-title">Add a new Household</h2>
+    <h2 id="hm-title">Add a new Family</h2>
     <p class="field-note" id="hm-switch-note">
       — or — add a new <a href="#" id="hm-switch-person">Person</a>.
-      Households are managed here, not in SharePoint, so nothing on this form is
-      overwritten by the sync.
+      <span id="hm-switch-tail"></span>
     </p>
     <div class="field">
-      <label for="hm-name">Name</label>
-      <input type="text" id="hm-name" placeholder="Household Name" />
+      <label for="hm-name" id="hm-name-label">Name</label>
+      <input type="text" id="hm-name" placeholder="Family Name" />
     </div>
     <div class="field">
-      <label>Members</label>
+      <label id="hm-members-label">Members</label>
       <div class="hm-members" id="hm-members"></div>
       <button type="button" class="btn btn-ghost btn-small" id="hm-member-add">+ Add member</button>
     </div>
@@ -269,7 +347,8 @@
   <div class="modal">
     <h2 id="contact-modal-title">New Contact</h2>
     <p class="field-note" id="cm-switch-note">
-      — or — add a new <a href="#" id="cm-switch-household">Household</a>.
+      — or — add a new <a href="#" id="cm-switch-household">Family</a>
+      or <a href="#" id="cm-switch-company">Company</a>.
     </p>
     <p class="field-note" id="cm-sharepoint-note">
       Contact details (name, status, advisor, phone, work email/phone, address, gender, household, tags)
@@ -364,8 +443,11 @@
   let assignmentEditorEmail = '';
   let searchText = '';
   let showArchived = false;
-  let typeFilter = 'all';           // all | people | households
+  let typeFilter = 'all';           // all | people | families | companies
   const activeTags = new Set();     // tag filter; empty = no tag constraint
+  // Which groupings are open. Held outside the render so the 20s background
+  // poll can't collapse a family the advisor just expanded.
+  const expandedGroups = new Set();
   let activeTab = 'overview';
   let modalEmail = null; // null = creating; email = editing that contact
   const POLL_INTERVAL_MS = 20000;
@@ -461,10 +543,40 @@
     return `${c.name} ${c.email} ${c.household} ${(c.tags || []).join(' ')}`.toLowerCase().includes(q);
   }
 
+  // A grouping matches on its members' *names* as well as their emails, so
+  // searching "Dana" surfaces the Smith Family whose member is dana@… even
+  // though the family record itself never mentions the name.
   function householdMatches(h, q) {
-    return `${h.name} ${h.email} ${(h.tags || []).join(' ')} ${(h.members || []).map((m) => m.email).join(' ')}`
-      .toLowerCase().includes(q);
+    const memberText = (h.members || [])
+      .map((m) => {
+        const c = allContacts.find((x) => x.email === m.email);
+        return `${m.email} ${(c && c.name) || ''}`;
+      })
+      .join(' ');
+    return `${h.name} ${h.email} ${(h.tags || []).join(' ')} ${memberText}`.toLowerCase().includes(q);
   }
+
+  // ---------- Record types ----------
+  // A grouping is a family or a company; `kind` is normalized server-side, so
+  // this is only a guard for a record that never round-tripped the endpoint.
+  const KIND_META = {
+    family: { label: 'Family', icon: 'home', noun: 'member', nounPlural: 'members' },
+    company: { label: 'Company', icon: 'briefcase', noun: 'person', nounPlural: 'people' },
+  };
+
+  function groupKind(h) {
+    return h && h.kind === 'company' ? 'company' : 'family';
+  }
+
+  function kindMeta(h) {
+    return KIND_META[groupKind(h)];
+  }
+
+  const GROUP_ROLE_LABELS = {
+    head: 'Head', spouse: 'Spouse', partner: 'Partner', child: 'Child',
+    dependent: 'Dependent', primary: 'Primary contact', owner: 'Owner',
+    officer: 'Officer', employee: 'Employee', other: 'Other',
+  };
 
   // Tag chips, capped so one heavily-tagged row can't set the column's width.
   function tagCells(tags) {
@@ -484,27 +596,35 @@
     return lines.length ? lines.join('<div class="cell-gap"></div>') : '<span class="cell-missing">—</span>';
   }
 
-  // Households sort in among the people by display name rather than being
+  // Groupings sort in among the people by display name rather than being
   // bucketed separately: the advisor looks up "the Smiths" the same way they
   // look up a person, so one alphabetical list is the fewest places to look.
-  // Both row types use the same avatar treatment — only the glyph differs —
-  // so the two read as one list rather than two interleaved kinds of thing.
-  function householdRowHtml(h) {
-    const memberNames = (h.members || [])
-      .map((m) => {
-        const c = allContacts.find((x) => x.email === m.email);
-        return escapeHtml((c && c.name) || m.email);
-      })
-      .slice(0, 3)
-      .join(', ');
-    const extra = (h.members || []).length > 3 ? ` +${h.members.length - 3}` : '';
-    return `<tr class="row-click household-row" data-hh="${escapeHtml(h.id)}">
+  // All three row types share the avatar treatment — only glyph and colour
+  // differ — so the list reads as one thing, not three interleaved kinds.
+  //
+  // The grouping row is an accordion header: the caret (and a click anywhere on
+  // the row) opens its members underneath. The *name* is still a link to the
+  // edit form, because a family has no profile page of its own — clicking the
+  // name is the only way in, and losing it to the toggle would strand the
+  // record's own fields.
+  function groupRowHtml(h, open) {
+    const meta = kindMeta(h);
+    const kind = groupKind(h);
+    const count = (h.members || []).length;
+    const countLabel = count
+      ? `${count} ${count === 1 ? meta.noun : meta.nounPlural}`
+      : `no ${meta.nounPlural} yet`;
+    return `<tr class="row-click group-row kind-${kind}" data-hh="${escapeHtml(h.id)}">
       <td>
         <div class="name-cell">
-          <span class="row-avatar">${icon('home')}</span>
+          <button type="button" class="acc-caret ${open ? 'open' : ''}" data-toggle="${escapeHtml(h.id)}"
+            aria-expanded="${open ? 'true' : 'false'}"
+            title="${open ? 'Collapse' : 'Expand'} ${escapeHtml(h.name)}">${icon('chevron-right')}</button>
+          <span class="row-avatar avatar-${kind}">${icon(meta.icon)}</span>
           <div class="name-main">
-            <a class="name-link" href="#">${escapeHtml(h.name)}</a>${h.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}
-            <div class="cell-sub">${memberNames ? memberNames + extra : '<span class="cell-missing">no members yet</span>'}</div>
+            <a class="name-link" href="#" data-edit-hh="${escapeHtml(h.id)}">${escapeHtml(h.name)}</a>
+            <span class="badge badge-type-${kind}">${meta.label}</span>${h.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}
+            <div class="group-meta">${count ? countLabel : `<span class="cell-missing">${countLabel}</span>`}</div>
           </div>
         </div>
       </td>
@@ -512,6 +632,76 @@
       <td>${h.email ? escapeHtml(h.email) : '<span class="cell-missing">—</span>'}</td>
       <td>${tagCells(h.tags)}</td>
     </tr>`;
+  }
+
+  // One member of a grouping. `c` may be undefined: a grouping can list an
+  // email that has no contact record (someone typed it in before the person was
+  // added), and dropping that row would hide a member the record does claim.
+  // NOT `memberRowHtml` — that name belongs to the modal's member *editor* row
+  // further down, and a second declaration of it would silently win here.
+  function groupMemberRowHtml(h, m, c, isLast) {
+    const kind = groupKind(h);
+    const role = GROUP_ROLE_LABELS[m.role] || 'Other';
+    const name = c ? c.name || c.email : m.email;
+    const cls = `row-click member-row kind-${kind}${isLast ? ' member-last' : ''}`;
+    if (!c) {
+      return `<tr class="member-row kind-${kind}${isLast ? ' member-last' : ''}">
+        <td>
+          <div class="name-cell">
+            <span class="row-avatar avatar-person">${icon('user')}</span>
+            <div class="name-main">
+              ${escapeHtml(m.email)} <span class="badge badge-gray member-role">${escapeHtml(role)}</span>
+              <div class="cell-sub"><span class="cell-missing">not a contact yet</span></div>
+            </div>
+          </div>
+        </td>
+        <td><span class="cell-missing">—</span></td>
+        <td>${escapeHtml(m.email)}</td>
+        <td><span class="cell-missing">—</span></td>
+      </tr>`;
+    }
+    return `<tr class="${cls}" data-email="${escapeHtml(c.email)}">
+      <td>
+        <div class="name-cell">
+          <span class="row-avatar avatar-person">${icon('user')}</span>
+          <div class="name-main">
+            <a class="name-link" href="#">${escapeHtml(name)}</a>
+            <span class="badge badge-gray member-role">${escapeHtml(role)}</span>${c.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}
+          </div>
+        </div>
+      </td>
+      <td>${contactPoints(c.phone, c.workPhone)}</td>
+      <td>${contactPoints(c.email, c.workEmail)}</td>
+      <td>${tagCells(c.tags)}</td>
+    </tr>`;
+  }
+
+  // A person's row when it stands on its own (not nested under a grouping).
+  function personRowHtml(c) {
+    // Shows the grouping they belong to when they have one — which only
+    // happens under the "People only" filter, where groupings aren't rendered
+    // and the membership would otherwise be invisible. Falls back to the
+    // SharePoint free-text household tag.
+    const hh = groupsForEmail(c.email)[0];
+    const sub = hh ? escapeHtml(hh.name) : escapeHtml(c.household || '');
+    return `<tr class="row-click contact-row" data-email="${escapeHtml(c.email)}">
+      <td>
+        <div class="name-cell">
+          <span class="row-avatar avatar-person">${icon('user')}</span>
+          <div class="name-main">
+            <a class="name-link" href="#">${escapeHtml(c.name || c.email)}</a>${c.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}
+            ${sub ? `<div class="cell-sub">${sub}</div>` : ''}
+          </div>
+        </div>
+      </td>
+      <td>${contactPoints(c.phone, c.workPhone)}</td>
+      <td>${contactPoints(c.email, c.workEmail)}</td>
+      <td>${tagCells(c.tags)}</td>
+    </tr>`;
+  }
+
+  function groupsForEmail(email) {
+    return allHouseholds.filter((h) => (h.members || []).some((m) => m.email === email));
   }
 
   // Every active tag must be present, not just one of them — successive tag
@@ -523,15 +713,43 @@
     return true;
   }
 
-  // The rows the list is currently showing. Export reuses this so the file
-  // contains exactly what's on screen rather than the whole database.
+  // The rows the list is currently showing.
+  //   groups — families/companies rendered as accordion headers
+  //   nested — the emails that appear *inside* a visible grouping
+  //   loose  — people rendered as their own top-level row
+  //   people — every person on screen, nested or loose (export and the tag
+  //            counts want the whole visible set, not just the top level)
+  //
+  // A person inside a visible grouping is deliberately NOT also shown at the
+  // top level: the same contact twice in one list reads as two records. Under
+  // "People only" no grouping is visible, so `nested` is empty and everyone
+  // appears flat — which is what that filter is for.
   function visibleRecords() {
     const q = searchText.trim().toLowerCase();
-    const households = typeFilter === 'people' ? [] : allHouseholds
-      .filter((h) => (showArchived ? h.archived : !h.archived) && (!q || householdMatches(h, q)) && matchesTags(h));
-    const people = typeFilter === 'households' ? [] : allContacts
-      .filter((c) => (showArchived ? c.archived : !c.archived) && (!q || contactMatches(c, q)) && matchesTags(c));
-    return { households, people };
+    const kindWanted = { families: 'family', companies: 'company' }[typeFilter];
+    const groups = typeFilter === 'people' ? [] : allHouseholds.filter((h) =>
+      (showArchived ? h.archived : !h.archived)
+      && (!kindWanted || groupKind(h) === kindWanted)
+      && (!q || householdMatches(h, q))
+      && matchesTags(h));
+
+    const nested = new Set();
+    groups.forEach((h) => (h.members || []).forEach((m) => nested.add(m.email)));
+
+    const inView = (c) => (showArchived ? c.archived : !c.archived)
+      && (!q || contactMatches(c, q))
+      && matchesTags(c);
+    // Members are listed because their grouping is in view, so they are not
+    // re-filtered by the search text — a hit on the family name should show the
+    // whole family, not just the members whose own fields happen to match.
+    const memberPeople = allContacts.filter((c) => nested.has(c.email)
+      && (showArchived ? c.archived : !c.archived));
+    const loose = typeFilter === 'families' || typeFilter === 'companies'
+      ? []
+      : allContacts.filter((c) => !nested.has(c.email) && inView(c));
+    const seen = new Set(loose.map((c) => c.email));
+    const people = loose.concat(memberPeople.filter((c) => !seen.has(c.email)));
+    return { groups, nested, loose, people };
   }
 
   // Tag chips are built from whatever tags actually exist on the records in
@@ -541,8 +759,8 @@
   function renderTagFilter() {
     const wrap = document.getElementById('tag-filter');
     const counts = new Map();
-    const { households, people } = visibleRecords();
-    [...households, ...people].forEach((r) => {
+    const { groups, people } = visibleRecords();
+    [...groups, ...people].forEach((r) => {
       (r.tags || []).forEach((t) => counts.set(t, (counts.get(t) || 0) + 1));
     });
     activeTags.forEach((t) => { if (!counts.has(t)) counts.set(t, 0); });
@@ -561,59 +779,107 @@
       .join('');
   }
 
+  // True while the list is narrowed. A member matching the search sits inside a
+  // grouping that may be collapsed, so filtering force-opens every grouping in
+  // view — otherwise searching a person's name appears to return nothing.
+  function filtersActive() {
+    return !!searchText.trim() || activeTags.size > 0;
+  }
+
+  function groupIsOpen(id) {
+    return filtersActive() || expandedGroups.has(id);
+  }
+
   function renderContacts() {
     const body = document.getElementById('contacts-body');
-    const { households, people } = visibleRecords();
-    const householdRows = households
-      .map((h) => ({ sortKey: String(h.name || '').toLowerCase(), html: householdRowHtml(h) }));
-    const rows = people
+    const { groups, loose, people } = visibleRecords();
+
+    const groupRows = groups.map((h) => {
+      const open = groupIsOpen(h.id);
+      let html = groupRowHtml(h, open);
+      if (open) {
+        const members = h.members || [];
+        html += members
+          .map((m, i) => {
+            const c = allContacts.find((x) => x.email === m.email);
+            // An archived member stays listed inside its grouping while the
+            // archived toggle is off: the grouping claims them, and silently
+            // dropping the row would make the member count disagree with the
+            // rows under it.
+            return groupMemberRowHtml(h, m, c, i === members.length - 1);
+          })
+          .join('');
+      }
+      return { sortKey: String(h.name || '').toLowerCase(), html };
+    });
+
+    const looseRows = loose
       .slice()
       .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)))
-      .map((c) => {
-        // A person who belongs to a household record shows it under their
-        // name; falls back to the SharePoint free-text household tag. No
-        // longer falls back to the email — that now has its own column, and
-        // repeating it here just duplicated the same string twice per row.
-        const hh = allHouseholds.find((h) => (h.members || []).some((m) => m.email === c.email));
-        const sub = hh ? escapeHtml(hh.name) : escapeHtml(c.household || '');
-        return {
-          sortKey: String(c.name || c.email).toLowerCase(),
-          html: `<tr class="row-click contact-row" data-email="${escapeHtml(c.email)}">
-          <td>
-            <div class="name-cell">
-              <span class="row-avatar">${icon('user')}</span>
-              <div class="name-main">
-                <a class="name-link" href="#">${escapeHtml(c.name || c.email)}</a>${c.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}
-                ${sub ? `<div class="cell-sub">${sub}</div>` : ''}
-              </div>
-            </div>
-          </td>
-          <td>${contactPoints(c.phone, c.workPhone)}</td>
-          <td>${contactPoints(c.email, c.workEmail)}</td>
-          <td>${tagCells(c.tags)}</td>
-        </tr>`,
-        };
-      });
-    const all = householdRows.concat(rows).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+      .map((c) => ({ sortKey: String(c.name || c.email).toLowerCase(), html: personRowHtml(c) }));
+
+    const all = groupRows.concat(looseRows).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     const total = allContacts.length + allHouseholds.length;
     body.innerHTML = all.length
       ? all.map((r) => r.html).join('')
-      : `<tr><td colspan="4" class="empty">${total ? 'Nothing matches.' : 'No contacts yet — add your first with New Person or New Household.'}</td></tr>`;
-    body.querySelectorAll('.contact-row').forEach((tr) => {
+      : `<tr><td colspan="4" class="empty">${total ? 'Nothing matches.' : 'No contacts yet — add your first with New Person, New Family or New Company.'}</td></tr>`;
+
+    // Person rows (top-level and nested) open the profile.
+    body.querySelectorAll('.contact-row, .member-row[data-email]').forEach((tr) => {
       tr.addEventListener('click', () => openProfile(tr.dataset.email));
     });
-    body.querySelectorAll('.household-row').forEach((tr) => {
-      tr.addEventListener('click', () => {
-        const hh = allHouseholds.find((h) => h.id === tr.dataset.hh);
-        if (hh) openHouseholdModal(hh);
+    // The grouping row toggles; its name link edits. The link handler runs
+    // first and stops propagation, so the two don't fight.
+    body.querySelectorAll('.group-row').forEach((tr) => {
+      tr.addEventListener('click', () => toggleGroup(tr.dataset.hh));
+    });
+    body.querySelectorAll('[data-edit-hh]').forEach((a) => {
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const hh = allHouseholds.find((h) => h.id === a.dataset.editHh);
+        if (hh) openGroupModal(hh, groupKind(hh));
       });
     });
 
-    const shown = householdRows.length + rows.length;
+    // Counts records in view, not rows on screen: members nested inside a
+    // collapsed grouping are still in view. Counting rows would read as
+    // "(4 of 11)" on an unfiltered list, which looks like a filter is on.
+    const shown = groups.length + people.length;
     document.getElementById('list-count').textContent =
       shown === total ? `(${total})` : `(${shown} of ${total})`;
+
+    // Only offered when there is something to expand, and disabled while a
+    // filter is force-opening everything (clicking it then would do nothing
+    // visible and read as broken).
+    const expandBtn = document.getElementById('expand-all-btn');
+    expandBtn.classList.toggle('hidden', !groups.length);
+    expandBtn.disabled = filtersActive();
+    expandBtn.title = filtersActive()
+      ? 'Groups are expanded while a search or tag filter is on'
+      : '';
+    const allOpen = groups.length > 0 && groups.every((h) => expandedGroups.has(h.id));
+    expandBtn.textContent = allOpen ? 'Collapse all' : 'Expand all';
     renderTagFilter();
   }
+
+  function toggleGroup(id) {
+    // While filtering, every grouping is force-open; a click then means "close
+    // this one", which the Set can't express — so it does nothing rather than
+    // silently recording state the advisor can't see.
+    if (filtersActive()) return;
+    if (expandedGroups.has(id)) expandedGroups.delete(id);
+    else expandedGroups.add(id);
+    renderContacts();
+  }
+
+  document.getElementById('expand-all-btn').addEventListener('click', () => {
+    const { groups } = visibleRecords();
+    const allOpen = groups.length > 0 && groups.every((h) => expandedGroups.has(h.id));
+    if (allOpen) groups.forEach((h) => expandedGroups.delete(h.id));
+    else groups.forEach((h) => expandedGroups.add(h.id));
+    renderContacts();
+  });
 
   document.getElementById('contact-search').addEventListener('input', (e) => {
     searchText = e.target.value;
@@ -661,7 +927,10 @@
   }
 
   document.getElementById('export-btn').addEventListener('click', () => {
-    const { households, people } = visibleRecords();
+    // `people` is every person on screen — including members nested inside a
+    // collapsed family. Exporting only the expanded ones would make the file
+    // depend on which carets happened to be open.
+    const { groups: households, people } = visibleRecords();
     const lines = [IO_COLUMNS.join(',')];
     people
       .slice()
@@ -681,7 +950,7 @@
         // never reads them back (a household's membership is structured data
         // keyed on ids, not something to reconstruct from a spreadsheet cell).
         lines.push([
-          'Household', h.name, h.email, '', h.status, h.advisorRep,
+          kindMeta(h).label, h.name, h.email, '', h.status, h.advisorRep,
           '', '', '', '', '', (h.members || []).map((m) => m.email).join('; '),
           (h.tags || []).join('; '),
         ].map(csvCell).join(','));
@@ -783,18 +1052,33 @@
   // `household` tag that rides on a contact. It has no email identity — members
   // are referenced by their own contact email — so it is keyed by generated id.
 
-  const HOUSEHOLD_ROLES = [
-    ['head', 'Head'], ['spouse', 'Spouse'], ['partner', 'Partner'],
-    ['child', 'Child'], ['dependent', 'Dependent'], ['other', 'Other'],
-  ];
-  let modalHouseholdId = null; // null = creating; id = editing that household
+  // Roles per kind, mirroring rolesForKind() in worker.js. A role the server
+  // doesn't recognise for the record's kind is stored as "other" rather than
+  // rejected, so these lists drifting only ever costs precision, never a save.
+  const KIND_ROLES = {
+    family: [
+      ['head', 'Head'], ['spouse', 'Spouse'], ['partner', 'Partner'],
+      ['child', 'Child'], ['dependent', 'Dependent'], ['other', 'Other'],
+    ],
+    company: [
+      ['primary', 'Primary contact'], ['owner', 'Owner'], ['officer', 'Officer'],
+      ['employee', 'Employee'], ['other', 'Other'],
+    ],
+  };
+  // Defaults for the first two blank rows: the shape each kind almost always
+  // has, which saves two clicks on the common case.
+  const KIND_ROLE_DEFAULTS = {
+    family: ['head', 'spouse'],
+    company: ['primary', 'employee'],
+  };
+  let modalHouseholdId = null; // null = creating; id = editing that record
+  let modalGroupKind = 'family'; // which kind the open form is editing
 
   function memberRowHtml(m, index) {
     const email = m ? m.email || '' : '';
-    // Default the first row to Head and the second to Spouse, which is the
-    // overwhelmingly common shape and saves two clicks on the usual case.
-    const role = m && m.role ? m.role : (index === 0 ? 'head' : index === 1 ? 'spouse' : 'other');
-    const opts = HOUSEHOLD_ROLES
+    const defaults = KIND_ROLE_DEFAULTS[modalGroupKind];
+    const role = m && m.role ? m.role : (defaults[index] || 'other');
+    const opts = KIND_ROLES[modalGroupKind]
       .map(([v, l]) => `<option value="${v}"${v === role ? ' selected' : ''}>${l}</option>`)
       .join('');
     const known = allContacts.filter((c) => !c.archived);
@@ -825,12 +1109,28 @@
       .filter((m) => m.email); // blank rows are just unfilled slots, not members
   }
 
-  function openHouseholdModal(hh) {
+  // One form for both kinds. `kind` is required when creating; when editing it
+  // comes from the record, so an existing company can never be relabelled a
+  // family by opening its form.
+  function openGroupModal(hh, kind) {
     modalHouseholdId = hh ? hh.id : null;
-    document.getElementById('hm-title').textContent = hh ? 'Edit Household' : 'Add a new Household';
-    document.getElementById('hm-save-btn').textContent = hh ? 'Save Household' : 'Add Household';
+    modalGroupKind = hh ? groupKind(hh) : (kind === 'company' ? 'company' : 'family');
+    const meta = KIND_META[modalGroupKind];
+    document.getElementById('hm-title').textContent =
+      hh ? `Edit ${meta.label}` : `Add a new ${meta.label}`;
+    document.getElementById('hm-save-btn').textContent =
+      hh ? `Save ${meta.label}` : `Add ${meta.label}`;
+    document.getElementById('hm-name-label').textContent = `${meta.label} name`;
+    document.getElementById('hm-name').placeholder =
+      modalGroupKind === 'company' ? 'e.g. Acme Manufacturing' : 'e.g. The Smith Family';
+    document.getElementById('hm-members-label').textContent =
+      modalGroupKind === 'company' ? 'People at this company' : 'Members';
+    document.getElementById('hm-member-add').textContent =
+      modalGroupKind === 'company' ? '+ Add person' : '+ Add member';
+    document.getElementById('hm-switch-tail').textContent =
+      `Families and companies are managed here, not in SharePoint, so nothing on this form is overwritten by the sync.`;
     // Switching to the Person form only makes sense while creating; when editing
-    // an existing household there is nothing to switch to.
+    // an existing record there is nothing to switch to.
     document.getElementById('hm-switch-note').classList.toggle('hidden', !!hh);
     document.getElementById('hm-delete-btn').classList.toggle('hidden', !hh);
     document.getElementById('hm-name').value = hh ? hh.name || '' : '';
@@ -866,7 +1166,8 @@
     if (!wrap.querySelector('.hm-member')) wrap.innerHTML = memberRowHtml(null, 0);
   });
 
-  document.getElementById('new-household-btn').addEventListener('click', () => openHouseholdModal(null));
+  document.getElementById('new-family-btn').addEventListener('click', () => openGroupModal(null, 'family'));
+  document.getElementById('new-company-btn').addEventListener('click', () => openGroupModal(null, 'company'));
   document.getElementById('hm-cancel-btn').addEventListener('click', closeHouseholdModal);
   document.getElementById('household-modal-backdrop').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeHouseholdModal();
@@ -879,20 +1180,30 @@
   document.getElementById('cm-switch-household').addEventListener('click', (e) => {
     e.preventDefault();
     closeContactModal();
-    openHouseholdModal(null);
+    openGroupModal(null, 'family');
+  });
+  document.getElementById('cm-switch-company').addEventListener('click', (e) => {
+    e.preventDefault();
+    closeContactModal();
+    openGroupModal(null, 'company');
   });
 
   document.getElementById('hm-save-btn').addEventListener('click', async (ev) => {
     const errEl = document.getElementById('hm-error');
     errEl.textContent = '';
+    const meta = KIND_META[modalGroupKind];
     const name = document.getElementById('hm-name').value.trim();
-    if (!name) { errEl.textContent = 'Give the household a name.'; return; }
+    if (!name) { errEl.textContent = `Give the ${meta.label.toLowerCase()} a name.`; return; }
     const members = readMemberRows();
     // Caught here as well as server-side so the advisor sees which row to fix
     // rather than a generic failure after a round trip.
     const dupe = members.map((m) => m.email).find((e, i, a) => a.indexOf(e) !== i);
     if (dupe) { errEl.textContent = `${dupe} is listed twice — each person can only appear once.`; return; }
     const payload = {
+      // Sent on every save, edits included: the server validates member roles
+      // against the record's kind, so leaving it out of an edit would validate
+      // a company's roles against the family list.
+      kind: modalGroupKind,
       name,
       members,
       email: document.getElementById('hm-email').value.trim(),
@@ -925,7 +1236,8 @@
     if (!modalHouseholdId) return;
     // Deleting the grouping leaves every member's own contact record intact,
     // which is worth saying out loud before confirming.
-    if (!confirm('Delete this household? The people in it are kept as contacts.')) return;
+    const noun = KIND_META[modalGroupKind].label.toLowerCase();
+    if (!confirm(`Delete this ${noun}? The people in it are kept as contacts.`)) return;
     try {
       await api(`/api/admin/households/${encodeURIComponent(modalHouseholdId)}`, { method: 'DELETE' });
       closeHouseholdModal();
@@ -1023,7 +1335,8 @@
     document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
       b.classList.toggle('active', b.dataset.tab === tab)
     );
-    ['overview', 'assessments', 'onboarding', 'tasks', 'meetings', 'notes', 'timeline', 'documents', 'activity'].forEach((t) =>
+    // Same order as the tab strip above, so the two can be read together.
+    ['overview', 'notes', 'tasks', 'meetings', 'timeline', 'activity', 'documents', 'onboarding', 'assessments'].forEach((t) =>
       document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab)
     );
     // These fetch on demand so opening a profile stays cheap.
@@ -1051,10 +1364,27 @@
 
     document.getElementById('detail-name').textContent = c.name || c.email;
     document.getElementById('detail-email').textContent = c.email;
+    // The groupings this person belongs to, colour-coded the same way as the
+    // list rows, so which family/company a contact sits in is answerable from
+    // the profile rather than only from the list.
+    const groupChips = groupsForEmail(c.email).map((h) => {
+      const kind = groupKind(h);
+      const role = (h.members || []).find((m) => m.email === c.email);
+      const roleLabel = role ? GROUP_ROLE_LABELS[role.role] || 'Other' : '';
+      return ` <button type="button" class="badge badge-type-${kind} detail-group-chip" data-goto-hh="${escapeHtml(h.id)}"
+        title="Open this ${KIND_META[kind].label.toLowerCase()}">${icon(KIND_META[kind].icon)}${escapeHtml(h.name)}${roleLabel ? ` · ${escapeHtml(roleLabel)}` : ''}</button>`;
+    }).join('');
     document.getElementById('detail-badges').innerHTML =
       statusBadge(c.status) +
       (c.archived ? ' <span class="badge badge-gray">Archived</span>' : '') +
+      groupChips +
       (c.tags || []).map((t) => ` <span class="chip">${escapeHtml(t)}</span>`).join('');
+    document.querySelectorAll('#detail-badges [data-goto-hh]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const hh = allHouseholds.find((h) => h.id === b.dataset.gotoHh);
+        if (hh) openGroupModal(hh, groupKind(hh));
+      });
+    });
     document.getElementById('archive-contact-btn').textContent = c.archived ? 'Unarchive' : 'Archive';
     document.getElementById('print-client-line').textContent = `Client: ${c.name || c.email} (${c.email})`;
     document.getElementById('print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
