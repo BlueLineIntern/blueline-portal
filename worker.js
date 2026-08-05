@@ -187,8 +187,9 @@ function resolveCorsOrigin(request, url, env) {
 
 function corsHeaders(corsOrigin) {
   const headers = {
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Onboarding-Token',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers':
+      'Content-Type, Authorization, X-Onboarding-Token, X-Upload-Ticket, X-Upload-Offset',
     Vary: 'Origin',
   };
   if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
@@ -2615,6 +2616,47 @@ const LEARNING_DESCRIPTION_FIELDS = ['Description', 'Description0', '_ExtendedDe
 // column someone names "Title" would be suffixed — hence both spellings.
 const LEARNING_TITLE_FIELDS = ['Title', 'Title0'];
 
+// The write path needs the *exact* internal names, not a best-guess read: a
+// PATCH against a column that doesn't exist fails the whole request. So for
+// uploads the columns are resolved from the list's own schema rather than from
+// the candidate lists above, which also yields the Category column's Choice
+// values for the picker (including categories no file uses yet).
+async function resolveLearningColumns(env, token) {
+  const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}`
+    + `/lists/${env.SHAREPOINT_LEARNING_LIST_ID}/columns`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error('Graph API error ' + res.status + ': ' + (await res.text()).slice(0, 300));
+  const cols = ((await res.json()).value || []).filter((c) => !c.readOnly && !c.hidden);
+  // Internal name first (that's what a PATCH takes), display name as the
+  // fallback for a column created with a name we don't have a candidate for.
+  const find = (candidates, display) =>
+    cols.find((c) => candidates.includes(c.name))
+    || cols.find((c) => String(c.displayName || '').toLowerCase() === display)
+    || null;
+  const category = find(LEARNING_CATEGORY_FIELDS, 'category');
+  return {
+    title: find(LEARNING_TITLE_FIELDS, 'title'),
+    category,
+    description: find(LEARNING_DESCRIPTION_FIELDS, 'description'),
+    // A free-text Category column has no choices; the UI then lets any value
+    // be typed instead of forcing a pick from an empty list.
+    categoryChoices: (category && category.choice && category.choice.choices) || [],
+    categoryIsChoice: Boolean(category && category.choice),
+  };
+}
+
+// A document library is backed by a drive, and uploads go through the drive
+// (not the list) endpoint — so the drive id is needed before any upload.
+async function getLearningDriveId(env, token) {
+  const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}`
+    + `/lists/${env.SHAREPOINT_LEARNING_LIST_ID}/drive`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error('Could not resolve the library drive (Graph ' + res.status + ')');
+  const drive = await res.json();
+  if (!drive.id) throw new Error('Library drive has no id');
+  return drive.id;
+}
+
 async function fetchLearningResources(env) {
   if (!env.SHAREPOINT_LEARNING_LIST_ID) return { resources: [], configured: false };
 
@@ -2673,7 +2715,24 @@ async function handleAdminLearning(request, env, cors) {
     // new Choice value in SharePoint surfaces it here with no code change.
     const categories = [...new Set(resources.map((r) => r.category).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b));
-    return json({ resources, categories, configured }, 200, cors);
+    // The upload form's category picker wants the column's own Choice values,
+    // which include categories no file uses yet. Resolving the schema is a
+    // second Graph call, so a failure here degrades to the data-derived list
+    // rather than failing the whole listing.
+    let categoryChoices = [];
+    let categoryIsChoice = false;
+    let canUpload = false;
+    if (configured) {
+      try {
+        const cols = await resolveLearningColumns(env, await getGraphToken(env));
+        categoryChoices = cols.categoryChoices;
+        categoryIsChoice = cols.categoryIsChoice;
+        canUpload = true;
+      } catch (err) {
+        console.error('Could not resolve learning columns:', err);
+      }
+    }
+    return json({ resources, categories, categoryChoices, categoryIsChoice, canUpload, configured }, 200, cors);
   } catch (err) {
     console.error('Failed to fetch learning resources:', err);
     return json({ error: 'Failed to load learning resources: ' + (err && err.message) }, 500, cors);
@@ -2706,6 +2765,197 @@ async function handleAdminLearningFields(request, env, cors) {
     }, 200, cors);
   } catch (err) {
     return json({ error: 'Failed to read learning list fields: ' + (err && err.message) }, 500, cors);
+  }
+}
+
+// ---------- Learning uploads ----------
+// Adding a video is a two-step dance because training videos are far too large
+// for one request:
+//
+//   1. POST /api/admin/learning/upload      -> Graph upload session + a ticket
+//   2. PUT  /api/admin/learning/upload/chunk -> one 5 MiB slice at a time
+//
+// Chunks are proxied through the Worker rather than sent straight from the
+// browser to the SharePoint upload URL: that URL's CORS behaviour isn't
+// something we control, and proxying keeps the pre-authenticated URL out of
+// page JavaScript.
+//
+// The session state (upload URL + the Title/Category/Description to stamp on
+// the file when it lands) rides along in an encrypted ticket the client echoes
+// back with each chunk, rather than in KV. KV is eventually consistent, and the
+// first chunk can arrive within a second of the session being created — a stale
+// read there would fail the upload outright.
+
+const LEARNING_UPLOAD_CHUNK = 5 * 1024 * 1024; // multiple of 320 KiB, as Graph requires
+const LEARNING_MAX_UPLOAD = 2 * 1024 * 1024 * 1024; // 2 GB
+const LEARNING_VIDEO_EXTS = ['mp4', 'mov', 'm4v', 'avi', 'wmv', 'webm', 'mkv'];
+
+// SharePoint rejects " * : < > ? / \ | and leading/trailing dots or spaces.
+function sanitizeLearningFilename(raw) {
+  const base = String(raw || '').split(/[\\/]/).pop();
+  return base.replace(/["*:<>?|]/g, '-').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 200);
+}
+
+async function handleAdminLearningUploadStart(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!env.SHAREPOINT_LEARNING_LIST_ID) {
+    return json({ error: 'SHAREPOINT_LEARNING_LIST_ID is not set' }, 400, cors);
+  }
+  const body = await request.json().catch(() => ({}));
+
+  const filename = sanitizeLearningFilename(body.filename);
+  const size = Number(body.size);
+  const title = String(body.title || '').trim();
+  const category = String(body.category || '').trim();
+  const description = String(body.description || '').trim();
+
+  if (!filename) return json({ error: 'A file is required' }, 400, cors);
+  const ext = (filename.match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase();
+  if (!LEARNING_VIDEO_EXTS.includes(ext)) {
+    return json({ error: `Unsupported video format ".${ext}" — use ${LEARNING_VIDEO_EXTS.join(', ')}` }, 400, cors);
+  }
+  if (!Number.isFinite(size) || size <= 0) return json({ error: 'File size is missing' }, 400, cors);
+  if (size > LEARNING_MAX_UPLOAD) return json({ error: 'File is larger than the 2 GB limit' }, 400, cors);
+  if (!title) return json({ error: 'A name is required' }, 400, cors);
+
+  try {
+    const token = await getGraphToken(env);
+    const cols = await resolveLearningColumns(env, token);
+    // Reject an unknown category up front rather than uploading the file and
+    // then failing to label it.
+    if (category && cols.categoryIsChoice && !cols.categoryChoices.includes(category)) {
+      return json({ error: `"${category}" is not one of the library's categories` }, 400, cors);
+    }
+
+    const driveId = await getLearningDriveId(env, token);
+    const sessionUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/`
+      + `${encodeURIComponent(filename)}:/createUploadSession`;
+    const res = await fetch(sessionUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      // rename, not replace: an upload never silently overwrites a video
+      // someone else put in the library under the same filename.
+      body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'rename', name: filename } }),
+    });
+    if (!res.ok) {
+      throw new Error('Graph API error ' + res.status + ': ' + (await res.text()).slice(0, 300));
+    }
+    const session = await res.json();
+    if (!session.uploadUrl) throw new Error('Graph returned no uploadUrl');
+
+    const ticket = await encryptJSON(env, {
+      uploadUrl: session.uploadUrl, driveId, size, filename, title, category, description,
+    });
+    return json({ ticket, chunkSize: LEARNING_UPLOAD_CHUNK }, 200, cors);
+  } catch (err) {
+    console.error('Failed to start learning upload:', err);
+    return json({ error: 'Could not start the upload: ' + (err && err.message) }, 500, cors);
+  }
+}
+
+// One chunk. The ticket comes in X-Upload-Ticket and the byte offset in
+// X-Upload-Offset; the body is the raw slice.
+async function handleAdminLearningUploadChunk(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+
+  let ticket;
+  try {
+    ticket = await decryptToObject(env, request.headers.get('X-Upload-Ticket') || '');
+  } catch {
+    return json({ error: 'Upload ticket could not be read — start the upload again' }, 400, cors);
+  }
+  if (!ticket || !ticket.uploadUrl) return json({ error: 'Missing upload ticket' }, 400, cors);
+  // Belt to the ticket's braces: with DATA_ENCRYPTION_KEY unset the ticket is
+  // stored in the clear, so refuse to fetch anything that isn't a SharePoint
+  // upload endpoint no matter what the ticket claims.
+  let host = '';
+  try { host = new URL(ticket.uploadUrl).hostname; } catch { host = ''; }
+  if (!/\.sharepoint\.com$/i.test(host)) {
+    return json({ error: 'Upload ticket points somewhere unexpected' }, 400, cors);
+  }
+
+  const offset = Number(request.headers.get('X-Upload-Offset'));
+  if (!Number.isFinite(offset) || offset < 0) return json({ error: 'Bad chunk offset' }, 400, cors);
+  const chunk = await request.arrayBuffer();
+  if (!chunk.byteLength) return json({ error: 'Empty chunk' }, 400, cors);
+  const end = offset + chunk.byteLength - 1;
+  if (end >= ticket.size) return json({ error: 'Chunk runs past the declared file size' }, 400, cors);
+
+  try {
+    const res = await fetch(ticket.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Range': `bytes ${offset}-${end}/${ticket.size}` },
+      body: chunk,
+    });
+    // 202 = accepted, more to come. 200/201 = the last chunk; the body is the
+    // finished driveItem.
+    if (res.status === 202) {
+      await res.text().catch(() => '');
+      return json({ done: false, nextOffset: end + 1 }, 200, cors);
+    }
+    if (!res.ok) {
+      throw new Error('SharePoint rejected the chunk (' + res.status + '): ' + (await res.text()).slice(0, 300));
+    }
+    const item = await res.json();
+    const applied = await applyLearningMetadata(env, ticket, item);
+    return json({ done: true, resource: applied.resource, warning: applied.warning }, 200, cors);
+  } catch (err) {
+    console.error('Learning chunk upload failed:', err);
+    return json({ error: 'Upload failed: ' + (err && err.message) }, 500, cors);
+  }
+}
+
+// Stamp Title/Category/Description onto the freshly uploaded file. The file is
+// already in the library at this point, so a metadata failure is reported as a
+// warning rather than an error — re-running the upload would just duplicate it.
+async function applyLearningMetadata(env, ticket, item) {
+  const resource = {
+    id: item.id,
+    name: item.name || ticket.filename,
+    title: ticket.title,
+    category: ticket.category,
+    webUrl: item.webUrl || '',
+    size: typeof item.size === 'number' ? item.size : ticket.size,
+  };
+  try {
+    const token = await getGraphToken(env);
+    const cols = await resolveLearningColumns(env, token);
+    const fields = {};
+    if (cols.title) fields[cols.title.name] = ticket.title;
+    if (cols.category && ticket.category) fields[cols.category.name] = ticket.category;
+    if (cols.description && ticket.description) fields[cols.description.name] = ticket.description;
+    if (!Object.keys(fields).length) {
+      return { resource, warning: 'Uploaded, but the library has no Title column to name it in.' };
+    }
+
+    // The upload returns a driveItem; the columns hang off its list item.
+    const liRes = await fetch(
+      `https://graph.microsoft.com/v1.0/drives/${ticket.driveId}/items/${item.id}/listItem?$select=id`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!liRes.ok) throw new Error('Graph ' + liRes.status + ' resolving the list item');
+    const listItemId = (await liRes.json()).id;
+
+    const patch = await fetch(
+      `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}`
+      + `/lists/${env.SHAREPOINT_LEARNING_LIST_ID}/items/${listItemId}/fields`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(fields),
+      }
+    );
+    if (!patch.ok) throw new Error('Graph ' + patch.status + ': ' + (await patch.text()).slice(0, 200));
+    return { resource, warning: '' };
+  } catch (err) {
+    console.error('Failed to set learning metadata:', err);
+    return {
+      resource,
+      warning: 'The video uploaded, but its name and category could not be saved: '
+        + (err && err.message) + ' — set them in SharePoint.',
+    };
   }
 }
 
@@ -4741,6 +4991,12 @@ export default {
       }
       if (url.pathname === '/api/admin/learning/fields' && request.method === 'GET') {
         return await handleAdminLearningFields(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/learning/upload' && request.method === 'POST') {
+        return await handleAdminLearningUploadStart(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/learning/upload/chunk' && request.method === 'PUT') {
+        return await handleAdminLearningUploadChunk(request, env, cors);
       }
       // Archive/unarchive must be matched before the generic upsert route below,
       // whose `(.+)` would otherwise swallow the "/archive" suffix into the email.

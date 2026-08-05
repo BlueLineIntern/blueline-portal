@@ -38,6 +38,13 @@
     font-family: var(--font-mono, monospace); font-size: var(--fs-xs);
     background: var(--gray-bg); padding: 1px 5px; border-radius: 3px;
   }
+  /* Upload progress. A determinate bar rather than a spinner: a training video
+     is tens or hundreds of MB, so "how far along" is the useful signal. */
+  .lr-progress {
+    height: 6px; border-radius: 3px; background: var(--gray-bg); overflow: hidden; margin-top: var(--sp-2);
+  }
+  .lr-progress span { display: block; height: 100%; width: 0; background: var(--blue, var(--sky-dark)); transition: width 0.2s ease; }
+  .lr-upload-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 5px; }
 </style>
 </head>
 <body>
@@ -48,11 +55,12 @@
       <div>
         <h1>Learning</h1>
         <p class="sub">Training videos and documents from the SharePoint <strong>Learning Resources</strong>
-        library. Links open in SharePoint in a new tab. Upload a file there and it appears here on the next
-        refresh — nothing needs to be added on this side.</p>
+        library. Links open in SharePoint in a new tab. Add a video below, or upload a file straight to the
+        library in SharePoint and it appears here on the next refresh.</p>
       </div>
       <div class="page-actions">
         <button type="button" class="btn btn-ghost btn-small" id="lr-refresh">↻ Refresh</button>
+        <button type="button" class="btn btn-primary btn-small hidden" id="lr-add">+ Add video</button>
       </div>
     </div>
 
@@ -68,6 +76,40 @@
   </main>
 </div>
 
+<div class="modal-backdrop hidden" id="lr-modal-backdrop">
+  <div class="modal">
+    <h2>Add learning video</h2>
+    <div class="field">
+      <label for="lr-file">Video file</label>
+      <input type="file" id="lr-file" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-ms-wmv,video/webm,video/x-matroska,.mp4,.mov,.m4v,.avi,.wmv,.webm,.mkv" />
+      <p class="field-note">MP4, MOV, M4V, AVI, WMV, WEBM or MKV — up to 2 GB.</p>
+    </div>
+    <div class="field">
+      <label for="lr-title">Name</label>
+      <input type="text" id="lr-title" maxlength="200" placeholder="How it will be listed here" />
+    </div>
+    <div class="field">
+      <label for="lr-category">Category</label>
+      <select id="lr-category" class="hidden"></select>
+      <input type="text" id="lr-category-text" class="hidden" maxlength="120" placeholder="e.g. Compliance" />
+      <p class="field-note" id="lr-category-note"></p>
+    </div>
+    <div class="field">
+      <label for="lr-description">Description <span class="field-note">(optional)</span></label>
+      <textarea id="lr-description" rows="2" maxlength="1000"></textarea>
+    </div>
+    <p class="form-error" id="lr-upload-error"></p>
+    <div class="hidden" id="lr-progress-wrap">
+      <div class="lr-progress"><span id="lr-progress-bar"></span></div>
+      <p class="lr-upload-note" id="lr-progress-note"></p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="lr-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="lr-submit">Upload</button>
+    </div>
+  </div>
+</div>
+
 <script src="/admin/shared.js"></script>
 <script>
   initShell('learning');
@@ -75,6 +117,10 @@
   let allResources = [];
   let categories = [];
   let activeCategory = 'all';
+  // Category choices come from the SharePoint column itself when it's a Choice
+  // column; otherwise it's free text and the picker becomes an input.
+  let categoryChoices = [];
+  let categoryIsChoice = false;
 
   // Extension -> the badge class and label shown in the row's square marker.
   // Anything unrecognised still renders, just with its bare extension.
@@ -175,6 +221,11 @@
       const data = await api('/api/admin/learning');
       allResources = data.resources || [];
       categories = data.categories || [];
+      categoryChoices = data.categoryChoices || [];
+      categoryIsChoice = Boolean(data.categoryIsChoice);
+      // Hidden until the library's columns resolve — without them an upload
+      // can't be named or categorised, so offering the button would mislead.
+      document.getElementById('lr-add').classList.toggle('hidden', !data.canUpload);
       // An unset list id is a setup step, not a failure — say which one rather
       // than showing an empty list that looks like an empty library.
       if (!data.configured) {
@@ -194,6 +245,136 @@
 
   document.getElementById('lr-refresh').addEventListener('click', () => loadData({ showStatus: true }));
   document.getElementById('lr-search').addEventListener('input', renderList);
+
+  // ---------- Add video ----------
+
+  const modal = document.getElementById('lr-modal-backdrop');
+  const fileInput = document.getElementById('lr-file');
+  const titleInput = document.getElementById('lr-title');
+  const catSelect = document.getElementById('lr-category');
+  const catText = document.getElementById('lr-category-text');
+  const descInput = document.getElementById('lr-description');
+  const uploadError = document.getElementById('lr-upload-error');
+  const progressWrap = document.getElementById('lr-progress-wrap');
+  const progressBar = document.getElementById('lr-progress-bar');
+  const progressNote = document.getElementById('lr-progress-note');
+  const submitBtn = document.getElementById('lr-submit');
+
+  let uploading = false;
+
+  function chosenCategory() {
+    return (categoryIsChoice ? catSelect.value : catText.value).trim();
+  }
+
+  function openModal() {
+    fileInput.value = '';
+    titleInput.value = '';
+    catText.value = '';
+    descInput.value = '';
+    uploadError.textContent = '';
+    progressWrap.classList.add('hidden');
+    progressBar.style.width = '0';
+
+    // The picker mirrors the column: a dropdown for a Choice column, free text
+    // otherwise. Categories seen in the data fill the gap if the column
+    // declares no choices at all.
+    const options = categoryIsChoice ? categoryChoices : [];
+    if (categoryIsChoice) {
+      catSelect.innerHTML = '<option value="">— none —</option>'
+        + options.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+    }
+    catSelect.classList.toggle('hidden', !categoryIsChoice);
+    catText.classList.toggle('hidden', categoryIsChoice);
+    document.getElementById('lr-category-note').textContent = categoryIsChoice
+      ? 'From the library’s Category column.'
+      : (categories.length ? `Already in use: ${categories.join(', ')}` : '');
+
+    modal.classList.remove('hidden');
+    titleInput.focus();
+  }
+
+  function closeModal() {
+    if (uploading) return; // don't strand an in-flight upload behind a closed dialog
+    modal.classList.add('hidden');
+  }
+
+  document.getElementById('lr-add').addEventListener('click', openModal);
+  document.getElementById('lr-cancel').addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === e.currentTarget) closeModal(); });
+
+  // Default the name to the filename (minus extension) so the common case is
+  // one click — still fully editable.
+  fileInput.addEventListener('change', () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (f && !titleInput.value.trim()) {
+      titleInput.value = f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+    }
+  });
+
+  async function uploadVideo() {
+    const file = fileInput.files && fileInput.files[0];
+    uploadError.textContent = '';
+    if (!file) { uploadError.textContent = 'Choose a video file.'; return; }
+    if (!titleInput.value.trim()) { uploadError.textContent = 'Give the video a name.'; return; }
+
+    uploading = true;
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Uploading…';
+    progressWrap.classList.remove('hidden');
+    progressNote.textContent = 'Starting…';
+
+    try {
+      const start = await api('/api/admin/learning/upload', {
+        method: 'POST',
+        body: JSON.stringify({
+          filename: file.name,
+          size: file.size,
+          title: titleInput.value.trim(),
+          category: chosenCategory(),
+          description: descInput.value.trim(),
+        }),
+      });
+
+      // Sequential chunks, because Graph tracks a single expected byte range
+      // per upload session — parallel PUTs would fight over it.
+      const chunkSize = start.chunkSize || 5 * 1024 * 1024;
+      let offset = 0;
+      let result = null;
+      while (offset < file.size) {
+        const slice = file.slice(offset, Math.min(offset + chunkSize, file.size));
+        const res = await api('/api/admin/learning/upload/chunk', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Upload-Ticket': start.ticket,
+            'X-Upload-Offset': String(offset),
+          },
+          body: slice,
+        });
+        if (res.done) { result = res; offset = file.size; }
+        else offset = res.nextOffset;
+        const pct = Math.round((offset / file.size) * 100);
+        progressBar.style.width = `${pct}%`;
+        progressNote.textContent = `${pct}% — ${formatSize(offset)} of ${formatSize(file.size)}`;
+      }
+
+      uploading = false;
+      modal.classList.add('hidden');
+      await loadData();
+      document.getElementById('lr-status').textContent = result && result.warning
+        ? result.warning
+        : `Added “${titleInput.value.trim()}”.`;
+    } catch (err) {
+      uploadError.textContent = err.message;
+      progressNote.textContent = 'Stopped.';
+    } finally {
+      uploading = false;
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Upload';
+    }
+  }
+
+  submitBtn.addEventListener('click', uploadVideo);
 
   loadData();
 </script>

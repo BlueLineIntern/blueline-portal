@@ -39,6 +39,45 @@ $adminMfa = @{}      # email -> @{ secret; confirmed; backupCodes=@(@{hash;used}
 $adminPending = @{}  # pending token -> email (short-lived between password and 2nd factor)
 $contacts = @{}      # email -> CRM contact record (worker stores these encrypted in KV)
 
+# Stand-in for the SharePoint "Learning Resources" library. There is no Graph
+# behind the mock, so these are fixed rows plus whatever gets uploaded during
+# the session (in memory only — a restart resets them). `title` is already
+# resolved the way worker.js resolves it: Title column -> Description ->
+# filename. The set covers all four combinations of those two columns being
+# filled in, plus a row with no Category (sorts last, reachable only from All).
+$learningResources = [System.Collections.ArrayList]::new()
+@(
+    @{ id = 'l1'; name = 'CRM-walkthrough.mp4'; title = 'Adding a new client in the CRM'
+       description = 'Step-by-step walkthrough of the intake form and required fields.'
+       category = 'Software Training'
+       webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/CRM-walkthrough.mp4'
+       size = 48234123; modified = '2026-07-20T14:02:00Z' }
+    @{ id = 'l2'; name = 'Form-ADV-refresher.pdf'; title = 'Annual Form ADV refresher'
+       description = 'Covers the 2026 filing changes.'; category = 'Compliance'
+       webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/Form-ADV-refresher.pdf'
+       size = 812004; modified = '2026-06-11T09:30:00Z' }
+    @{ id = 'l3'; name = 'new-hire-checklist.docx'; title = 'new-hire-checklist.docx'
+       description = ''; category = 'Onboarding'
+       webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/new-hire-checklist.docx'
+       size = 24500; modified = '2026-05-02T16:45:00Z' }
+    @{ id = 'l4'; name = 'quarterly-review-deck.pptx'; title = 'Running a quarterly review meeting'
+       description = ''; category = 'Onboarding'
+       webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/quarterly-review-deck.pptx'
+       size = 3300400; modified = '2026-07-01T11:15:00Z' }
+    @{ id = 'l5'; name = 'misc-notes.txt'; title = 'Uncategorised scratch notes'
+       description = 'Uncategorised scratch notes'; category = ''
+       webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/misc-notes.txt'
+       size = 1200; modified = '2026-07-25T08:00:00Z' }
+) | ForEach-Object { $null = $learningResources.Add($_) }
+
+# The mock's Category column is a Choice column, matching the real library, so
+# the upload form shows a dropdown. Includes a value no file uses yet, which is
+# the whole reason the real endpoint reads the column schema.
+$learningCategoryChoices = @('Compliance', 'Onboarding', 'Software Training', 'Markets & Planning')
+# uploadId -> @{ filename; title; category; description; size; received }
+$learningUploads = @{}
+$script:lrCounter = 0
+
 # Compliance items. Loaded from the SAME compliance-seed.js the worker imports,
 # so the mock can't drift from production data — that file's array is strict JSON
 # precisely so this can parse it after stripping the ES module export prefix.
@@ -444,7 +483,11 @@ function Send-File($ctx, $path) {
 }
 
 function Read-Body($ctx) {
-    $reader = New-Object IO.StreamReader($ctx.Request.InputStream, $ctx.Request.ContentEncoding)
+    # UTF-8 explicitly, not $ctx.Request.ContentEncoding: fetch() sends
+    # "application/json" with no charset, HttpListener then falls back to the OS
+    # ANSI codepage, and every non-ASCII character in a posted string arrives
+    # mojibaked (an em-dash becomes three chars).
+    $reader = New-Object IO.StreamReader($ctx.Request.InputStream, [System.Text.Encoding]::UTF8)
     $raw = $reader.ReadToEnd()
     if ($raw) { $raw | ConvertFrom-Json } else { $null }
 }
@@ -1584,41 +1627,77 @@ while ($listener.IsListening) {
         }
         elseif ($path -eq '/api/admin/learning' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            # Stand-in for the SharePoint "Learning Resources" library. The mock has
-            # no Microsoft Graph behind it, so these are fixed rows. `title` is
-            # already resolved here the way worker.js resolves it (Title column ->
-            # Description -> filename), and the set covers all four combinations of
-            # those two columns being filled in, plus a row with no Category (sorts
-            # last, reachable only from the All pill).
-            $res = @(
-                # Title + Description
-                @{ id = 'l1'; name = 'CRM-walkthrough.mp4'; title = 'Adding a new client in the CRM'
-                   description = 'Step-by-step walkthrough of the intake form and required fields.'
-                   category = 'Software Training'
-                   webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/CRM-walkthrough.mp4'
-                   size = 48234123; modified = '2026-07-20T14:02:00Z' }
-                @{ id = 'l2'; name = 'Form-ADV-refresher.pdf'; title = 'Annual Form ADV refresher'
-                   description = 'Covers the 2026 filing changes.'; category = 'Compliance'
-                   webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/Form-ADV-refresher.pdf'
-                   size = 812004; modified = '2026-06-11T09:30:00Z' }
-                # Neither column filled in -> title falls back to the filename
-                @{ id = 'l3'; name = 'new-hire-checklist.docx'; title = 'new-hire-checklist.docx'
-                   description = ''; category = 'Onboarding'
-                   webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/new-hire-checklist.docx'
-                   size = 24500; modified = '2026-05-02T16:45:00Z' }
-                # Title only, no Description
-                @{ id = 'l4'; name = 'quarterly-review-deck.pptx'; title = 'Running a quarterly review meeting'
-                   description = ''; category = 'Onboarding'
-                   webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/quarterly-review-deck.pptx'
-                   size = 3300400; modified = '2026-07-01T11:15:00Z' }
-                # Description only, no Title -> title falls back to the description
-                @{ id = 'l5'; name = 'misc-notes.txt'; title = 'Uncategorised scratch notes'
-                   description = 'Uncategorised scratch notes'; category = ''
-                   webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/misc-notes.txt'
-                   size = 1200; modified = '2026-07-25T08:00:00Z' }
-            )
+            # Category, then title - the same sort the worker applies, so the flat
+            # list reads as grouped with no category filter on.
+            # An uncategorised row sorts last (a leading 1 beats every 0-prefixed
+            # category), matching the worker's high-sentinel comparison.
+            $res = @($learningResources | Sort-Object `
+                @{ Expression = { if ($_.category) { "0$($_.category)" } else { '1' } } }, `
+                @{ Expression = { $_.title } })
             $cats = @($res | ForEach-Object { $_.category } | Where-Object { $_ } | Sort-Object -Unique)
-            Send-Json $ctx 200 @{ resources = $res; categories = $cats; configured = $true }
+            Send-Json $ctx 200 @{ resources = $res; categories = $cats
+                categoryChoices = $learningCategoryChoices; categoryIsChoice = $true
+                canUpload = $true; configured = $true }
+        }
+        elseif ($path -eq '/api/admin/learning/upload' -and $method -eq 'POST') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $b = Read-Body $ctx
+            $fname = [IO.Path]::GetFileName([string]$b.filename)
+            $ext = ([IO.Path]::GetExtension($fname)).TrimStart('.').ToLower()
+            $allowed = @('mp4', 'mov', 'm4v', 'avi', 'wmv', 'webm', 'mkv')
+            if (-not $fname) { Send-Json $ctx 400 @{ error = 'A file is required' }; continue }
+            if ($allowed -notcontains $ext) {
+                Send-Json $ctx 400 @{ error = "Unsupported video format `".$ext`" - use $($allowed -join ', ')" }; continue
+            }
+            if (-not ([string]$b.title).Trim()) { Send-Json $ctx 400 @{ error = 'A name is required' }; continue }
+            $cat = ([string]$b.category).Trim()
+            if ($cat -and $learningCategoryChoices -notcontains $cat) {
+                Send-Json $ctx 400 @{ error = "`"$cat`" is not one of the library's categories" }; continue
+            }
+            # The real worker hands back an encrypted ticket carrying the Graph
+            # upload URL; the mock has no Graph, so the ticket is just a key into
+            # an in-memory table. The client treats it as opaque either way.
+            $script:lrCounter++
+            $uid = "up$($script:lrCounter)"
+            $learningUploads[$uid] = @{
+                filename = $fname; title = ([string]$b.title).Trim(); category = $cat
+                description = ([string]$b.description).Trim(); size = [int64]$b.size; received = [int64]0
+            }
+            # 1 MiB in the mock rather than 5, so a small test file still exercises
+            # the multi-chunk loop.
+            Send-Json $ctx 200 @{ ticket = $uid; chunkSize = (1024 * 1024) }
+        }
+        elseif ($path -eq '/api/admin/learning/upload/chunk' -and $method -eq 'PUT') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $uid = [string]$ctx.Request.Headers['X-Upload-Ticket']
+            $up = if ($uid) { $learningUploads[$uid] } else { $null }
+            if (-not $up) { Send-Json $ctx 400 @{ error = 'Missing upload ticket' }; continue }
+            $offset = [int64]$ctx.Request.Headers['X-Upload-Offset']
+            # Drain the bytes without keeping them: the mock only needs the count
+            # to drive progress and decide when the last chunk has landed.
+            $buf = New-Object byte[] 65536
+            $len = [int64]0
+            while (($read = $ctx.Request.InputStream.Read($buf, 0, $buf.Length)) -gt 0) { $len += $read }
+            if ($len -le 0) { Send-Json $ctx 400 @{ error = 'Empty chunk' }; continue }
+            if (($offset + $len) -gt $up.size) {
+                Send-Json $ctx 400 @{ error = 'Chunk runs past the declared file size' }; continue
+            }
+            $up.received = $offset + $len
+            if ($up.received -lt $up.size) {
+                Send-Json $ctx 200 @{ done = $false; nextOffset = $up.received }
+                continue
+            }
+            $script:lrCounter++
+            $row = @{
+                id = "lu$($script:lrCounter)"; name = $up.filename; title = $up.title
+                description = $up.description; category = $up.category
+                webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/$($up.filename)"
+                size = $up.size; modified = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            }
+            $null = $learningResources.Add($row)
+            $learningUploads.Remove($uid)
+            Write-Audit (Get-AdminEmail $ctx) 'learning-upload' @{ name = $row.name; title = $row.title; category = $row.category }
+            Send-Json $ctx 200 @{ done = $true; resource = $row; warning = '' }
         }
         else {
             $rel = if ($path -eq '/') { 'index.html' } else { $path.TrimStart('/') }

@@ -485,10 +485,35 @@ Client portal is untouched and keeps its own look.
   and documents from a SharePoint **document library** ("Learning Resources"),
   via `GET /api/admin/learning`. Staff-facing only — nothing here is exposed to
   the client portal.
-  - **Read-only and NOT synced into KV**, unlike contacts/households: nothing is
-    edited in the app, so SharePoint stays the single copy and there's no two-way
-    merge to get wrong. Each request hits Graph directly, so a file uploaded in
-    SharePoint appears on the next refresh with no sync step to wait for.
+  - **NOT synced into KV**, unlike contacts/households: SharePoint stays the
+    single copy and there's no two-way merge to get wrong. Each request hits Graph
+    directly, so a file uploaded in SharePoint appears on the next refresh with no
+    sync step to wait for. The listing itself is read-only — the one write is the
+    upload below, which adds a file rather than editing an existing one.
+  - **Add video** (`+ Add video`) uploads a video into the library from the app
+    with a Name (Title), Category and optional Description. Two endpoints, because
+    a training video is far too large for one request:
+    - `POST /api/admin/learning/upload` validates the extension (mp4, mov, m4v,
+      avi, wmv, webm, mkv), the 2 GB cap, the name, and the category against the
+      column's Choice values, then opens a Graph **upload session** on the
+      library's drive (`conflictBehavior: rename` — an upload never silently
+      overwrites someone else's file of the same name).
+    - `PUT /api/admin/learning/upload/chunk` proxies one 5 MiB slice (a multiple
+      of the 320 KiB Graph requires), sequentially — Graph tracks a single expected
+      byte range per session, so parallel PUTs would fight over it.
+    - Chunks are **proxied through the Worker**, not sent browser→SharePoint: the
+      upload URL's CORS behaviour isn't ours to control, and proxying keeps that
+      pre-authenticated URL out of page JavaScript.
+    - Session state (upload URL + the metadata to stamp on the file) rides in an
+      **encrypted ticket** the client echoes back with each chunk — not KV. KV is
+      eventually consistent and the first chunk can arrive within a second of the
+      session opening, where a stale read would fail the upload outright. The
+      chunk handler additionally refuses any ticket URL whose host isn't
+      `*.sharepoint.com`, so an unset `DATA_ENCRYPTION_KEY` (ticket stored in the
+      clear) can't be turned into a Worker-side SSRF.
+    - Metadata is PATCHed onto the uploaded file's list item afterwards. A failure
+      there is reported as a **warning, not an error**: the file is already in the
+      library, and re-running the upload would only duplicate it.
   - A document library is a list underneath, so this reads the same
     `/sites/{id}/lists/{id}/items` endpoint as the contact/household syncs, with
     `driveItem` expanded for each file's own `webUrl`. Folders and any item
@@ -499,12 +524,20 @@ Client portal is untouched and keeps its own look.
     `Category` values actually present, so adding a Choice value in SharePoint
     surfaces it with no code change. Requested explicitly — the alternative
     (hard-coded list) would need a deploy per new category.
-  - **Column internal names are guessed defensively.** SharePoint doesn't always
-    match a column's internal name to its display name (a collision with a
-    built-in gets suffixed, e.g. `Description` → `Description0`), so
-    `pickField()` tries a candidate list. `GET /api/admin/learning/fields` dumps
-    the raw field keys of the first few items to identify anything not covered —
-    the same diagnostic role `/api/admin/sharepoint/lists` plays for list ids.
+  - **Column internal names are guessed defensively on read, resolved exactly on
+    write.** SharePoint doesn't always match a column's internal name to its
+    display name (a collision with a built-in gets suffixed, e.g. `Description` →
+    `Description0`), so the listing's `pickField()` tries a candidate list.
+    `GET /api/admin/learning/fields` dumps the raw field keys of the first few
+    items to identify anything not covered — the same diagnostic role
+    `/api/admin/sharepoint/lists` plays for list ids. The upload path can't guess,
+    though: a PATCH naming a column that doesn't exist fails outright, so
+    `resolveLearningColumns()` reads `/lists/{id}/columns` for the real internal
+    names. That same call yields the Category column's Choice values, which is why
+    the upload form's picker offers categories **no file uses yet** while the
+    filter pills only show ones in use. When it fails, the endpoint returns
+    `canUpload: false` and the page hides the button rather than offering an
+    upload that couldn't be named.
   - Row title comes from the library's **Title** column, falling back to
     Description, then the filename — so a resource with neither filled in still
     renders a readable link instead of an unlabelled one. Under it sits one
