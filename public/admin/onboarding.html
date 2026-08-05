@@ -8,25 +8,8 @@
 <link rel="stylesheet" href="/assets/style.css" />
 <link rel="stylesheet" href="/admin/shared.css" />
 <style>
-  /* .onb-section is also targeted by shared.css's @media print block (client PDF
-     report), which strips this chrome — keep the class name and structure. */
-  .onb-section {
-    margin-top: var(--sp-4);
-    border: 1px solid var(--border); border-radius: var(--radius);
-    background: var(--panel); box-shadow: var(--shadow-sm);
-    padding: var(--sp-4) var(--sp-5);
-  }
-  .onb-section h2 {
-    margin: 0 0 var(--sp-3);
-    font-size: var(--fs-lg); font-weight: var(--fw-semibold); font-family: var(--font-sans);
-  }
-  .onb-section .not-done { color: var(--muted); font-size: var(--fs-sm); font-style: italic; }
-  .onb-signature {
-    border: 1px solid var(--border); border-radius: var(--radius);
-    background: var(--panel); padding: var(--sp-2);
-    max-width: 400px; margin-top: var(--sp-3);
-  }
-  .onb-signature img { display: block; width: 100%; height: auto; }
+  /* .onb-section / .onb-signature now live in shared.css — the Contacts profile
+     renders the same submission markup in its Onboarding tab. */
   .detail-header {
     display: flex; align-items: center; justify-content: space-between;
     gap: var(--sp-4); flex-wrap: wrap; margin-bottom: var(--sp-4);
@@ -154,27 +137,10 @@
   let pollTimer = null;
   const POLL_INTERVAL_MS = 20000;
 
-  const ONB_SECTIONS = [
-    ['consent', 'Electronic Consent'], ['regdocs', 'Regulatory Documents'],
-    ['agreement', 'Advisory Agreement Placeholder'], ['profile', 'Client Profile'],
-    ['discovery', 'Planning Discovery'], ['snapshot', 'Financial Snapshot'],
-    ['risk', 'Risk Assessment'], ['uploads', 'Document Upload Placeholder'],
-    ['portal', 'Portal Setup'], ['meetingprep', 'First Meeting Prep'],
-  ];
-
+  // ONB_SECTIONS, onbSectionsDone(), onbClientName/Email() and onbSectionsHtml()
+  // come from shared.js so the Contacts profile's Onboarding tab shows exactly
+  // the same fields as this page's detail view.
   function missing() { return '<span class="cell-missing">—</span>'; }
-
-  function onbClientName(r) {
-    const p = (r.data && r.data.profile) || {};
-    const c = (r.data && r.data.consent) || {};
-    return [p.firstName, p.lastName].filter(Boolean).join(' ') || c.name || '—';
-  }
-
-  function onbClientEmail(r) {
-    const p = (r.data && r.data.profile) || {};
-    const c = (r.data && r.data.consent) || {};
-    return p.email || c.email || '—';
-  }
 
   async function loadData({ showStatus = false } = {}) {
     const statusEl = document.getElementById('refresh-status');
@@ -207,7 +173,7 @@
         </tr>`);
         return;
       }
-      const done = ONB_SECTIONS.filter(([k]) => r.data && r.data[k]).length;
+      const done = onbSectionsDone(r);
       const risk = r.data && r.data.risk
         ? `${r.data.risk.score} / 100<br><span class="cell-sub">${escapeHtml(r.data.risk.profile)}</span>`
         : missing();
@@ -291,23 +257,9 @@
     }
   }
 
-  function onbRows(pairs) {
-    const rows = pairs
-      .filter(([, v]) => v != null && v !== '')
-      .map(([label, v]) => `<div class="stat-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(v)}</strong></div>`)
-      .join('');
-    return rows ? `<div class="stat-rows">${rows}</div>` : '<p class="not-done">No details recorded.</p>';
-  }
-
-  function onbSection(title, data, buildRows) {
-    const inner = data ? buildRows(data) : '<p class="not-done">Not completed.</p>';
-    return `<div class="onb-section"><h2>${escapeHtml(title)}</h2>${inner}</div>`;
-  }
-
   function showOnbDetail(index) {
     const r = allOnboardings[index];
     if (!r) return;
-    const d = r.data || {};
 
     document.getElementById('onb-detail-name').textContent = onbClientName(r);
     document.getElementById('onb-detail-meta').textContent =
@@ -315,74 +267,7 @@
     document.getElementById('onb-print-client-line').textContent =
       `Client: ${onbClientName(r)} (${onbClientEmail(r)}) — ${r.onboardingId}`;
     document.getElementById('onb-print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
-
-    const detail = (answer, extra) => [answer, extra].filter(Boolean).join(' — ');
-
-    document.getElementById('onb-detail-content').innerHTML = [
-      onbSection('Electronic Consent', d.consent, (c) => onbRows([
-        ['Name', c.name], ['Email', c.email],
-        ['Consented', c.consented ? 'Yes' : 'No'],
-        ['Timestamp', c.timestamp && new Date(c.timestamp).toLocaleString()],
-      ])),
-      onbSection('Regulatory Documents', d.regdocs, (g) => onbRows(
-        Object.values(g.documents || {}).map((doc) =>
-          [`${doc.name} (${doc.version})`, doc.acknowledgedAt ? `Acknowledged ${new Date(doc.acknowledgedAt).toLocaleString()}` : '—'])
-      )),
-      onbSection('Advisory Agreement', d.agreement, (a) => {
-        const rows = onbRows([
-          ['Acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No'],
-          ['Typed name', a.typedName],
-          ['Signed at', a.signedAt && new Date(a.signedAt).toLocaleString()],
-        ]);
-        const sig = a.signatureDataUrl
-          ? `<div class="onb-signature"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Client signature" /></div>
-             <p class="not-done">Sample signature — proof of concept, not legally binding.</p>`
-          : '<p class="not-done">No signature captured.</p>';
-        return rows + sig;
-      }),
-      onbSection('Client Profile', d.profile, (p) => onbRows([
-        ['Name', [p.firstName, p.lastName].filter(Boolean).join(' ')],
-        ['Preferred name', p.preferredName], ['Email', p.email], ['Phone', p.phone],
-        ['Address', [p.street, p.city, p.state, p.zip].filter(Boolean).join(', ')],
-        ['Date of birth (test data)', p.dob], ['Marital status', p.maritalStatus],
-        ['Spouse / partner', p.spouseName],
-        ['Employer / occupation', [p.employer, p.occupation].filter(Boolean).join(' — ')],
-        ['Trusted contact', [p.trustedContactName, p.trustedContactPhone].filter(Boolean).join(' — ')],
-        ['CPA', p.cpaName], ['Attorney', p.attorneyName],
-        ['Preferred communication', p.preferredCommunication],
-      ])),
-      onbSection('Planning Discovery', d.discovery, (v) => onbRows([
-        ['What prompted contact', v.prompt], ['Top three priorities', v.priorities],
-        ['Keeps them awake', v.worries], ['One-year success definition', v.success],
-        ['Major life events', detail(v.lifeEvents, v.lifeEventsDetail)],
-        ['Tax issues', detail(v.tax, v.taxDetail)],
-        ['Estate issues', detail(v.estate, v.estateDetail)],
-        ['Business issues', detail(v.business, v.businessDetail)],
-      ])),
-      onbSection('Financial Snapshot (ranges)', d.snapshot, (s) => onbRows([
-        ['Cash', s.cashRange], ['Investment accounts', s.investmentRange],
-        ['Retirement accounts', s.retirementRange], ['Real estate', s.realEstateRange],
-        ['Business value', s.businessRange], ['Mortgage', s.mortgageRange],
-        ['Other debt', s.otherDebtRange], ['Annual income', s.incomeRange],
-        ['Annual spending', s.spendingRange],
-      ])),
-      onbSection('Risk Assessment', d.risk, (k) => onbRows([
-        ['Score', k.score != null ? `${k.score} / 100` : null],
-        ['Profile', k.profile],
-        ['Completed', k.timestamp && new Date(k.timestamp).toLocaleString()],
-      ])),
-      onbSection('Documents (upload placeholder)', d.uploads, (u) => onbRows(
-        Object.values(u).map((item) => [item.label, item.willProvideLater ? 'Will provide later' : 'Not confirmed'])
-      )),
-      onbSection('Portal Setup', d.portal, (po) => onbRows([
-        ['Meeting format', po.meetingFormat], ['Meeting time', po.meetingTime],
-        ['Best phone', po.bestPhone], ['Best email', po.bestEmail],
-      ])),
-      onbSection('First Meeting Prep', d.meetingprep, (m) => onbRows([
-        ['Wants to accomplish', m.accomplish], ['Questions to answer first', m.questions],
-        ['Review before meeting', m.review], ['Additional attendees', m.attendees],
-      ])),
-    ].join('');
+    document.getElementById('onb-detail-content').innerHTML = onbSectionsHtml(r);
 
     document.getElementById('list-view').classList.add('hidden');
     document.getElementById('onb-detail-view').classList.remove('hidden');

@@ -287,6 +287,124 @@ const NAV_ITEMS = [
   { id: 'settings', href: '/admin/settings.html', icon: 'settings', label: 'Settings' },
 ];
 
+// ---------- Onboarding submission presentation ----------
+// One renderer for a wizard submission, shared by the Onboarding page's detail
+// view and the Contacts profile's Onboarding tab, so the two can't drift into
+// showing different fields for the same record. Section order matches the
+// order the client fills them in.
+const ONB_SECTIONS = [
+  ['consent', 'Electronic Consent'], ['regdocs', 'Regulatory Documents'],
+  ['agreement', 'Advisory Agreement Placeholder'], ['profile', 'Client Profile'],
+  ['discovery', 'Planning Discovery'], ['snapshot', 'Financial Snapshot'],
+  ['risk', 'Risk Assessment'], ['uploads', 'Document Upload Placeholder'],
+  ['portal', 'Portal Setup'], ['meetingprep', 'First Meeting Prep'],
+];
+
+// How many of the sections above the client has saved anything for.
+function onbSectionsDone(r) {
+  return ONB_SECTIONS.filter(([k]) => r && r.data && r.data[k]).length;
+}
+
+// A submission's own profile/consent answers are the only name and email it
+// has — it is not joined to a contact record.
+function onbClientName(r) {
+  const p = (r.data && r.data.profile) || {};
+  const c = (r.data && r.data.consent) || {};
+  return [p.firstName, p.lastName].filter(Boolean).join(' ') || c.name || '—';
+}
+
+function onbClientEmail(r) {
+  const p = (r.data && r.data.profile) || {};
+  const c = (r.data && r.data.consent) || {};
+  return p.email || c.email || '—';
+}
+
+function onbRows(pairs) {
+  const rows = pairs
+    .filter(([, v]) => v != null && v !== '')
+    .map(([label, v]) => `<div class="stat-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(v)}</strong></div>`)
+    .join('');
+  return rows ? `<div class="stat-rows">${rows}</div>` : '<p class="not-done">No details recorded.</p>';
+}
+
+function onbSection(title, data, buildRows) {
+  const inner = data ? buildRows(data) : '<p class="not-done">Not completed.</p>';
+  return `<div class="onb-section"><h2>${escapeHtml(title)}</h2>${inner}</div>`;
+}
+
+// Every section of one submission as HTML. Sections the client hasn't reached
+// still render, marked "Not completed", so a half-finished submission reads as
+// a checklist rather than as a short document.
+function onbSectionsHtml(r) {
+  const d = (r && r.data) || {};
+  const detail = (answer, extra) => [answer, extra].filter(Boolean).join(' — ');
+  return [
+    onbSection('Electronic Consent', d.consent, (c) => onbRows([
+      ['Name', c.name], ['Email', c.email],
+      ['Consented', c.consented ? 'Yes' : 'No'],
+      ['Timestamp', c.timestamp && new Date(c.timestamp).toLocaleString()],
+    ])),
+    onbSection('Regulatory Documents', d.regdocs, (g) => onbRows(
+      Object.values(g.documents || {}).map((doc) =>
+        [`${doc.name} (${doc.version})`, doc.acknowledgedAt ? `Acknowledged ${new Date(doc.acknowledgedAt).toLocaleString()}` : '—'])
+    )),
+    onbSection('Advisory Agreement', d.agreement, (a) => {
+      const rows = onbRows([
+        ['Acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No'],
+        ['Typed name', a.typedName],
+        ['Signed at', a.signedAt && new Date(a.signedAt).toLocaleString()],
+      ]);
+      const sig = a.signatureDataUrl
+        ? `<div class="onb-signature"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Client signature" /></div>
+           <p class="not-done">Sample signature — proof of concept, not legally binding.</p>`
+        : '<p class="not-done">No signature captured.</p>';
+      return rows + sig;
+    }),
+    onbSection('Client Profile', d.profile, (p) => onbRows([
+      ['Name', [p.firstName, p.lastName].filter(Boolean).join(' ')],
+      ['Preferred name', p.preferredName], ['Email', p.email], ['Phone', p.phone],
+      ['Address', [p.street, p.city, p.state, p.zip].filter(Boolean).join(', ')],
+      ['Date of birth (test data)', p.dob], ['Marital status', p.maritalStatus],
+      ['Spouse / partner', p.spouseName],
+      ['Employer / occupation', [p.employer, p.occupation].filter(Boolean).join(' — ')],
+      ['Trusted contact', [p.trustedContactName, p.trustedContactPhone].filter(Boolean).join(' — ')],
+      ['CPA', p.cpaName], ['Attorney', p.attorneyName],
+      ['Preferred communication', p.preferredCommunication],
+    ])),
+    onbSection('Planning Discovery', d.discovery, (v) => onbRows([
+      ['What prompted contact', v.prompt], ['Top three priorities', v.priorities],
+      ['Keeps them awake', v.worries], ['One-year success definition', v.success],
+      ['Major life events', detail(v.lifeEvents, v.lifeEventsDetail)],
+      ['Tax issues', detail(v.tax, v.taxDetail)],
+      ['Estate issues', detail(v.estate, v.estateDetail)],
+      ['Business issues', detail(v.business, v.businessDetail)],
+    ])),
+    onbSection('Financial Snapshot (ranges)', d.snapshot, (s) => onbRows([
+      ['Cash', s.cashRange], ['Investment accounts', s.investmentRange],
+      ['Retirement accounts', s.retirementRange], ['Real estate', s.realEstateRange],
+      ['Business value', s.businessRange], ['Mortgage', s.mortgageRange],
+      ['Other debt', s.otherDebtRange], ['Annual income', s.incomeRange],
+      ['Annual spending', s.spendingRange],
+    ])),
+    onbSection('Risk Assessment', d.risk, (k) => onbRows([
+      ['Score', k.score != null ? `${k.score} / 100` : null],
+      ['Profile', k.profile],
+      ['Completed', k.timestamp && new Date(k.timestamp).toLocaleString()],
+    ])),
+    onbSection('Documents (upload placeholder)', d.uploads, (u) => onbRows(
+      Object.values(u).map((item) => [item.label, item.willProvideLater ? 'Will provide later' : 'Not confirmed'])
+    )),
+    onbSection('Portal Setup', d.portal, (po) => onbRows([
+      ['Meeting format', po.meetingFormat], ['Meeting time', po.meetingTime],
+      ['Best phone', po.bestPhone], ['Best email', po.bestEmail],
+    ])),
+    onbSection('First Meeting Prep', d.meetingprep, (m) => onbRows([
+      ['Wants to accomplish', m.accomplish], ['Questions to answer first', m.questions],
+      ['Review before meeting', m.review], ['Additional attendees', m.attendees],
+    ])),
+  ].join('');
+}
+
 // ---------- Recently viewed contacts ----------
 // The sidebar's "Recently Viewed" list. Stored per browser rather than per
 // account on the server: it's a navigation convenience, not shared state.

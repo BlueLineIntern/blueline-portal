@@ -23,8 +23,10 @@
   .detail-flags ul { margin: 0; padding-left: 20px; color: var(--amber); font-weight: var(--fw-semibold); }
   .detail-empty-module { color: var(--muted); margin: 14px 0 0; }
   .onb-link-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: #fff; margin-bottom: 10px; }
-  .onb-signature { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px; max-width: 400px; margin-top: 12px; }
-  .onb-signature img { display: block; width: 100%; height: auto; }
+  /* .onb-signature and .onb-section come from shared.css — the Onboarding tab
+     renders the same submission markup as the Onboarding page. */
+  .onb-record-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .onb-record + .onb-record { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border-strong); }
 
   /* Overview tab */
   .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
@@ -155,6 +157,7 @@
         <button type="button" class="tab" data-tab="assessments">Assessments</button>
         <button type="button" class="tab" data-tab="tasks">Tasks</button>
         <button type="button" class="tab" data-tab="meetings">Meetings</button>
+        <button type="button" class="tab" data-tab="onboarding">Onboarding</button>
         <button type="button" class="tab" data-tab="notes">Notes</button>
         <button type="button" class="tab" data-tab="timeline">Timeline</button>
         <button type="button" class="tab" data-tab="documents">Documents</button>
@@ -164,6 +167,7 @@
       <div id="tab-overview"></div>
       <div class="hidden" id="tab-tasks"></div>
       <div class="hidden" id="tab-meetings"></div>
+      <div class="hidden" id="tab-onboarding"></div>
       <div class="hidden" id="tab-notes"></div>
       <div class="hidden" id="tab-timeline"></div>
 
@@ -1019,7 +1023,7 @@
     document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
       b.classList.toggle('active', b.dataset.tab === tab)
     );
-    ['overview', 'assessments', 'tasks', 'meetings', 'notes', 'timeline', 'documents', 'activity'].forEach((t) =>
+    ['overview', 'assessments', 'onboarding', 'tasks', 'meetings', 'notes', 'timeline', 'documents', 'activity'].forEach((t) =>
       document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab)
     );
     // These fetch on demand so opening a profile stays cheap.
@@ -1033,6 +1037,12 @@
   document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
     b.addEventListener('click', () => setTab(b.dataset.tab))
   );
+
+  // "View Onboarding" / "Full record" buttons on other tabs. Delegated because
+  // those tabs are re-rendered on every profile draw and poll.
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.onb-goto-tab')) setTab('onboarding');
+  });
 
   function renderProfile(opts = {}) {
     const c = currentContact();
@@ -1051,6 +1061,7 @@
 
     renderOverviewTab(c, p, opts.background);
     renderAssessmentsTab(c);
+    renderOnboardingTab(c);
     renderDocumentsTab(c);
     // A background poll must never yank a tab out from under the advisor.
     // Notes/Tasks hold unsaved text (note draft, quick-task title); Timeline
@@ -1192,8 +1203,8 @@
       .join('')}</ul></div>`;
   }
 
-  const ONB_SECTIONS_KEYS = ['consent', 'regdocs', 'agreement', 'profile', 'discovery', 'snapshot', 'risk', 'uploads', 'portal', 'meetingprep'];
-
+  // ONB_SECTIONS, onbSectionsDone() and onbSectionsHtml() come from shared.js,
+  // which is also what the Onboarding page renders its detail view with.
   function linkedOnboardings(c) {
     const email = String(c.email || '').toLowerCase();
     return allOnboardings.filter((r) => {
@@ -1206,15 +1217,51 @@
 
   function clientOnboardingHtml(c) {
     const rows = linkedOnboardings(c).map((r) => {
-      const done = ONB_SECTIONS_KEYS.filter((k) => r.data && r.data[k]).length;
+      const done = onbSectionsDone(r);
       return `<div class="onb-link-row">
-        <span><strong>${escapeHtml(r.onboardingId)}</strong> · ${done} / ${ONB_SECTIONS_KEYS.length} sections · ${r.completionTime ? 'Completed' : 'In progress'}</span>
-        <a class="btn btn-ghost btn-small" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">View Onboarding</a>
+        <span><strong>${escapeHtml(r.onboardingId)}</strong> · ${done} / ${ONB_SECTIONS.length} sections · ${r.completionTime ? 'Completed' : 'In progress'}</span>
+        <button type="button" class="btn btn-ghost btn-small onb-goto-tab">View Onboarding</button>
       </div>`;
     });
     return rows.length
       ? rows.join('')
       : '<p class="empty">No onboarding submission linked to this email yet.</p>';
+  }
+
+  // ---------- Onboarding tab ----------
+  // The client's own submission, in full, rendered from the same shared
+  // renderer the Onboarding page uses. Matched to the contact by the email the
+  // client typed into the wizard, so a submission under a different address
+  // won't appear here (nothing else links the two records).
+
+  function renderOnboardingTab(c) {
+    const records = linkedOnboardings(c);
+    const cards = records.map((r) => {
+      const done = onbSectionsDone(r);
+      const status = r.completionTime
+        ? `<span class="badge badge-navy">Completed</span>`
+        : '<span class="badge badge-sky">In progress</span>';
+      return `<div class="onb-record">
+        <div class="panel">
+          <div class="panel-head onb-record-head">
+            <h2>${escapeHtml(r.onboardingId)}</h2>
+            ${status}
+          </div>
+          <div class="kv-rows">
+            ${kvRow('Progress', `${done} / ${ONB_SECTIONS.length} sections`)}
+            ${kvRow('Started', r.startTime ? escapeHtml(fmtDateTime(r.startTime)) : '—')}
+            ${kvRow('Completed', r.completionTime ? escapeHtml(fmtDateTime(r.completionTime)) : '—')}
+            ${kvRow('Last updated', r.updatedAt ? escapeHtml(fmtDateTime(r.updatedAt)) : '—')}
+          </div>
+        </div>
+        ${onbSectionsHtml(r)}
+      </div>`;
+    });
+    document.getElementById('tab-onboarding').innerHTML = cards.length
+      ? cards.join('')
+      : `<div class="panel"><p class="empty">No onboarding submission is linked to ${escapeHtml(c.email)}.
+         A submission shows up here once the client reaches the consent step of the
+         <a href="/onboarding/">New Client Onboarding</a> workflow with this email address.</p></div>`;
   }
 
   function categorySectionHtml(cat, m, client) {
@@ -1277,7 +1324,7 @@
           : '<p class="empty">No signature captured.</p>';
         return `<div class="panel">
           <div class="panel-head"><h2>Advisory Agreement — ${escapeHtml(r.onboardingId)}</h2>
-            <a class="panel-link" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">Full record →</a></div>
+            <button type="button" class="panel-link onb-goto-tab">Full record →</button></div>
           <div class="kv-rows">
             ${kvRow('Typed name', a.typedName ? escapeHtml(a.typedName) : '—')}
             ${kvRow('Signed at', a.signedAt ? escapeHtml(fmtDateTime(a.signedAt)) : '—')}

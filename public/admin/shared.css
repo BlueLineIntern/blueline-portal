@@ -206,6 +206,13 @@ a:hover { text-decoration: underline; }
 }
 .panel-head h2 { font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
 .panel-head .panel-link { font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+/* .panel-link is usually an <a>. A button carrying it (an in-page jump, e.g.
+   Documents -> the Onboarding tab) must read as the same link, not as a button. */
+button.panel-link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-family: inherit; color: var(--sky-dark);
+}
+button.panel-link:hover { text-decoration: underline; }
 .panel .hint { color: var(--muted); font-size: var(--fs-sm); margin: 0 0 var(--sp-3); }
 .panel-status { color: var(--muted); font-size: var(--fs-sm); }
 .empty { color: var(--muted); font-size: var(--fs-base); padding: var(--sp-3) 0; }
@@ -735,6 +742,28 @@ body .topbar, body .footer { display: none; }
 .rail-row .badge { vertical-align: baseline; }
 .sd-when { font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
 
+/* Onboarding submission sections. Rendered by onbSectionsHtml() in shared.js on
+   both the Onboarding page's detail view and the Contacts profile's Onboarding
+   tab, so the styling lives here rather than in either page. The @media print
+   block below strips this chrome for the client PDF — keep the class names. */
+.onb-section {
+  margin-top: var(--sp-4);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel); box-shadow: var(--shadow-sm);
+  padding: var(--sp-4) var(--sp-5);
+}
+.onb-section h2 {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-lg); font-weight: var(--fw-semibold); font-family: var(--font-sans);
+}
+.onb-section .not-done { color: var(--muted); font-size: var(--fs-sm); font-style: italic; }
+.onb-signature {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel); padding: var(--sp-2);
+  max-width: 400px; margin-top: var(--sp-3);
+}
+.onb-signature img { display: block; width: 100%; height: auto; }
+
 /* Sidebar recently-viewed */
 .sidebar-recent { padding: var(--sp-3) var(--sp-4) 0; }
 .sidebar-recent .sr-head { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em; color: rgba(255,255,255,0.45); margin-bottom: var(--sp-2); }
@@ -875,7 +904,7 @@ body .topbar, body .footer { display: none; }
     break-inside: avoid; page-break-inside: avoid;
   }
   .onb-section h2 { border-bottom: 1px solid var(--border-strong); padding-bottom: 5px; margin-bottom: var(--sp-3); }
-  #onb-detail-content .stat-row { break-inside: avoid; page-break-inside: avoid; }
+  .onb-section .stat-row { break-inside: avoid; page-break-inside: avoid; }
   .module-card-header, .chart-donut, .chart-gauge, .chart-projection,
   .chart-balance, .stat-rows, .stat-bar, .result-flag { break-inside: avoid; }
   /* Colour-carrying elements must keep their ink in print, including the new
