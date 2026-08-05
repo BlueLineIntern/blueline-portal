@@ -250,11 +250,67 @@ Client portal is untouched and keeps its own look.
   suffix isn't swallowed; upsert preserves the `archived` flag. UI: filter pills
   with counts, search, New/Edit Contact modal, tabbed profile in the advisor's
   working order — **Overview, Notes, Tasks, Meetings, Timeline, Activity Log,
-  Documents** (signed agreements from linked onboardings) **| Onboarding,
-  Assessments** (incl. the assignment editor). The divider separates what's
-  looked at on every visit from the two records opened deliberately. **Meetings
-  sits where an Emails tab would go**: there is no mail integration — no Graph
-  `Mail.Read`, no message store — so an Emails tab would have nothing to render.
+  Documents, Additional Info | Onboarding, Assessments** (incl. the assignment
+  editor). The divider separates what's looked at on every visit from the two
+  records opened deliberately. **Meetings sits where an Emails tab would go**:
+  there is no mail integration — no Graph `Mail.Read`, no message store — so an
+  Emails tab would have nothing to render.
+- **Attached client documents** (`clientdoc:<email>:<invTs>-<rand>` KV,
+  **encrypted**) sit at the TOP of the Documents tab, above the signed
+  onboarding agreements: the agreements are a fixed historical record, this is
+  the part that gets added to. Attach with a display name; rename and delete
+  from the row.
+  - **Bytes and metadata live in different stores.** The file goes to a
+    SharePoint document library ("Client Documents"), one folder per client
+    (named by email), through the same chunked upload-session machinery the
+    Learning tab uses — `POST /api/admin/contacts/:email/documents/upload` then
+    `PUT /api/admin/client-documents/chunk` in 5 MiB slices, capped at 250 MB.
+    The **display name, original filename, size, who attached it and when, and
+    the webUrl** live in KV.
+  - That split is the point: **no custom SharePoint column has to exist for
+    naming to work**, listing a client's documents costs no Graph call at all,
+    and a rename is a KV write instead of a PATCH that can fail against a column
+    that isn't there. SharePoint still holds the file, so the firm's existing
+    retention and backup policy covers client records rather than a second store
+    having to. The name links straight to SharePoint's viewer — it already
+    handles preview, range requests and permissions for every format.
+  - Deleting removes the KV record **and** the SharePoint file (recoverable from
+    its recycle bin). A Graph failure still drops the metadata and reports
+    `fileDeleted: false`; the alternative is a row that can't be removed at all.
+  - Needs `SHAREPOINT_CLIENT_DOCS_LIST_ID`. Unset → `configured: false` and the
+    panel names the missing setting instead of looking broken.
+- **Additional Info** (`clientinfo:<email>` KV, **encrypted**) — the
+  suitability/KYC block: employment, written-agreement offering dates (ADV, CRS,
+  privacy, fee/IPS/FP), investment profile, estimated net worth, estimated tax,
+  health, and identifying documents. `GET`/`POST
+  /api/admin/contacts/:email/info`, audit-logged as `update-client-info`.
+  - **Its own record, not fields on the contact**, for two reasons. Privacy: it
+    holds passport, green-card and driver's-licence numbers and medical notes,
+    which on the contact record would ride in the `/api/admin/contacts` boot
+    payload for *every* contact on every page load and every 20s poll — separate
+    means it is fetched only for the client actually being looked at, when the
+    tab is opened. And the contact record round-trips through the SharePoint
+    Contacts sync, which has no columns for any of this.
+  - **The audit entry records field NAMES only, never values.** The audit log has
+    a 13-month TTL and its own viewer; copying passport numbers and medical
+    notes into it would spread that material for no investigative gain.
+  - **Estimated Net Worth and Estimated Liquid Net Worth are derived, never
+    stored** (`clientInfoDerived()`): net worth = Assets + Non Liquid Assets −
+    Liabilities, liquid = Assets − Liabilities (Assets means *liquid* assets).
+    Two places holding the same number is one place for them to disagree. They
+    stay read-only in edit mode and always render a figure — `$0.00` on an empty
+    balance sheet is the answer, not a missing value; every other empty field
+    reads **Not Set**.
+  - One `AI_SECTIONS` spec drives the read view, the edit form and the save
+    payload — with ~40 fields, three hand-maintained lists would drift within a
+    week. Server-side: dates must be real `YYYY-MM-DD`, money parses `$`/commas
+    and rounds to cents (negative allowed — an underwater balance sheet is a real
+    answer), enums are validated against fixed lists, and validation builds a
+    separate object so **a rejected save writes nothing at all**. The tab is in
+    `POLL_SKIP_TABS`: its edit mode holds a whole form of unsaved input.
+  - Date-only fields are formatted from their own parts, not via `fmtDate()`:
+    `new Date('2026-03-01')` is UTC midnight, which renders as the day before in
+    every US timezone.
 - **Families and companies** (`household:<id>` KV, **encrypted**, id `hh-…`): a
   grouping of people advised together. Its own record, not the free-text
   `household` label that rides on a contact — it holds a name, members with

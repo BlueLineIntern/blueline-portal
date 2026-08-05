@@ -214,6 +214,51 @@ function ConvertTo-HouseholdMembers($raw, $kind) {
     return @{ members = $out }
 }
 
+# Additional Info (worker.js: clientinfo:<email>) and attached client documents
+# (clientdoc:<email>:<id>). In-memory here; a restart resets them.
+$clientInfo = @{}        # email -> ordered hashtable of the suitability fields
+$clientDocs = @{}        # doc id -> metadata record
+$clientDocUploads = @{}  # ticket -> in-flight upload
+$script:docCounter = 0
+$clientInfoDates = @('occupationStartDate', 'retirementDate', 'signedFeeAgreementDate',
+    'signedIpsAgreementDate', 'signedFpAgreementDate', 'lastAdvOfferingDate',
+    'initialCrsOfferingDate', 'lastCrsOfferingDate', 'lastPrivacyOfferingDate',
+    'driversLicenseIssuedDate', 'driversLicenseExpiresDate')
+$clientInfoMoney = @('grossAnnualIncome', 'assets', 'nonLiquidAssets', 'liabilities',
+    'adjustedGrossIncome', 'estimatedTaxes')
+$clientInfoEnums = @{
+    investmentObjective = @('Capital Preservation', 'Income', 'Growth & Income', 'Growth', 'Aggressive Growth', 'Speculation')
+    timeHorizon = @('Less than 1 year', '1-3 years', '3-5 years', '5-10 years', 'More than 10 years')
+    riskTolerance = @('Conservative', 'Moderately Conservative', 'Moderate', 'Moderately Aggressive', 'Aggressive')
+    experienceMutualFunds = @('None', 'Limited', 'Good', 'Extensive')
+    experienceStocksBonds = @('None', 'Limited', 'Good', 'Extensive')
+    experiencePartnerships = @('None', 'Limited', 'Good', 'Extensive')
+    confirmedByTaxReturn = @('Yes', 'No')
+    taxBracket = @('10%', '12%', '22%', '24%', '32%', '35%', '37%')
+    smoker = @('Yes', 'No')
+}
+
+# Net worth figures are derived on read, never stored - mirrors
+# clientInfoDerived() in worker.js. Assets means liquid assets, which is what
+# makes liquid net worth assets minus liabilities.
+function Add-ClientInfoDerived($info) {
+    $num = {
+        param($v)
+        if ($null -eq $v) { return 0.0 }
+        $d = 0.0
+        if ([double]::TryParse([string]$v, [ref]$d)) { return $d }
+        return 0.0
+    }
+    $assets = & $num $info['assets']
+    $nonLiquid = & $num $info['nonLiquidAssets']
+    $liabilities = & $num $info['liabilities']
+    $out = [ordered]@{}
+    foreach ($k in $info.Keys) { $out[$k] = $info[$k] }
+    $out['estimatedNetWorth'] = $assets + $nonLiquid - $liabilities
+    $out['estimatedLiquidNetWorth'] = $assets - $liabilities
+    return $out
+}
+
 # A grouping is a family or a company - same record, different label and roles.
 function Get-GroupKind($rec) {
     if ($rec -and ([string]$rec.kind) -eq 'company') { return 'company' }
@@ -1261,6 +1306,159 @@ while ($listener.IsListening) {
             $contacts[$target] = $rec
             Write-Audit $adminEmail $(if ($archived) { 'archive-contact' } else { 'unarchive-contact' }) @{ client = $target }
             Send-Json $ctx 200 @{ contact = $rec }
+        }
+        # Additional Info and client documents, before the greedy upsert route
+        # below for the same reason /archive is: its (.+) would swallow the
+        # suffix into the email.
+        elseif ($path -match '^/api/admin/contacts/(.+)/info$' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            $info = if ($clientInfo.ContainsKey($target)) { $clientInfo[$target] } else { [ordered]@{} }
+            Send-Json $ctx 200 @{ info = (Add-ClientInfoDerived $info) }
+        }
+        elseif ($path -match '^/api/admin/contacts/(.+)/info$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if ($target -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$') { Send-Json $ctx 400 @{ error = 'Invalid email' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
+            # Validated into a SEPARATE hashtable, merged into the stored record
+            # only once every field passes - mirroring sanitizeClientInfo() in
+            # worker.js, which builds its own `out`. Writing into the live record
+            # while validating meant a rejected request still left the bad value
+            # behind, and a stored bad taxYear then blocked every later save.
+            $changes = [ordered]@{}
+            $bad = $null
+            foreach ($p in $body.PSObject.Properties) {
+                $k = $p.Name
+                $v = $p.Value
+                if ($clientInfoDates -contains $k) {
+                    $s = ([string]$v).Trim()
+                    if ($s -and $s -notmatch '^\d{4}-\d{2}-\d{2}$') { $bad = "$k must be a date (YYYY-MM-DD)"; break }
+                    $changes[$k] = $s
+                }
+                elseif ($clientInfoMoney -contains $k) {
+                    $s = ([string]$v) -replace '[$,\s]', ''
+                    if (-not $s) { $changes[$k] = $null; continue }
+                    $num = 0.0
+                    if (-not [double]::TryParse($s, [ref]$num)) { $bad = "$k must be a number"; break }
+                    $changes[$k] = [math]::Round($num, 2)
+                }
+                elseif ($clientInfoEnums.ContainsKey($k)) {
+                    $s = ([string]$v).Trim()
+                    if ($s -and $clientInfoEnums[$k] -notcontains $s) {
+                        $bad = "$k must be one of: $($clientInfoEnums[$k] -join ', ')"; break
+                    }
+                    $changes[$k] = $s
+                }
+                elseif ($k -eq 'taxYear') {
+                    $s = ([string]$v).Trim()
+                    # Checked against the INCOMING value only, not the merged
+                    # record: a save that doesn't mention taxYear must not be
+                    # judged on what is already stored.
+                    if ($s -and $s -notmatch '^\d{4}$') { $bad = 'taxYear must be a 4-digit year'; break }
+                    $changes[$k] = $s
+                }
+                else { $changes[$k] = ([string]$v).Trim() }
+            }
+            if ($bad) { Send-Json $ctx 400 @{ error = $bad }; continue }
+            $rec = if ($clientInfo.ContainsKey($target)) { $clientInfo[$target] } else { [ordered]@{} }
+            foreach ($k in $changes.Keys) { $rec[$k] = $changes[$k] }
+            $rec['email'] = $target
+            if (-not $rec.Contains('createdAt')) { $rec['createdAt'] = (Get-Date).ToString('o') }
+            $rec['updatedAt'] = (Get-Date).ToString('o')
+            $rec['updatedBy'] = $adminEmail
+            $clientInfo[$target] = $rec
+            # Field NAMES only, matching worker.js - the values include passport
+            # and licence numbers that have no business in an audit record.
+            Write-Audit $adminEmail 'update-client-info' @{ client = $target; fields = @($body.PSObject.Properties.Name | Sort-Object) }
+            Send-Json $ctx 200 @{ info = (Add-ClientInfoDerived $rec) }
+        }
+        elseif ($path -match '^/api/admin/contacts/(.+)/documents$' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            # Sorted through an explicit indexer expression: `-Property uploadedAt`
+            # does not resolve a key on an [ordered]@{} record, so it silently
+            # left insertion order and the mock disagreed with the worker's
+            # newest-first list.
+            $docs = @($clientDocs.Values | Where-Object { $_.client -eq $target } |
+                Sort-Object -Property @{ Expression = { [string]$_['uploadedAt'] } } -Descending)
+            # The mock has no SharePoint, so it always reports configured - the
+            # unconfigured path is exercised by unsetting the real env var.
+            Send-Json $ctx 200 @{ documents = $docs; configured = $true }
+        }
+        elseif ($path -match '^/api/admin/contacts/(.+)/documents/upload$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if ($target -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$') { Send-Json $ctx 400 @{ error = 'Invalid email' }; continue }
+            $body = Read-Body $ctx
+            $fname = [IO.Path]::GetFileName([string]$body.filename)
+            $dname = ([string]$body.name).Trim()
+            $size = [int64]$body.size
+            if (-not $fname) { Send-Json $ctx 400 @{ error = 'A file is required' }; continue }
+            if (-not $dname) { Send-Json $ctx 400 @{ error = 'A document name is required' }; continue }
+            if ($size -le 0) { Send-Json $ctx 400 @{ error = 'File size is missing' }; continue }
+            if ($size -gt (250 * 1024 * 1024)) { Send-Json $ctx 400 @{ error = 'File is larger than the 250 MB limit' }; continue }
+            $script:docCounter++
+            $uid = "doc$($script:docCounter)"
+            $clientDocUploads[$uid] = @{ client = $target; filename = $fname; name = $dname; size = $size; received = [int64]0 }
+            # 1 MiB here rather than 5, so a small test file still exercises the
+            # multi-chunk loop.
+            Send-Json $ctx 200 @{ ticket = $uid; chunkSize = (1024 * 1024) }
+        }
+        elseif ($path -eq '/api/admin/client-documents/chunk' -and $method -eq 'PUT') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $uid = [string]$ctx.Request.Headers['X-Upload-Ticket']
+            $up = if ($uid) { $clientDocUploads[$uid] } else { $null }
+            if (-not $up) { Send-Json $ctx 400 @{ error = 'Missing upload ticket' }; continue }
+            $offset = [int64]$ctx.Request.Headers['X-Upload-Offset']
+            $buf = New-Object byte[] 65536
+            $len = [int64]0
+            while (($read = $ctx.Request.InputStream.Read($buf, 0, $buf.Length)) -gt 0) { $len += $read }
+            if ($len -le 0) { Send-Json $ctx 400 @{ error = 'Empty chunk' }; continue }
+            if (($offset + $len) -gt $up.size) { Send-Json $ctx 400 @{ error = 'Chunk runs past the declared file size' }; continue }
+            $up.received = $offset + $len
+            if ($up.received -lt $up.size) { Send-Json $ctx 200 @{ done = $false; nextOffset = $up.received }; continue }
+            $script:docCounter++
+            $id = "$($up.client):$($script:docCounter)"
+            $rec = [ordered]@{
+                id = $id; client = $up.client; name = $up.name; filename = $up.filename
+                webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/ClientDocuments/$($up.client)/$($up.filename)"
+                driveId = 'mock-drive'; driveItemId = "item-$($script:docCounter)"
+                size = $up.size; uploadedBy = $adminEmail; uploadedAt = (Get-Date).ToString('o')
+            }
+            $clientDocs[$id] = $rec
+            $clientDocUploads.Remove($uid)
+            Write-Audit $adminEmail 'attach-client-document' @{ client = $up.client; name = $up.name; filename = $up.filename }
+            Send-Json $ctx 200 @{ done = $true; document = $rec }
+        }
+        elseif ($path -match '^/api/admin/client-documents/(.+)$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $id = [Uri]::UnescapeDataString($Matches[1])
+            if (-not $clientDocs.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Document not found' }; continue }
+            $body = Read-Body $ctx
+            $n = ([string]$body.name).Trim()
+            if (-not $n) { Send-Json $ctx 400 @{ error = 'A document name is required' }; continue }
+            $rec = $clientDocs[$id]
+            $rec.name = $n
+            $rec['updatedAt'] = (Get-Date).ToString('o')
+            $rec['updatedBy'] = $adminEmail
+            Write-Audit $adminEmail 'rename-client-document' @{ client = $rec.client; id = $id; name = $n }
+            Send-Json $ctx 200 @{ document = $rec }
+        }
+        elseif ($path -match '^/api/admin/client-documents/(.+)$' -and $method -eq 'DELETE') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $id = [Uri]::UnescapeDataString($Matches[1])
+            if (-not $clientDocs.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Document not found' }; continue }
+            $client = $clientDocs[$id].client
+            $clientDocs.Remove($id)
+            Write-Audit $adminEmail 'delete-client-document' @{ client = $client; id = $id; fileDeleted = $true }
+            Send-Json $ctx 200 @{ ok = $true; fileDeleted = $true }
         }
         elseif ($path -match '^/api/admin/contacts/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx

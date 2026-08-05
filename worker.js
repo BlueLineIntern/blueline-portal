@@ -3721,6 +3721,384 @@ async function handleAdminArchiveContact(request, env, cors, targetEmail, archiv
   return json({ contact: record }, 200, cors);
 }
 
+// ---------- Advisor CRM: client additional info ----------
+// The suitability / KYC block behind a contact's **Additional Info** tab:
+// employment, written-agreement offering dates, investment profile, estimated
+// net worth, tax figures, health, and identifying documents.
+//
+// Its own KV record (`clientinfo:<email>`), NOT fields on the contact, for two
+// reasons:
+//   1. Privacy. This holds passport, green-card and driver's-licence numbers and
+//      medical notes. On the contact record it would ride in the /api/admin/
+//      contacts boot payload for EVERY contact on every page load and every 20s
+//      poll. Separate means it is fetched only for the client being looked at.
+//   2. The contact record round-trips through the SharePoint Contacts sync.
+//      There are no columns for any of this, and keeping it out of that record
+//      keeps it out of that code path entirely.
+//
+// Encrypted at rest like every other client record — which means, as everywhere
+// else, only if DATA_ENCRYPTION_KEY is set.
+const CLIENT_INFO_ENUMS = {
+  investmentObjective: ['', 'Capital Preservation', 'Income', 'Growth & Income', 'Growth', 'Aggressive Growth', 'Speculation'],
+  timeHorizon: ['', 'Less than 1 year', '1-3 years', '3-5 years', '5-10 years', 'More than 10 years'],
+  riskTolerance: ['', 'Conservative', 'Moderately Conservative', 'Moderate', 'Moderately Aggressive', 'Aggressive'],
+  experienceMutualFunds: ['', 'None', 'Limited', 'Good', 'Extensive'],
+  experienceStocksBonds: ['', 'None', 'Limited', 'Good', 'Extensive'],
+  experiencePartnerships: ['', 'None', 'Limited', 'Good', 'Extensive'],
+  confirmedByTaxReturn: ['', 'Yes', 'No'],
+  taxBracket: ['', '10%', '12%', '22%', '24%', '32%', '35%', '37%'],
+  smoker: ['', 'Yes', 'No'],
+};
+
+const CLIENT_INFO_DATES = [
+  'occupationStartDate', 'retirementDate',
+  'signedFeeAgreementDate', 'signedIpsAgreementDate', 'signedFpAgreementDate',
+  'lastAdvOfferingDate', 'initialCrsOfferingDate', 'lastCrsOfferingDate',
+  'lastPrivacyOfferingDate', 'driversLicenseIssuedDate', 'driversLicenseExpiresDate',
+];
+
+// Money fields are stored as numbers so the derived net-worth figures are
+// arithmetic rather than string parsing. Negative is allowed: an underwater
+// balance sheet is a real answer, not a typo to reject.
+const CLIENT_INFO_MONEY = ['grossAnnualIncome', 'assets', 'nonLiquidAssets', 'liabilities', 'adjustedGrossIncome', 'estimatedTaxes'];
+
+// Short free text, with the cap each one gets.
+const CLIENT_INFO_TEXT = {
+  occupation: 120,
+  otherInvestingExperience: 2000,
+  taxYear: 4,
+  height: 20,
+  weight: 20,
+  medicalConditions: 2000,
+  driversLicenseNumber: 60,
+  driversLicenseState: 40,
+  birthPlace: 120,
+  maidenName: 120,
+  passportNumber: 60,
+  greenCardNumber: 60,
+  personalInterests: 2000,
+  importantInformation: 4000,
+};
+
+// Estimated net worth and estimated liquid net worth are DERIVED, never stored:
+// two places holding the same number is one place for them to disagree. Assets
+// here means liquid assets, which is what makes liquid net worth assets minus
+// liabilities.
+function clientInfoDerived(info) {
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    estimatedNetWorth: n(info.assets) + n(info.nonLiquidAssets) - n(info.liabilities),
+    estimatedLiquidNetWorth: n(info.assets) - n(info.liabilities),
+  };
+}
+
+function sanitizeClientInfo(body) {
+  const out = {};
+  for (const [key, max] of Object.entries(CLIENT_INFO_TEXT)) {
+    if (body[key] !== undefined) out[key] = String(body[key] == null ? '' : body[key]).trim().slice(0, max);
+  }
+  for (const key of CLIENT_INFO_DATES) {
+    if (body[key] === undefined) continue;
+    const v = String(body[key] || '').trim();
+    // Empty clears the field; anything else must be a real ISO date, so a
+    // half-typed "2026-3" can't be stored and then render as a bad date.
+    if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return { error: `${key} must be a date (YYYY-MM-DD)` };
+    if (v && Number.isNaN(new Date(`${v}T00:00:00Z`).getTime())) return { error: `${key} is not a real date` };
+    out[key] = v;
+  }
+  for (const key of CLIENT_INFO_MONEY) {
+    if (body[key] === undefined) continue;
+    const raw = body[key];
+    if (raw === '' || raw === null) { out[key] = null; continue; }
+    const num = typeof raw === 'number' ? raw : Number(String(raw).replace(/[$,\s]/g, ''));
+    if (!Number.isFinite(num)) return { error: `${key} must be a number` };
+    // Rounded to cents: a float with more precision than money has invites
+    // 1234.5600000000001 in the UI.
+    out[key] = Math.round(num * 100) / 100;
+  }
+  for (const [key, allowed] of Object.entries(CLIENT_INFO_ENUMS)) {
+    if (body[key] === undefined) continue;
+    const v = String(body[key] || '').trim();
+    if (!allowed.includes(v)) return { error: `${key} must be one of: ${allowed.filter(Boolean).join(', ')}` };
+    out[key] = v;
+  }
+  if (body.taxYear !== undefined && out.taxYear && !/^\d{4}$/.test(out.taxYear)) {
+    return { error: 'taxYear must be a 4-digit year' };
+  }
+  return { fields: out };
+}
+
+async function handleAdminGetClientInfo(request, env, cors, email) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const key = `clientinfo:${String(email || '').trim().toLowerCase()}`;
+  let info = {};
+  try {
+    info = (await decryptToObject(env, await env.PORTAL_KV.get(key))) || {};
+  } catch (err) {
+    // Fail closed like the rest of the CRM: an undecryptable record must not
+    // read as empty, or the next save would overwrite it with blanks.
+    return json({ error: 'Could not decrypt this client info record' }, 500, cors);
+  }
+  return json({ info: { ...info, ...clientInfoDerived(info) } }, 200, cors);
+}
+
+async function handleAdminUpdateClientInfo(request, env, cors, email) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const addr = String(email || '').trim().toLowerCase();
+  if (!isValidEmail(addr)) return json({ error: 'Invalid email' }, 400, cors);
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const { fields, error } = sanitizeClientInfo(body);
+  if (error) return json({ error }, 400, cors);
+
+  const key = `clientinfo:${addr}`;
+  let existing;
+  try {
+    existing = (await decryptToObject(env, await env.PORTAL_KV.get(key))) || {};
+  } catch {
+    return json({ error: 'Could not decrypt this client info record' }, 500, cors);
+  }
+  const record = {
+    ...existing,
+    ...fields,
+    email: addr,
+    createdAt: existing.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    updatedBy: adminEmail,
+  };
+  await env.PORTAL_KV.put(key, await encryptJSON(env, record));
+  // Field NAMES only. The values here include passport and licence numbers and
+  // medical notes; the audit log has a 13-month TTL and its own viewer, and
+  // copying that material into it would spread it for no investigative gain.
+  await logAudit(env, adminEmail, 'update-client-info', {
+    client: addr,
+    fields: Object.keys(fields).sort(),
+  });
+  return json({ info: { ...record, ...clientInfoDerived(record) } }, 200, cors);
+}
+
+// ---------- Advisor CRM: client documents ----------
+// Files an admin attaches to a contact — tax returns, statements, a signed form
+// that arrived by post. Split across two stores on purpose:
+//
+//   bytes    -> a SharePoint document library ("Client Documents"), one folder
+//               per client, uploaded through the same chunked upload-session
+//               machinery the Learning tab uses.
+//   metadata -> KV (`clientdoc:<email>:<invTs>-<rand>`): the display name, the
+//               original filename, who attached it and when, and the webUrl.
+//
+// Keeping the *name* in KV rather than a SharePoint Title column is the point of
+// the split: no custom column has to exist in the library for naming to work,
+// listing a client's documents costs no Graph call at all, and a rename is a KV
+// write instead of a PATCH that can fail against a column that isn't there.
+// SharePoint still holds the file itself, so the firm's existing retention and
+// backup policy covers client records rather than a second store having to.
+//
+// Needs SHAREPOINT_CLIENT_DOCS_LIST_ID. Unset -> `configured: false` and the tab
+// says which setting is missing (the Learning tab's pattern) rather than
+// pretending uploads are broken.
+const CLIENT_DOC_CHUNK = 5 * 1024 * 1024; // multiple of the 320 KiB Graph requires
+const CLIENT_DOC_MAX = 250 * 1024 * 1024; // 250 MB — statements and scans, not video
+
+// SharePoint rejects " * : < > ? / \ | and leading/trailing dots and spaces.
+function sanitizeDocFilename(raw) {
+  const base = String(raw || '').split(/[\\/]/).pop();
+  return base.replace(/["*:<>?|]/g, '-').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 200);
+}
+
+// One folder per client, named by email. Emails contain no character SharePoint
+// disallows in a folder name, so the address doubles as a stable folder key that
+// stays readable to anyone browsing the library directly.
+function clientDocFolder(email) {
+  return sanitizeDocFilename(String(email || '').toLowerCase());
+}
+
+async function getClientDocsDriveId(env, token) {
+  const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}`
+    + `/lists/${env.SHAREPOINT_CLIENT_DOCS_LIST_ID}/drive`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error('Could not resolve the Client Documents drive (Graph ' + res.status + ')');
+  const drive = await res.json();
+  if (!drive.id) throw new Error('Client Documents drive has no id');
+  return drive.id;
+}
+
+async function handleAdminListClientDocs(request, env, cors, email) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const addr = String(email || '').trim().toLowerCase();
+  const { items, errors } = await readAllEncrypted(env, `clientdoc:${addr}:`);
+  // Inverted-timestamp keys already list newest-first; sorted again so a record
+  // written before this used inverted keys can't jump the order.
+  items.sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
+  return json({
+    documents: items,
+    decryptErrors: errors,
+    configured: !!env.SHAREPOINT_CLIENT_DOCS_LIST_ID,
+  }, 200, cors);
+}
+
+async function handleAdminClientDocUploadStart(request, env, cors, email) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const addr = String(email || '').trim().toLowerCase();
+  if (!isValidEmail(addr)) return json({ error: 'Invalid email' }, 400, cors);
+  if (!env.SHAREPOINT_CLIENT_DOCS_LIST_ID) {
+    return json({ error: 'SHAREPOINT_CLIENT_DOCS_LIST_ID is not set' }, 400, cors);
+  }
+  const body = await request.json().catch(() => ({}));
+  const filename = sanitizeDocFilename(body.filename);
+  const size = Number(body.size);
+  const name = String(body.name || '').trim().slice(0, 200);
+
+  if (!filename) return json({ error: 'A file is required' }, 400, cors);
+  if (!name) return json({ error: 'A document name is required' }, 400, cors);
+  if (!Number.isFinite(size) || size <= 0) return json({ error: 'File size is missing' }, 400, cors);
+  if (size > CLIENT_DOC_MAX) return json({ error: 'File is larger than the 250 MB limit' }, 400, cors);
+
+  try {
+    const token = await getGraphToken(env);
+    const driveId = await getClientDocsDriveId(env, token);
+    const path = `${clientDocFolder(addr)}/${filename}`;
+    // The folder is created implicitly by uploading into its path, so no
+    // separate "does this client have a folder yet" round trip is needed.
+    const sessionUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/`
+      + `${path.split('/').map(encodeURIComponent).join('/')}:/createUploadSession`;
+    const res = await fetch(sessionUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'rename', name: filename } }),
+    });
+    if (!res.ok) throw new Error('Graph API error ' + res.status + ': ' + (await res.text()).slice(0, 300));
+    const session = await res.json();
+    if (!session.uploadUrl) throw new Error('Graph returned no uploadUrl');
+
+    const ticket = await encryptJSON(env, {
+      uploadUrl: session.uploadUrl, driveId, size, filename, name, client: addr,
+    });
+    return json({ ticket, chunkSize: CLIENT_DOC_CHUNK }, 200, cors);
+  } catch (err) {
+    console.error('Failed to start client document upload:', err);
+    return json({ error: 'Could not start the upload: ' + (err && err.message) }, 500, cors);
+  }
+}
+
+// Same shape as the Learning chunk endpoint — see the comment there for why the
+// bytes are proxied and why the session rides in an encrypted ticket instead of
+// KV. The client is taken from the ticket, not the URL, so a ticket can't be
+// replayed against a different contact.
+async function handleAdminClientDocUploadChunk(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+
+  let ticket;
+  try {
+    ticket = await decryptToObject(env, request.headers.get('X-Upload-Ticket') || '');
+  } catch {
+    return json({ error: 'Upload ticket could not be read — start the upload again' }, 400, cors);
+  }
+  if (!ticket || !ticket.uploadUrl) return json({ error: 'Missing upload ticket' }, 400, cors);
+  let host = '';
+  try { host = new URL(ticket.uploadUrl).hostname; } catch { host = ''; }
+  if (!/\.sharepoint\.com$/i.test(host)) {
+    return json({ error: 'Upload ticket points somewhere unexpected' }, 400, cors);
+  }
+
+  const offset = Number(request.headers.get('X-Upload-Offset'));
+  if (!Number.isFinite(offset) || offset < 0) return json({ error: 'Bad chunk offset' }, 400, cors);
+  const chunk = await request.arrayBuffer();
+  if (!chunk.byteLength) return json({ error: 'Empty chunk' }, 400, cors);
+  const end = offset + chunk.byteLength - 1;
+  if (end >= ticket.size) return json({ error: 'Chunk runs past the declared file size' }, 400, cors);
+
+  try {
+    const res = await fetch(ticket.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Range': `bytes ${offset}-${end}/${ticket.size}` },
+      body: chunk,
+    });
+    if (res.status === 202) {
+      await res.text().catch(() => '');
+      return json({ done: false, nextOffset: end + 1 }, 200, cors);
+    }
+    if (!res.ok) {
+      throw new Error('SharePoint rejected the chunk (' + res.status + '): ' + (await res.text()).slice(0, 300));
+    }
+    const item = await res.json();
+    const id = `${ticket.client}:${invTs()}-${randomHex(4)}`;
+    const record = {
+      id,
+      client: ticket.client,
+      name: ticket.name,
+      filename: item.name || ticket.filename,
+      webUrl: item.webUrl || '',
+      driveId: ticket.driveId,
+      driveItemId: item.id || '',
+      size: typeof item.size === 'number' ? item.size : ticket.size,
+      uploadedBy: adminEmail,
+      uploadedAt: new Date().toISOString(),
+    };
+    await env.PORTAL_KV.put(`clientdoc:${id}`, await encryptJSON(env, record));
+    await logAudit(env, adminEmail, 'attach-client-document', {
+      client: ticket.client, name: record.name, filename: record.filename,
+    });
+    return json({ done: true, document: record }, 200, cors);
+  } catch (err) {
+    console.error('Client document chunk upload failed:', err);
+    return json({ error: 'Upload failed: ' + (err && err.message) }, 500, cors);
+  }
+}
+
+// Rename only — the display name is the one thing about an attachment worth
+// correcting after the fact, and it lives in KV, so this never touches Graph.
+async function handleAdminRenameClientDoc(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`clientdoc:${id}`);
+  if (!raw) return json({ error: 'Document not found' }, 404, cors);
+  const existing = await decryptToObject(env, raw);
+  const body = await request.json().catch(() => null);
+  const name = body && typeof body.name === 'string' ? body.name.trim().slice(0, 200) : '';
+  if (!name) return json({ error: 'A document name is required' }, 400, cors);
+  const record = { ...existing, name, updatedAt: new Date().toISOString(), updatedBy: adminEmail };
+  await env.PORTAL_KV.put(`clientdoc:${id}`, await encryptJSON(env, record));
+  await logAudit(env, adminEmail, 'rename-client-document', { client: existing.client, id, name });
+  return json({ document: record }, 200, cors);
+}
+
+// Removes the attachment. The file in SharePoint goes too — leaving it would
+// make the library disagree with the tab, and SharePoint's own recycle bin is
+// the recovery path. A Graph failure still drops the metadata (best-effort,
+// logged): the alternative is a row that can't be removed from the UI at all.
+async function handleAdminDeleteClientDoc(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`clientdoc:${id}`);
+  if (!raw) return json({ error: 'Document not found' }, 404, cors);
+  const existing = await decryptToObject(env, raw);
+  let fileDeleted = false;
+  if (existing && existing.driveId && existing.driveItemId) {
+    try {
+      const token = await getGraphToken(env);
+      const res = await fetch(
+        `https://graph.microsoft.com/v1.0/drives/${existing.driveId}/items/${existing.driveItemId}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+      );
+      fileDeleted = res.ok || res.status === 404;
+      if (!fileDeleted) console.error('Failed to delete client document from SharePoint:', res.status, await res.text());
+    } catch (err) {
+      console.error('Error deleting client document from SharePoint:', err);
+    }
+  }
+  await env.PORTAL_KV.delete(`clientdoc:${id}`);
+  await logAudit(env, adminEmail, 'delete-client-document', {
+    client: existing && existing.client, id, fileDeleted,
+  });
+  return json({ ok: true, fileDeleted }, 200, cors);
+}
+
 // ---------- Advisor CRM: households ----------
 // A household groups people who are advised together (a couple, a family).
 // It is a first-class record rather than the free-text `household` tag that
@@ -5054,6 +5432,38 @@ export default {
       const archiveMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/(archive|unarchive)$/);
       if (archiveMatch && request.method === 'POST') {
         return await handleAdminArchiveContact(request, env, cors, decodeURIComponent(archiveMatch[1]), archiveMatch[2] === 'archive');
+      }
+      // Additional Info and client documents, also matched before the greedy
+      // upsert route below for the same reason /archive is: its `(.+)` would
+      // otherwise swallow the suffix into the email.
+      const infoMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/info$/);
+      if (infoMatch && request.method === 'GET') {
+        return await handleAdminGetClientInfo(request, env, cors, decodeURIComponent(infoMatch[1]));
+      }
+      if (infoMatch && request.method === 'POST') {
+        return await handleAdminUpdateClientInfo(request, env, cors, decodeURIComponent(infoMatch[1]));
+      }
+      // The chunk route carries its client in the encrypted ticket, so it is a
+      // fixed path rather than a per-contact one.
+      if (url.pathname === '/api/admin/client-documents/chunk' && request.method === 'PUT') {
+        return await handleAdminClientDocUploadChunk(request, env, cors);
+      }
+      const docUploadMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/documents\/upload$/);
+      if (docUploadMatch && request.method === 'POST') {
+        return await handleAdminClientDocUploadStart(request, env, cors, decodeURIComponent(docUploadMatch[1]));
+      }
+      const docListMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/documents$/);
+      if (docListMatch && request.method === 'GET') {
+        return await handleAdminListClientDocs(request, env, cors, decodeURIComponent(docListMatch[1]));
+      }
+      // Document ids are `<email>:<invTs>-<rand>`, so the id itself carries a
+      // colon — matched greedily and used as-is rather than split apart.
+      const docItemMatch = url.pathname.match(/^\/api\/admin\/client-documents\/(.+)$/);
+      if (docItemMatch && request.method === 'POST') {
+        return await handleAdminRenameClientDoc(request, env, cors, decodeURIComponent(docItemMatch[1]));
+      }
+      if (docItemMatch && request.method === 'DELETE') {
+        return await handleAdminDeleteClientDoc(request, env, cors, decodeURIComponent(docItemMatch[1]));
       }
       const contactMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)$/);
       if (contactMatch && request.method === 'POST') {

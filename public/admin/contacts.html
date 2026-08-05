@@ -99,6 +99,49 @@
   .detail-group-chip:hover { text-decoration: underline; }
   .detail-group-chip svg { width: 13px; height: 13px; }
 
+  /* ---------- Attached documents ---------- */
+  .doc-row { display: flex; align-items: center; gap: var(--sp-3); }
+  .doc-main { flex: 1; min-width: 0; }
+  .doc-meta { color: var(--muted); font-size: var(--fs-xs); margin-top: 3px; }
+  .doc-actions { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; }
+  /* Determinate bar, shared with the Learning tab's markup class names: a
+     statement scan is big enough that "how far along" beats a spinner. */
+  .lr-progress { height: 6px; border-radius: 3px; background: var(--gray-bg); overflow: hidden; margin-top: var(--sp-2); }
+  .lr-progress span { display: block; height: 100%; width: 0; background: var(--sky-dark); transition: width 0.2s ease; }
+  .doc-upload-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 5px; }
+
+  /* ---------- Additional Info ----------
+     Two columns of sections on a wide screen, one on a narrow one. Each section
+     is its own panel so a section's rows stay visually attached to its heading
+     when the columns reflow. */
+  .ai-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; align-items: start; }
+  .ai-grid .panel { margin-bottom: 0; }
+  /* "Not Set" is the spec'd empty value here, not an em-dash — it reads as a
+     field waiting to be filled rather than one that has no answer. */
+  .ai-unset { color: var(--muted-soft); font-weight: var(--fw-medium); }
+  /* A derived row (net worth) is not editable, so it is marked as computed
+     rather than silently looking like a field someone forgot to fill in. */
+  .ai-derived-row strong { color: var(--navy); }
+  .ai-derived-note { color: var(--muted); font-size: var(--fs-xs); margin: var(--sp-2) 0 0; }
+  .ai-actions { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+  /* Edit mode: label above control, stacked, so a long label can't squeeze a
+     date input into unusability the way the read view's two columns would. */
+  .ai-field { padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); }
+  .ai-field:last-child { border-bottom: none; }
+  .ai-field label { display: block; color: var(--muted); font-size: var(--fs-sm); margin-bottom: 4px; }
+  .ai-field input, .ai-field select, .ai-field textarea {
+    width: 100%; font-family: var(--font-sans); font-size: var(--fs-sm);
+    padding: 6px var(--sp-2); border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm); background: #fff; color: var(--text);
+  }
+  .ai-field textarea { resize: vertical; }
+  .ai-money-wrap { position: relative; }
+  .ai-money-wrap input { padding-left: 20px; }
+  .ai-money-wrap::before {
+    content: '$'; position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); font-size: var(--fs-sm); pointer-events: none;
+  }
+
   /* Assignment editor */
   .assignment-group { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-top: 14px; }
   .assignment-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px; }
@@ -237,6 +280,7 @@
         <button type="button" class="tab" data-tab="timeline">Timeline</button>
         <button type="button" class="tab" data-tab="activity">Activity Log</button>
         <button type="button" class="tab" data-tab="documents">Documents</button>
+        <button type="button" class="tab" data-tab="additional">Additional Info</button>
         <span class="tab-divider" aria-hidden="true"></span>
         <button type="button" class="tab" data-tab="onboarding">Onboarding</button>
         <button type="button" class="tab" data-tab="assessments">Assessments</button>
@@ -264,6 +308,7 @@
       </div>
 
       <div class="hidden" id="tab-documents"></div>
+      <div class="hidden" id="tab-additional"></div>
       <div class="hidden" id="tab-activity"></div>
     </div>
   </main>
@@ -430,6 +475,32 @@
   </div>
 </div>
 
+<!-- Attach a document to the open contact. Same two-step chunked upload as the
+     Learning tab: a session, then 5 MiB slices proxied through the Worker. -->
+<div class="modal-backdrop hidden" id="doc-modal-backdrop">
+  <div class="modal">
+    <h2>Attach document</h2>
+    <div class="field">
+      <label for="doc-file">File</label>
+      <input type="file" id="doc-file" />
+      <p class="field-note">Up to 250 MB. Stored in the firm's SharePoint <strong>Client Documents</strong> library.</p>
+    </div>
+    <div class="field">
+      <label for="doc-name">Name</label>
+      <input type="text" id="doc-name" maxlength="200" placeholder="How it will be listed here" />
+    </div>
+    <p class="form-error" id="doc-error"></p>
+    <div class="hidden" id="doc-progress-wrap">
+      <div class="lr-progress"><span id="doc-progress-bar"></span></div>
+      <p class="doc-upload-note" id="doc-progress-note"></p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="doc-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="doc-submit">Attach</button>
+    </div>
+  </div>
+</div>
+
 <script src="/assets/render.js"></script>
 <script src="/admin/shared.js"></script>
 <script>
@@ -453,7 +524,9 @@
   const POLL_INTERVAL_MS = 20000;
   // Tabs a background poll must not re-render: they hold either unsaved input
   // or accumulated state (paged history, scroll) that a rebuild would destroy.
-  const POLL_SKIP_TABS = new Set(['notes', 'tasks', 'meetings', 'timeline', 'activity']);
+  // 'additional' is here because its edit mode holds a whole form of unsaved
+  // input — a poll-driven rebuild would wipe it mid-typing.
+  const POLL_SKIP_TABS = new Set(['notes', 'tasks', 'meetings', 'timeline', 'activity', 'additional']);
 
   const ALL_MODULE_KEYS = [...MODULES.map((mod) => mod.key), ...CATEGORY_MODULES.map((mod) => mod.key)];
   const CATEGORY_MODULE_MAP = Object.fromEntries(CATEGORY_MODULES.map((mod) => [mod.key, mod]));
@@ -1306,6 +1379,14 @@
     selectedEmail = email;
     activeTab = 'overview';
     editingNoteId = null;
+    // Both of these are per-contact and fetched on demand. Cleared here so
+    // opening a second contact can't show the first one's documents or
+    // suitability answers for the moment before its own fetch lands.
+    clientDocs = [];
+    clientDocsLoadedFor = '';
+    clientInfo = {};
+    clientInfoLoadedFor = '';
+    clientInfoEditing = false;
     history.replaceState(null, '', `?c=${encodeURIComponent(email)}`);
     // Feeds the sidebar's Recently Viewed list (see shared.js). Recorded with
     // the display name so the rail doesn't have to re-fetch contacts to render.
@@ -1336,7 +1417,7 @@
       b.classList.toggle('active', b.dataset.tab === tab)
     );
     // Same order as the tab strip above, so the two can be read together.
-    ['overview', 'notes', 'tasks', 'meetings', 'timeline', 'activity', 'documents', 'onboarding', 'assessments'].forEach((t) =>
+    ['overview', 'notes', 'tasks', 'meetings', 'timeline', 'activity', 'documents', 'additional', 'onboarding', 'assessments'].forEach((t) =>
       document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab)
     );
     // These fetch on demand so opening a profile stays cheap.
@@ -1345,6 +1426,10 @@
     if (tab === 'meetings') renderMeetingsTab();
     if (tab === 'notes') renderNotesTab();
     if (tab === 'timeline') renderTimelineTab();
+    // Additional Info holds passport/licence numbers, so it is fetched only when
+    // actually opened rather than with the profile.
+    if (tab === 'additional') loadClientInfo(selectedEmail);
+    if (tab === 'documents') loadClientDocs(selectedEmail);
   }
 
   document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
@@ -1643,6 +1728,119 @@
 
   // ---------- Documents tab (existing artifacts only; uploads come later) ----------
 
+  // ---------- Attached documents ----------
+  // Files an admin attaches by hand, listed ABOVE the signed onboarding
+  // agreements: the agreements are a fixed historical record, while this is the
+  // part of the tab that gets added to, so it belongs where the eye lands first.
+
+  let clientDocs = [];
+  let clientDocsConfigured = true;
+  let clientDocsLoadedFor = '';
+
+  function formatBytes(bytes) {
+    if (typeof bytes !== 'number' || bytes <= 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    let n = bytes;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+    return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+  }
+
+  function attachedDocsHtml() {
+    if (!clientDocsConfigured) {
+      return `<div class="panel">
+        <div class="panel-head"><h2>Attached Documents</h2></div>
+        <p class="empty lr-setup">Not connected yet. <code>SHAREPOINT_CLIENT_DOCS_LIST_ID</code> needs the
+        list id of the SharePoint <strong>Client Documents</strong> library before files can be attached.</p>
+      </div>`;
+    }
+    const rows = clientDocs.map((d) => {
+      const meta = [d.filename !== d.name ? d.filename : '', formatBytes(d.size),
+        d.uploadedAt ? `attached ${fmtDate(d.uploadedAt)}` : '',
+        d.uploadedBy ? `by ${staffLabel(d.uploadedBy)}` : '']
+        .filter(Boolean).map(escapeHtml).join(' · ');
+      // The name links to SharePoint's own viewer rather than streaming the file
+      // back through the Worker — SharePoint already handles preview, range
+      // requests and permissions for every format the library accepts.
+      const link = d.webUrl
+        ? `<a class="name-link" href="${escapeHtml(d.webUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(d.name)}</a>`
+        : escapeHtml(d.name);
+      return `<div class="row-item doc-row">
+        <div class="doc-main">
+          <div class="row-title">${link}</div>
+          ${meta ? `<div class="doc-meta">${meta}</div>` : ''}
+        </div>
+        <div class="doc-actions">
+          <button type="button" class="btn btn-ghost btn-small" data-doc-rename="${escapeHtml(d.id)}">Rename</button>
+          <button type="button" class="btn btn-ghost btn-small" data-doc-delete="${escapeHtml(d.id)}">Delete</button>
+        </div>
+      </div>`;
+    });
+    return `<div class="panel">
+      <div class="panel-head">
+        <h2>Attached Documents</h2>
+        <button type="button" class="btn btn-primary btn-small" id="doc-add-btn">+ Attach document</button>
+      </div>
+      <div class="row-list">${rows.length ? rows.join('')
+        : '<p class="empty">Nothing attached yet — use Attach document for tax returns, statements or forms that arrived outside the portal.</p>'}</div>
+    </div>`;
+  }
+
+  function wireDocActions() {
+    const add = document.getElementById('doc-add-btn');
+    if (add) add.addEventListener('click', openDocModal);
+    document.querySelectorAll('[data-doc-rename]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const doc = clientDocs.find((d) => d.id === b.dataset.docRename);
+        if (!doc) return;
+        const name = prompt('Document name', doc.name);
+        if (name === null || !name.trim() || name.trim() === doc.name) return;
+        try {
+          await api(`/api/admin/client-documents/${encodeURIComponent(doc.id)}`, {
+            method: 'POST', body: JSON.stringify({ name: name.trim() }),
+          });
+          await loadClientDocs(selectedEmail, { force: true });
+        } catch (err) {
+          alert(`Could not rename: ${err.message}`);
+        }
+      });
+    });
+    document.querySelectorAll('[data-doc-delete]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const doc = clientDocs.find((d) => d.id === b.dataset.docDelete);
+        if (!doc) return;
+        // Says where the file goes, because "Delete" on a client record is the
+        // kind of thing worth being specific about before it happens.
+        if (!confirm(`Delete "${doc.name}"? The file is removed from SharePoint too (recoverable from its recycle bin).`)) return;
+        try {
+          await api(`/api/admin/client-documents/${encodeURIComponent(doc.id)}`, { method: 'DELETE' });
+          await loadClientDocs(selectedEmail, { force: true });
+        } catch (err) {
+          alert(`Could not delete: ${err.message}`);
+        }
+      });
+    });
+  }
+
+  async function loadClientDocs(email, { force = false } = {}) {
+    if (!email) return;
+    if (!force && clientDocsLoadedFor === email) return;
+    try {
+      const data = await api(`/api/admin/contacts/${encodeURIComponent(email)}/documents`);
+      clientDocs = data.documents || [];
+      clientDocsConfigured = data.configured !== false;
+      clientDocsLoadedFor = email;
+    } catch (err) {
+      clientDocs = [];
+      clientDocsLoadedFor = '';
+    }
+    // Only repaint if the advisor is still on the contact this was fetched for.
+    if (selectedEmail === email) {
+      const c = currentContact();
+      if (c) renderDocumentsTab(c);
+    }
+  }
+
   function renderDocumentsTab(c) {
     const linked = linkedOnboardings(c);
     const agreements = linked
@@ -1664,8 +1862,320 @@
         </div>`;
       });
     document.getElementById('tab-documents').innerHTML =
-      (agreements.length ? agreements.join('') : '<div class="panel"><p class="empty">No signed agreements on file for this contact.</p></div>') +
-      '<p class="hint">Client file uploads (tax returns, statements) are a planned feature — signed onboarding agreements are shown here today.</p>';
+      attachedDocsHtml() +
+      (agreements.length ? agreements.join('') : '<div class="panel"><p class="empty">No signed agreements on file for this contact.</p></div>');
+    wireDocActions();
+  }
+
+  // ---------- Attach document modal ----------
+
+  const docModal = document.getElementById('doc-modal-backdrop');
+  let docUploading = false;
+
+  function openDocModal() {
+    document.getElementById('doc-file').value = '';
+    document.getElementById('doc-name').value = '';
+    document.getElementById('doc-error').textContent = '';
+    document.getElementById('doc-progress-wrap').classList.add('hidden');
+    document.getElementById('doc-progress-bar').style.width = '0';
+    docModal.classList.remove('hidden');
+    document.getElementById('doc-name').focus();
+  }
+
+  function closeDocModal() {
+    if (docUploading) return; // never strand an in-flight upload behind a closed dialog
+    docModal.classList.add('hidden');
+  }
+
+  document.getElementById('doc-cancel').addEventListener('click', closeDocModal);
+  docModal.addEventListener('click', (e) => { if (e.target === e.currentTarget) closeDocModal(); });
+
+  // Default the name to the filename without its extension — one less thing to
+  // type for the common case, still fully editable.
+  document.getElementById('doc-file').addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    const nameEl = document.getElementById('doc-name');
+    if (f && !nameEl.value.trim()) {
+      nameEl.value = f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+    }
+  });
+
+  document.getElementById('doc-submit').addEventListener('click', async (ev) => {
+    const errEl = document.getElementById('doc-error');
+    const file = document.getElementById('doc-file').files[0];
+    const name = document.getElementById('doc-name').value.trim();
+    const email = selectedEmail;
+    errEl.textContent = '';
+    if (!file) { errEl.textContent = 'Choose a file.'; return; }
+    if (!name) { errEl.textContent = 'Give the document a name.'; return; }
+    if (!email) { errEl.textContent = 'No contact is open.'; return; }
+
+    const btn = ev.currentTarget;
+    docUploading = true;
+    btn.disabled = true;
+    btn.textContent = 'Attaching…';
+    const wrap = document.getElementById('doc-progress-wrap');
+    const bar = document.getElementById('doc-progress-bar');
+    const note = document.getElementById('doc-progress-note');
+    wrap.classList.remove('hidden');
+    note.textContent = 'Starting…';
+    try {
+      const start = await api(`/api/admin/contacts/${encodeURIComponent(email)}/documents/upload`, {
+        method: 'POST',
+        body: JSON.stringify({ filename: file.name, size: file.size, name }),
+      });
+      // Sequential: Graph tracks one expected byte range per upload session, so
+      // parallel PUTs would fight over it.
+      const chunkSize = start.chunkSize || 5 * 1024 * 1024;
+      let offset = 0;
+      while (offset < file.size) {
+        const res = await api('/api/admin/client-documents/chunk', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Upload-Ticket': start.ticket,
+            'X-Upload-Offset': String(offset),
+          },
+          body: file.slice(offset, Math.min(offset + chunkSize, file.size)),
+        });
+        offset = res.done ? file.size : res.nextOffset;
+        const pct = Math.round((offset / file.size) * 100);
+        bar.style.width = `${pct}%`;
+        note.textContent = `${pct}% — ${formatBytes(offset)} of ${formatBytes(file.size)}`;
+      }
+      docUploading = false;
+      docModal.classList.add('hidden');
+      await loadClientDocs(email, { force: true });
+    } catch (err) {
+      errEl.textContent = err.message;
+      note.textContent = 'Stopped.';
+    } finally {
+      docUploading = false;
+      btn.disabled = false;
+      btn.textContent = 'Attach';
+    }
+  });
+
+  // ---------- Additional Info tab ----------
+  // The suitability / KYC block: employment, written-agreement offering dates,
+  // investment profile, net worth, tax, health, identifying documents. Fetched
+  // on demand from its own record (`clientinfo:<email>`) rather than riding in
+  // the contacts boot payload — it holds passport and licence numbers, and there
+  // is no reason for every contact's copy to be in the browser at all times.
+  //
+  // One spec drives the read view, the edit form and the save payload; with ~40
+  // fields, three hand-maintained lists would drift within a week.
+  const AI_OPTIONS = {
+    investmentObjective: ['Capital Preservation', 'Income', 'Growth & Income', 'Growth', 'Aggressive Growth', 'Speculation'],
+    timeHorizon: ['Less than 1 year', '1-3 years', '3-5 years', '5-10 years', 'More than 10 years'],
+    riskTolerance: ['Conservative', 'Moderately Conservative', 'Moderate', 'Moderately Aggressive', 'Aggressive'],
+    experienceMutualFunds: ['None', 'Limited', 'Good', 'Extensive'],
+    experienceStocksBonds: ['None', 'Limited', 'Good', 'Extensive'],
+    experiencePartnerships: ['None', 'Limited', 'Good', 'Extensive'],
+    confirmedByTaxReturn: ['Yes', 'No'],
+    taxBracket: ['10%', '12%', '22%', '24%', '32%', '35%', '37%'],
+    smoker: ['Yes', 'No'],
+  };
+
+  const AI_SECTIONS = [
+    { title: 'Employment Information', fields: [
+      ['occupation', 'Occupation', 'text'],
+      ['occupationStartDate', 'Occupation Start Date', 'date'],
+      ['retirementDate', 'Retirement Date', 'date'],
+      ['grossAnnualIncome', 'Gross Annual Income', 'money'],
+    ] },
+    { title: 'Written Agreements', fields: [
+      ['signedFeeAgreementDate', 'Signed Fee Agreement Date', 'date'],
+      ['signedIpsAgreementDate', 'Signed IPS Agreement Date', 'date'],
+      ['signedFpAgreementDate', 'Signed FP Agreement Date', 'date'],
+      ['lastAdvOfferingDate', 'Last ADV Offering Date', 'date'],
+      ['initialCrsOfferingDate', 'Initial CRS Offering Date', 'date'],
+      ['lastCrsOfferingDate', 'Last CRS Offering Date', 'date'],
+      ['lastPrivacyOfferingDate', 'Last Privacy Offering Date', 'date'],
+    ] },
+    { title: 'Investment Profile', fields: [
+      ['investmentObjective', 'Investment Objective', 'select'],
+      ['timeHorizon', 'Time Horizon', 'select'],
+      ['riskTolerance', 'Risk Tolerance', 'select'],
+      ['experienceMutualFunds', 'Experience with Mutual Funds', 'select'],
+      ['experienceStocksBonds', 'Experience with Stocks & Bonds', 'select'],
+      ['experiencePartnerships', 'Experience with Partnerships', 'select'],
+      ['otherInvestingExperience', 'Other Investing Experience', 'longtext'],
+    ] },
+    { title: 'Estimated Net Worth', fields: [
+      ['assets', 'Assets', 'money'],
+      ['nonLiquidAssets', 'Non Liquid Assets', 'money'],
+      ['liabilities', 'Liabilities', 'money'],
+      ['estimatedNetWorth', 'Estimated Net Worth', 'derived'],
+      ['estimatedLiquidNetWorth', 'Estimated Liquid Net Worth', 'derived'],
+    ], note: 'Net worth = Assets + Non Liquid Assets − Liabilities. Liquid net worth = Assets − Liabilities. Both are calculated, not entered.' },
+    { title: 'Estimated Tax Information', fields: [
+      ['adjustedGrossIncome', 'Adjusted Gross Income', 'money'],
+      ['estimatedTaxes', 'Estimated Taxes', 'money'],
+      ['confirmedByTaxReturn', 'Confirmed By Tax Return', 'select'],
+      ['taxYear', 'Tax Year', 'year'],
+      ['taxBracket', 'Tax Bracket', 'select'],
+    ] },
+    { title: 'Health Information', fields: [
+      ['height', 'Height', 'text'],
+      ['weight', 'Weight', 'text'],
+      ['smoker', 'Smoker', 'select'],
+      ['medicalConditions', 'Medical Conditions', 'longtext'],
+    ] },
+    { title: 'Other Information', fields: [
+      ['driversLicenseNumber', 'Drivers License Number', 'text'],
+      ['driversLicenseState', 'Drivers License State', 'text'],
+      ['driversLicenseIssuedDate', 'Drivers License Issued Date', 'date'],
+      ['driversLicenseExpiresDate', 'Drivers License Expires Date', 'date'],
+      ['birthPlace', 'Birth Place', 'text'],
+      ['maidenName', 'Maiden Name', 'text'],
+      ['passportNumber', 'Passport Number', 'text'],
+      ['greenCardNumber', 'Green Card Number', 'text'],
+      ['personalInterests', 'Personal Interests', 'longtext'],
+      ['importantInformation', 'Important Information', 'longtext'],
+    ] },
+  ];
+
+  let clientInfo = {};
+  let clientInfoLoadedFor = '';
+  let clientInfoEditing = false;
+
+  const AI_UNSET = '<span class="ai-unset">Not Set</span>';
+
+  function fmtMoney(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '';
+    return v.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
+  }
+
+  // A YYYY-MM-DD value formatted from its own parts. `new Date('2026-03-01')`
+  // parses as UTC midnight, which in every US timezone renders as the day
+  // before — so fmtDate() is deliberately not used for these date-only fields.
+  function fmtDateOnly(v) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || '').trim());
+    if (!m) return '';
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString();
+  }
+
+  function aiReadValue(key, type) {
+    const v = clientInfo[key];
+    // Derived figures always show a number — "$0.00" on an empty balance sheet
+    // is the answer, not a missing value.
+    if (type === 'derived') return `${escapeHtml(fmtMoney(typeof v === 'number' ? v : 0))}`;
+    if (type === 'money') return typeof v === 'number' ? escapeHtml(fmtMoney(v)) : AI_UNSET;
+    if (type === 'date') return v ? escapeHtml(fmtDateOnly(v)) : AI_UNSET;
+    if (type === 'longtext') {
+      return v ? `<span style="white-space:pre-wrap">${escapeHtml(v)}</span>` : AI_UNSET;
+    }
+    return v ? escapeHtml(String(v)) : AI_UNSET;
+  }
+
+  function aiEditControl(key, type) {
+    const v = clientInfo[key];
+    const val = v == null ? '' : String(v);
+    if (type === 'select') {
+      const opts = ['<option value="">— Not Set —</option>']
+        .concat((AI_OPTIONS[key] || []).map((o) =>
+          `<option value="${escapeHtml(o)}"${o === val ? ' selected' : ''}>${escapeHtml(o)}</option>`))
+        .join('');
+      return `<select data-ai="${key}">${opts}</select>`;
+    }
+    if (type === 'date') return `<input type="date" data-ai="${key}" value="${escapeHtml(val)}" />`;
+    if (type === 'money') {
+      return `<span class="ai-money-wrap"><input type="number" step="0.01" data-ai="${key}"
+        value="${escapeHtml(typeof v === 'number' ? String(v) : '')}" placeholder="Not set" /></span>`;
+    }
+    if (type === 'year') return `<input type="text" inputmode="numeric" maxlength="4" data-ai="${key}" value="${escapeHtml(val)}" placeholder="e.g. 2025" />`;
+    if (type === 'longtext') return `<textarea rows="3" data-ai="${key}">${escapeHtml(val)}</textarea>`;
+    return `<input type="text" data-ai="${key}" value="${escapeHtml(val)}" />`;
+  }
+
+  function renderAdditionalTab() {
+    const wrap = document.getElementById('tab-additional');
+    if (clientInfoLoadedFor !== selectedEmail) {
+      wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+      return;
+    }
+    const sections = AI_SECTIONS.map((sec) => {
+      const rows = sec.fields.map(([key, label, type]) => {
+        // Derived rows stay read-only in edit mode: they are computed from the
+        // three figures above them, so an input here would be a second place to
+        // enter the same number.
+        if (!clientInfoEditing || type === 'derived') {
+          return `<div class="kv-row${type === 'derived' ? ' ai-derived-row' : ''}">
+            <span>${escapeHtml(label)}</span><strong>${aiReadValue(key, type)}</strong></div>`;
+        }
+        return `<div class="ai-field">
+          <label for="ai-${key}">${escapeHtml(label)}</label>${aiEditControl(key, type)}</div>`;
+      }).join('');
+      return `<div class="panel">
+        <div class="panel-head"><h2>${escapeHtml(sec.title)}</h2></div>
+        <div class="${clientInfoEditing ? '' : 'kv-rows'}">${rows}</div>
+        ${sec.note ? `<p class="ai-derived-note">${escapeHtml(sec.note)}</p>` : ''}
+      </div>`;
+    }).join('');
+
+    const updated = clientInfo.updatedAt
+      ? `Last updated ${fmtDateTime(clientInfo.updatedAt)}${clientInfo.updatedBy ? ` by ${staffLabel(clientInfo.updatedBy)}` : ''}`
+      : 'Nothing recorded yet.';
+    wrap.innerHTML = `
+      <div class="ai-actions">
+        ${clientInfoEditing
+          ? `<button type="button" class="btn btn-primary btn-small" id="ai-save">Save</button>
+             <button type="button" class="btn btn-ghost btn-small" id="ai-cancel">Cancel</button>`
+          : '<button type="button" class="btn btn-ghost btn-small" id="ai-edit">Edit</button>'}
+        <span class="panel-status" id="ai-status">${escapeHtml(clientInfoEditing ? '' : updated)}</span>
+      </div>
+      <div class="ai-grid">${sections}</div>`;
+
+    const edit = document.getElementById('ai-edit');
+    if (edit) edit.addEventListener('click', () => { clientInfoEditing = true; renderAdditionalTab(); });
+    const cancel = document.getElementById('ai-cancel');
+    if (cancel) cancel.addEventListener('click', () => { clientInfoEditing = false; renderAdditionalTab(); });
+    const save = document.getElementById('ai-save');
+    if (save) save.addEventListener('click', saveAdditionalInfo);
+  }
+
+  async function saveAdditionalInfo(ev) {
+    const btn = ev.currentTarget;
+    const statusEl = document.getElementById('ai-status');
+    const email = selectedEmail;
+    const payload = {};
+    document.querySelectorAll('#tab-additional [data-ai]').forEach((el) => {
+      payload[el.dataset.ai] = el.value;
+    });
+    btn.disabled = true;
+    statusEl.textContent = 'Saving…';
+    try {
+      const res = await api(`/api/admin/contacts/${encodeURIComponent(email)}/info`, {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+      clientInfo = res.info || {};
+      clientInfoLoadedFor = email;
+      clientInfoEditing = false;
+      renderAdditionalTab();
+    } catch (err) {
+      statusEl.textContent = `Save failed: ${err.message}`;
+      btn.disabled = false;
+    }
+  }
+
+  async function loadClientInfo(email) {
+    if (!email) return;
+    // An open edit must survive a tab switch back and forth — refetching would
+    // silently discard whatever was typed.
+    if (clientInfoLoadedFor === email && clientInfoEditing) { renderAdditionalTab(); return; }
+    try {
+      const data = await api(`/api/admin/contacts/${encodeURIComponent(email)}/info`);
+      clientInfo = data.info || {};
+      clientInfoLoadedFor = email;
+    } catch (err) {
+      clientInfo = {};
+      clientInfoLoadedFor = '';
+      document.getElementById('tab-additional').innerHTML =
+        `<div class="panel"><p class="empty">Could not load: ${escapeHtml(err.message)}</p></div>`;
+      return;
+    }
+    if (selectedEmail === email) renderAdditionalTab();
   }
 
   // ---------- Tasks tab ----------
