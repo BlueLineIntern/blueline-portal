@@ -1677,8 +1677,53 @@ async function handleOnboardingSave(request, env, cors, onboardingId) {
         category: 'onboarding',
       });
     }
+    // The CRM follows the wizard: mid-workflow the person is 'onboarding', and
+    // finishing hands them to Contacts as a live client. Runs on every save so
+    // a contact record exists from the first step that carries an email.
+    await syncOnboardingContact(env, clientEmail, record);
   }
   return json({ ok: true, updatedAt: record.updatedAt }, 200, cors);
+}
+
+// Mirror an onboarding record's state onto the person's CRM contact record,
+// creating it if the wizard is the first thing that ever knew about them.
+//
+// Status is only ever moved FORWARD along the wizard's own path
+// (missing/prospect -> onboarding -> active). An advisor who has already
+// categorized someone as 'active' or 'inactive' outranks the wizard — a
+// returning client re-running onboarding must not be demoted, and a
+// deliberately deactivated contact must not be revived. Best-effort: a failure
+// here never blocks the client's save.
+async function syncOnboardingContact(env, email, record) {
+  try {
+    const desired = record.completionTime ? 'active' : 'onboarding';
+    const allowedFrom = desired === 'active' ? ['prospect', 'onboarding'] : ['prospect'];
+    const existing = await decryptToObject(env, await env.PORTAL_KV.get(`contact:${email}`));
+
+    const d = record.data || {};
+    const p = d.profile || {};
+    const c = d.consent || {};
+    const wizardName = [p.firstName, p.lastName].filter(Boolean).join(' ').trim() || String(c.name || '').trim();
+
+    let contact;
+    if (!existing) {
+      contact = { email, status: desired, createdAt: new Date().toISOString() };
+    } else {
+      contact = { ...existing, email };
+      if (allowedFrom.includes(existing.status || 'prospect')) contact.status = desired;
+    }
+    // The wizard fills a blank name; it never overwrites what an advisor typed.
+    if (wizardName && !contact.name) contact.name = wizardName.slice(0, 200);
+    if (existing && contact.status === existing.status && contact.name === existing.name) return;
+
+    contact.updatedAt = new Date().toISOString();
+    // Push before persisting, same as the admin edit path, so the SharePoint
+    // mirror can't pull a stale Status back over this change.
+    contact = await pushContactToSharePoint(env, contact);
+    await env.PORTAL_KV.put(`contact:${email}`, await encryptJSON(env, contact));
+  } catch {
+    // swallow — CRM mirroring is best-effort, the submission itself is saved
+  }
 }
 
 

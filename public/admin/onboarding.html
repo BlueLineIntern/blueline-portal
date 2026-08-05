@@ -44,10 +44,12 @@
       <div class="page-head">
         <div>
           <h1>Onboarding</h1>
-          <p class="sub">Submissions from the /onboarding/ workflow. New steps are saved to the server
-          as the client moves through — this table auto-refreshes every 20 seconds.</p>
+          <p class="sub">Clients currently working through the /onboarding/ workflow. New steps are saved to
+          the server as the client moves through — this table auto-refreshes every 20 seconds. Once a client
+          finishes, they leave this list and become a contact under Contacts.</p>
         </div>
         <div class="page-actions">
+          <button type="button" class="btn btn-ghost btn-small hidden" id="toggle-completed-btn"></button>
           <button type="button" class="btn btn-ghost btn-small hidden" id="toggle-deleted-btn"></button>
           <button type="button" class="btn btn-ghost btn-small" id="refresh-btn">↻ Refresh</button>
         </div>
@@ -73,6 +75,31 @@
             </thead>
             <tbody id="onboarding-body"></tbody>
           </table>
+        </div>
+
+        <div class="hidden" id="onb-done-wrap">
+          <div class="panel-head" style="margin-top: var(--sp-6);"><h2 id="onb-done-heading"></h2></div>
+          <p class="hint">Finished submissions are kept for the record — these clients now live under
+          Contacts. Nothing here is waiting on you.</p>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Onboarding ID</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Progress</th>
+                  <th>Risk</th>
+                  <th>Started</th>
+                  <th>Completed</th>
+                  <th>Last Updated</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="onb-done-body"></tbody>
+            </table>
+          </div>
         </div>
 
         <div class="hidden" id="onb-trash-wrap">
@@ -123,6 +150,7 @@
 
   let allOnboardings = [];
   let showDeleted = false;
+  let showCompleted = false;
   let pollTimer = null;
   const POLL_INTERVAL_MS = 20000;
 
@@ -167,6 +195,7 @@
     const trashBody = document.getElementById('onb-trash-body');
 
     const activeRows = [];
+    const doneRows = [];
     const deletedRows = [];
     records.forEach((r, index) => {
       if (r.deleted) {
@@ -182,7 +211,7 @@
       const risk = r.data && r.data.risk
         ? `${r.data.risk.score} / 100<br><span class="cell-sub">${escapeHtml(r.data.risk.profile)}</span>`
         : missing();
-      activeRows.push(`<tr>
+      const row = `<tr>
         <td><button type="button" class="btn btn-ghost btn-small onb-detail-btn" data-index="${index}" ${done ? '' : 'disabled title="No data yet"'}>Details</button></td>
         <td>${escapeHtml(r.onboardingId)}</td>
         <td>${escapeHtml(onbClientName(r))}</td>
@@ -193,16 +222,36 @@
         <td>${r.completionTime ? new Date(r.completionTime).toLocaleString() : '<span class="badge badge-sky">In progress</span>'}</td>
         <td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : missing()}</td>
         <td><button type="button" class="btn btn-danger btn-small onb-delete-btn" data-id="${escapeHtml(r.onboardingId)}" title="Delete this submission">Delete</button></td>
-      </tr>`);
+      </tr>`;
+      // Finished submissions drop out of the working list — the person is a
+      // contact now, not a task. They stay reachable behind the toggle below.
+      (r.completionTime ? doneRows : activeRows).push(row);
     });
 
     body.innerHTML = activeRows.length
       ? activeRows.join('')
-      : '<tr><td colspan="10" class="empty">No onboarding submissions yet.</td></tr>';
-    body.querySelectorAll('.onb-detail-btn').forEach((btn) => {
+      : '<tr><td colspan="10" class="empty">Nobody is mid-onboarding right now.</td></tr>';
+
+    const doneWrap = document.getElementById('onb-done-wrap');
+    const doneBody = document.getElementById('onb-done-body');
+    const doneToggle = document.getElementById('toggle-completed-btn');
+    if (doneRows.length) {
+      doneToggle.classList.remove('hidden');
+      doneToggle.textContent = `${showCompleted ? 'Hide' : 'Show'} completed (${doneRows.length})`;
+      document.getElementById('onb-done-heading').textContent = `Completed (${doneRows.length})`;
+      doneBody.innerHTML = doneRows.join('');
+      doneWrap.classList.toggle('hidden', !showCompleted);
+    } else {
+      doneToggle.classList.add('hidden');
+      doneWrap.classList.add('hidden');
+      showCompleted = false;
+    }
+
+    // Both tables carry Details/Delete buttons, so bind over the whole panel.
+    document.querySelectorAll('#onboarding-body .onb-detail-btn, #onb-done-body .onb-detail-btn').forEach((btn) => {
       btn.addEventListener('click', () => showOnbDetail(Number(btn.dataset.index)));
     });
-    body.querySelectorAll('.onb-delete-btn').forEach((btn) => {
+    document.querySelectorAll('#onboarding-body .onb-delete-btn, #onb-done-body .onb-delete-btn').forEach((btn) => {
       btn.addEventListener('click', () => deleteOnboarding(btn.dataset.id));
     });
 
@@ -351,6 +400,10 @@
   document.getElementById('refresh-btn').addEventListener('click', () => loadData({ showStatus: true }));
   document.getElementById('toggle-deleted-btn').addEventListener('click', () => {
     showDeleted = !showDeleted;
+    renderOnboardings(allOnboardings);
+  });
+  document.getElementById('toggle-completed-btn').addEventListener('click', () => {
+    showCompleted = !showCompleted;
     renderOnboardings(allOnboardings);
   });
 

@@ -288,6 +288,36 @@ function New-MockTask($fields) {
     return $task
 }
 
+# Mirror worker.js syncOnboardingContact: the CRM follows the wizard, and
+# status only ever moves forward (missing/prospect -> onboarding -> active) so
+# an advisor's own 'active'/'inactive' call outranks the wizard.
+function Sync-OnboardingContact($email, $rec) {
+    $desired = if ($rec.completionTime) { 'active' } else { 'onboarding' }
+    $allowedFrom = if ($desired -eq 'active') { @('prospect', 'onboarding') } else { @('prospect') }
+    $existing = $contacts[$email]
+
+    $wizardName = ''
+    if ($rec.data.profile) {
+        $wizardName = (@($rec.data.profile.firstName, $rec.data.profile.lastName) | Where-Object { $_ }) -join ' '
+    }
+    if (-not $wizardName -and $rec.data.consent -and $rec.data.consent.name) { $wizardName = [string]$rec.data.consent.name }
+    $wizardName = $wizardName.Trim()
+
+    if (-not $existing) {
+        $c = [ordered]@{ email = $email; name = ''; preferredName = ''; status = $desired; household = ''
+            advisor = ''; phone = ''; workEmail = ''; workPhone = ''; address = ''; gender = ''
+            tags = @(); importantDates = @(); createdAt = (Get-Date).ToString('o'); updatedAt = $null }
+    }
+    else {
+        $c = $existing
+        if ($allowedFrom -contains [string]$c.status) { $c.status = $desired }
+    }
+    # The wizard fills a blank name; it never overwrites what an advisor typed.
+    if ($wizardName -and -not $c.name) { $c.name = $wizardName }
+    $c.updatedAt = (Get-Date).ToString('o')
+    $contacts[$email] = $c
+}
+
 # Mirror worker.js maybeAutoTask: fire each rule once per client.
 function Invoke-AutoTask($rule, $client, $fields) {
     $marker = "${rule}:${client}"
@@ -1314,6 +1344,7 @@ while ($listener.IsListening) {
                         category = 'onboarding'
                     }
                 }
+                Sync-OnboardingContact $clientEmail $rec
             }
             Send-Json $ctx 200 @{ ok = $true; updatedAt = $rec.updatedAt }
         }

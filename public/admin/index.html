@@ -643,12 +643,25 @@
 
       // ----- Stat tiles -----
       const byStatus = (s) => contacts.filter((c) => c.status === s).length;
+      // "Onboarding" counts people actually mid-wizard rather than contacts an
+      // advisor manually flagged (which nobody did, so the tile always read 0).
+      // Deduped by email because the tile counts people, not submissions; a
+      // session too early to have captured an email still counts as one person.
+      const onboardingEmails = new Set();
+      let onboardingAnon = 0;
+      onbs.filter((r) => !r.completionTime).forEach((r) => {
+        const d = r.data || {};
+        const email = String((d.profile && d.profile.email) || (d.consent && d.consent.email) || '').trim().toLowerCase();
+        if (email) onboardingEmails.add(email);
+        else onboardingAnon += 1;
+      });
+      const onboardingCount = onboardingEmails.size + onboardingAnon;
       const dueToday = openTasks.filter((t) => t.due && isSameLocalDay(new Date(t.due), now));
       const overdue = openTasks.filter((t) => t.due && new Date(t.due) < now && !isSameLocalDay(new Date(t.due), now));
       document.getElementById('stat-tiles').innerHTML = [
         tile(byStatus('active'), 'Active Clients', '/admin/contacts.html'),
         tile(byStatus('prospect'), 'Prospects', '/admin/contacts.html'),
-        tile(byStatus('onboarding'), 'Onboarding', '/admin/onboarding.html'),
+        tile(onboardingCount, 'Onboarding', '/admin/onboarding.html'),
         tile(dueToday.length, 'Due Today', '/admin/operations.html?filter=today'),
         tile(overdue.length, 'Overdue', '/admin/operations.html?filter=overdue', overdue.length > 0),
       ].join('');
