@@ -220,6 +220,36 @@ $clientInfo = @{}        # email -> ordered hashtable of the suitability fields
 $clientDocs = @{}        # doc id -> metadata record
 $clientDocUploads = @{}  # ticket -> in-flight upload
 $script:docCounter = 0
+
+# Fixed sample data standing in for a live Microsoft Graph mailbox search (see
+# fetchClientEmailHistory in worker.js) - the mock has no Outlook behind it at
+# all, unlike documents/info which at least have real in-memory CRUD.
+$clientEmailsMock = @{
+    'john.smith@example.com' = @(
+        @{
+            id = 'm1'; subject = 'Re: Q2 statement questions'
+            from = @{ name = 'John Smith'; address = 'john.smith@example.com' }
+            to = @(@{ name = 'Fred Sabin'; address = 'fsabin@blueline-advisors.com' })
+            cc = @()
+            receivedDateTime = '2026-07-28T14:32:00Z'
+            bodyPreview = 'Thanks for walking through the statement on the call - one follow up, does the money market sweep count toward the liquidity target we discussed?'
+            webLink = 'https://outlook.office.com/mail/id/mock-m1'
+            isDraft = $false
+            viaMailbox = 'fsabin@blueline-advisors.com'
+        },
+        @{
+            id = 'm2'; subject = 'Q2 statement questions'
+            from = @{ name = 'Fred Sabin'; address = 'fsabin@blueline-advisors.com' }
+            to = @(@{ name = 'John Smith'; address = 'john.smith@example.com' })
+            cc = @()
+            receivedDateTime = '2026-07-27T09:10:00Z'
+            bodyPreview = 'Hi John, attaching your Q2 statement. Happy to walk through it on a call this week if useful.'
+            webLink = 'https://outlook.office.com/mail/id/mock-m2'
+            isDraft = $false
+            viaMailbox = 'fsabin@blueline-advisors.com'
+        }
+    )
+}
 $clientInfoDates = @('occupationStartDate', 'retirementDate', 'signedFeeAgreementDate',
     'signedIpsAgreementDate', 'signedFpAgreementDate', 'lastAdvOfferingDate',
     'initialCrsOfferingDate', 'lastCrsOfferingDate', 'lastPrivacyOfferingDate',
@@ -1374,6 +1404,18 @@ while ($listener.IsListening) {
             # and licence numbers that have no business in an audit record.
             Write-Audit $adminEmail 'update-client-info' @{ client = $target; fields = @($body.PSObject.Properties.Name | Sort-Object) }
             Send-Json $ctx 200 @{ info = (Add-ClientInfoDerived $rec) }
+        }
+        elseif ($path -match '^/api/admin/contacts/(.+)/emails$' -and $method -eq 'GET') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            # No real Graph behind the mock, so this is fixed sample data for the
+            # one seeded test contact and empty for everyone else - enough to
+            # exercise the tab's three states (has mail / no mail / not
+            # configured) without live Outlook credentials.
+            $msgs = if ($clientEmailsMock.ContainsKey($target)) { $clientEmailsMock[$target] } else { @() }
+            Write-Audit $adminEmail 'view-client-emails' @{ client = $target; count = $msgs.Count }
+            Send-Json $ctx 200 @{ emails = $msgs; configured = $true; permissionMissing = $false; mailboxErrors = @() }
         }
         elseif ($path -match '^/api/admin/contacts/(.+)/documents$' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }

@@ -110,6 +110,15 @@
   .lr-progress span { display: block; height: 100%; width: 0; background: var(--sky-dark); transition: width 0.2s ease; }
   .doc-upload-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 5px; }
 
+  /* ---------- Emails tab ----------
+     One panel per message, newest first — same visual weight as the signed
+     agreement panels on Documents, since this is likewise a fixed record of a
+     past exchange rather than something edited in place. */
+  .email-row .panel-head { align-items: flex-start; }
+  .email-meta { color: var(--muted); font-size: var(--fs-xs); margin: 2px 0 0; }
+  .email-preview { color: var(--text); font-size: var(--fs-sm); margin: var(--sp-2) 0 0; white-space: pre-wrap; }
+  .email-via { color: var(--muted-soft); font-size: var(--fs-xs); margin: var(--sp-2) 0 0; }
+
   /* ---------- Additional Info ----------
      A masonry-style column flow, not a grid: sections vary a lot in row count
      (Employment has 4, Other Information has 10), and a strict grid leaves a
@@ -274,12 +283,12 @@
 
       <!-- Order is the advisor's working order: what you look at on every visit
            first, then the two records you only open deliberately (Onboarding,
-           Assessments) after the divider. Meetings sits where an Emails tab
-           would go — see STATUS.md; there is no mail integration yet. -->
+           Assessments) after the divider. -->
       <div class="tabs" id="profile-tabs">
         <button type="button" class="tab active" data-tab="overview">Overview</button>
         <button type="button" class="tab" data-tab="notes">Notes</button>
         <button type="button" class="tab" data-tab="tasks">Tasks</button>
+        <button type="button" class="tab" data-tab="emails">Emails</button>
         <button type="button" class="tab" data-tab="meetings">Meetings</button>
         <button type="button" class="tab" data-tab="timeline">Timeline</button>
         <button type="button" class="tab" data-tab="activity">Activity Log</button>
@@ -292,6 +301,7 @@
 
       <div id="tab-overview"></div>
       <div class="hidden" id="tab-tasks"></div>
+      <div class="hidden" id="tab-emails"></div>
       <div class="hidden" id="tab-meetings"></div>
       <div class="hidden" id="tab-onboarding"></div>
       <div class="hidden" id="tab-notes"></div>
@@ -1391,6 +1401,11 @@
     clientInfo = {};
     clientInfoLoadedFor = '';
     clientInfoEditing = false;
+    clientEmails = [];
+    clientEmailsLoadedFor = '';
+    clientEmailsConfigured = true;
+    clientEmailsPermissionMissing = false;
+    clientEmailsMailboxErrors = [];
     history.replaceState(null, '', `?c=${encodeURIComponent(email)}`);
     // Feeds the sidebar's Recently Viewed list (see shared.js). Recorded with
     // the display name so the rail doesn't have to re-fetch contacts to render.
@@ -1421,7 +1436,7 @@
       b.classList.toggle('active', b.dataset.tab === tab)
     );
     // Same order as the tab strip above, so the two can be read together.
-    ['overview', 'notes', 'tasks', 'meetings', 'timeline', 'activity', 'documents', 'additional', 'onboarding', 'assessments'].forEach((t) =>
+    ['overview', 'notes', 'tasks', 'emails', 'meetings', 'timeline', 'activity', 'documents', 'additional', 'onboarding', 'assessments'].forEach((t) =>
       document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab)
     );
     // These fetch on demand so opening a profile stays cheap.
@@ -1434,6 +1449,9 @@
     // actually opened rather than with the profile.
     if (tab === 'additional') loadClientInfo(selectedEmail);
     if (tab === 'documents') loadClientDocs(selectedEmail);
+    // Emails is a live Graph call, not cached data — fetched only on open, same
+    // as Additional Info/Documents, and never re-fetched by the background poll.
+    if (tab === 'emails') loadClientEmails(selectedEmail);
   }
 
   document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
@@ -1482,6 +1500,7 @@
     renderAssessmentsTab(c);
     renderOnboardingTab(c);
     renderDocumentsTab(c);
+    renderEmailsTab(c);
     // A background poll must never yank a tab out from under the advisor.
     // Notes/Tasks hold unsaved text (note draft, quick-task title); Timeline
     // and Activity accumulate paged-in history and scroll position that a
@@ -1869,6 +1888,108 @@
       attachedDocsHtml() +
       (agreements.length ? agreements.join('') : '<div class="panel"><p class="empty">No signed agreements on file for this contact.</p></div>');
     wireDocActions();
+  }
+
+  // ---------- Emails tab ----------
+  // A live view of a client's email history pulled from Microsoft Graph — never
+  // stored anywhere in this app, unlike every other tab here. Each open of the
+  // tab (not every 20s poll — see loadClientEmails) is a fresh Graph call, so
+  // there is deliberately no local cache to go stale or to leak.
+
+  let clientEmails = [];
+  let clientEmailsConfigured = true;
+  let clientEmailsPermissionMissing = false;
+  let clientEmailsMailboxErrors = [];
+  let clientEmailsLoadedFor = '';
+  let clientEmailsLoading = false;
+
+  // Graph's from/toRecipients shape is {emailAddress: {name, address}}; already
+  // flattened to {name, address} by the worker, so this just picks a label.
+  function emailAddrLabel(addr) {
+    if (!addr) return '';
+    return addr.name && addr.name !== addr.address ? `${addr.name} <${addr.address}>` : (addr.address || '');
+  }
+
+  function emailRowHtml(m) {
+    const to = m.to.map(emailAddrLabel).filter(Boolean).join(', ');
+    const cc = m.cc.map(emailAddrLabel).filter(Boolean).join(', ');
+    const meta = [
+      m.from ? `From ${emailAddrLabel(m.from)}` : '',
+      to ? `To ${to}` : '',
+      cc ? `Cc ${cc}` : '',
+    ].filter(Boolean).map(escapeHtml).join(' · ');
+    const openLink = m.webLink
+      ? `<a class="panel-link" href="${escapeHtml(m.webLink)}" target="_blank" rel="noopener noreferrer">Open in Outlook →</a>`
+      : '';
+    return `<div class="panel email-row">
+      <div class="panel-head">
+        <h2>${escapeHtml(m.subject)}${m.isDraft ? ' <span class="badge badge-gray">Draft</span>' : ''}</h2>
+        ${openLink}
+      </div>
+      <p class="email-meta">${meta}</p>
+      <p class="email-preview">${escapeHtml(m.bodyPreview)}${m.bodyPreview.length >= 400 ? '…' : ''}</p>
+      <p class="email-via">Found via ${escapeHtml(m.viaMailbox)}${m.receivedDateTime ? ` · ${escapeHtml(fmtDateTime(m.receivedDateTime))}` : ''}</p>
+    </div>`;
+  }
+
+  function renderEmailsTab(c) {
+    const wrap = document.getElementById('tab-emails');
+    if (!clientEmailsConfigured) {
+      wrap.innerHTML = `<div class="panel"><p class="empty lr-setup">
+        Not connected yet. This needs the Outlook/SharePoint Graph app registration
+        (<code>OUTLOOK_CLIENT_ID</code> / <code>OUTLOOK_CLIENT_SECRET</code> / <code>OUTLOOK_TENANT_ID</code>)
+        configured before email history can be read.</p></div>`;
+      return;
+    }
+    if (clientEmailsPermissionMissing) {
+      wrap.innerHTML = `<div class="panel"><p class="empty lr-setup">
+        Not authorized yet. The app registration needs the <code>Mail.Read</code> Microsoft Graph
+        <strong>application</strong> permission, with admin consent granted, before any mailbox can be searched.</p></div>`;
+      return;
+    }
+    if (clientEmailsLoadedFor !== c.email) {
+      wrap.innerHTML = clientEmailsLoading
+        ? '<div class="panel"><p class="empty">Searching staff mailboxes…</p></div>'
+        : '<div class="panel"><p class="empty">Open this tab to search for this client\'s email history.</p></div>';
+      return;
+    }
+    const warn = clientEmailsMailboxErrors.length
+      ? `<p class="hint">Could not search ${clientEmailsMailboxErrors.map((e) => escapeHtml(e.mailbox)).join(', ')} —
+         results below may be incomplete.</p>`
+      : '';
+    if (!clientEmails.length) {
+      wrap.innerHTML = warn + '<div class="panel"><p class="empty">No emails found for this address across staff mailboxes.</p></div>';
+      return;
+    }
+    wrap.innerHTML = warn + clientEmails.map(emailRowHtml).join('');
+  }
+
+  async function loadClientEmails(email, { force = false } = {}) {
+    if (!email) return;
+    if (!force && clientEmailsLoadedFor === email) return;
+    clientEmailsLoading = true;
+    const c = currentContact();
+    if (c) renderEmailsTab(c);
+    try {
+      const data = await api(`/api/admin/contacts/${encodeURIComponent(email)}/emails`);
+      clientEmails = data.emails || [];
+      clientEmailsConfigured = data.configured !== false;
+      clientEmailsPermissionMissing = !!data.permissionMissing;
+      clientEmailsMailboxErrors = data.mailboxErrors || [];
+      clientEmailsLoadedFor = email;
+    } catch (err) {
+      clientEmails = [];
+      clientEmailsLoadedFor = '';
+      document.getElementById('tab-emails').innerHTML =
+        `<div class="panel"><p class="empty">Could not load: ${escapeHtml(err.message)}</p></div>`;
+      clientEmailsLoading = false;
+      return;
+    }
+    clientEmailsLoading = false;
+    if (selectedEmail === email) {
+      const cc = currentContact();
+      if (cc) renderEmailsTab(cc);
+    }
   }
 
   // ---------- Attach document modal ----------

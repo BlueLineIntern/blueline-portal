@@ -4099,6 +4099,123 @@ async function handleAdminDeleteClientDoc(request, env, cors, id) {
   return json({ ok: true, fileDeleted }, 200, cors);
 }
 
+// ---------- Advisor CRM: client emails ----------
+// A read-only view of a client's email history, pulled live from the firm's
+// mailboxes via Microsoft Graph — never stored. Needs the Mail.Read
+// APPLICATION permission (with admin consent) on the same app registration
+// getGraphToken() already authenticates as (OUTLOOK_CLIENT_ID/SECRET/
+// TENANT_ID) — the same one Calendars.ReadWrite.All rides on for meetings.
+//
+// There is no "search every mailbox in the tenant at once" endpoint at this
+// permission tier: Graph mail search is always scoped to one specific mailbox
+// (/users/{mailbox}/messages). So this queries EVERY current admin account's
+// mailbox (allAdminEmails — the same dynamic list Settings manages, not a
+// hard-coded 3 names) and merges the results. Firm confirmed single-domain
+// tenant, no Application Access Policy restricting Mail.Read to a subset — so
+// "every admin mailbox" is the intended full scope, not an approximation of it.
+//
+// NOTHING is cached or written to KV: every open of the tab is a live Graph
+// call. A client's email is exactly the kind of data that should have no
+// second copy sitting in this app's storage once someone stops looking at it.
+//
+// Real-Graph-unverified, like the Learning and Client Documents uploads: there
+// are no Azure credentials in this environment to test the actual query
+// against a live mailbox. $search is used deliberately over $filter — Graph's
+// /messages resource does not support filtering by recipient (to/cc) at all,
+// only by sender, so a $filter-only approach would silently miss every email
+// the client received rather than sent. $search covers from/to/cc/subject/body,
+// which also means it can surface a message that only MENTIONS the client's
+// address without being addressed to them — an accepted precision tradeoff
+// given the alternative is missing real correspondence.
+async function fetchClientEmailHistory(env, clientEmail) {
+  if (!outlookConfigured(env)) return { emails: [], configured: false, permissionMissing: false };
+
+  const token = await getGraphToken(env);
+  const mailboxes = await allAdminEmails(env);
+  const perMailbox = await Promise.all(mailboxes.map(async (mailbox) => {
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages`
+      + `?$search="${encodeURIComponent(clientEmail)}"&$top=25`
+      + `&$select=subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,webLink,isDraft`;
+    try {
+      // $orderby cannot be combined with $search on this resource — Graph
+      // rejects the combination — so results come back relevance-ordered and
+      // are re-sorted by date after merging every mailbox's results below.
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.body-content-type="text"' },
+      });
+      if (!res.ok) {
+        const status = res.status;
+        return { mailbox, ok: false, status, messages: [] };
+      }
+      const data = await res.json();
+      return { mailbox, ok: true, status: 200, messages: data.value || [] };
+    } catch (err) {
+      return { mailbox, ok: false, status: 0, error: String(err), messages: [] };
+    }
+  }));
+
+  const anySucceeded = perMailbox.some((r) => r.ok);
+  const allForbidden = perMailbox.length > 0 && perMailbox.every((r) => !r.ok && r.status === 403);
+  // Distinguished from "not configured" (the env vars themselves are missing):
+  // this is the one Mail.Read specifically was never consented to, which the
+  // Learning-tab-style "not configured" message would misdescribe.
+  if (!anySucceeded && allForbidden) {
+    return { emails: [], configured: true, permissionMissing: true };
+  }
+
+  const seen = new Set();
+  const merged = [];
+  for (const { mailbox, messages } of perMailbox) {
+    for (const m of messages) {
+      // A message CC'd to two admins is found once per mailbox it landed in;
+      // internetMessageId identifies the actual message across those copies.
+      const dedupeKey = m.internetMessageId || m.id;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      merged.push({
+        id: m.id,
+        subject: m.subject || '(no subject)',
+        from: (m.from && m.from.emailAddress) || null,
+        to: (m.toRecipients || []).map((r) => r.emailAddress).filter(Boolean),
+        cc: (m.ccRecipients || []).map((r) => r.emailAddress).filter(Boolean),
+        receivedDateTime: m.receivedDateTime || null,
+        bodyPreview: (m.bodyPreview || '').slice(0, 400),
+        webLink: m.webLink || '',
+        isDraft: !!m.isDraft,
+        viaMailbox: mailbox,
+      });
+    }
+  }
+  merged.sort((a, b) => String(b.receivedDateTime || '').localeCompare(String(a.receivedDateTime || '')));
+
+  return {
+    emails: merged.slice(0, 100),
+    configured: true,
+    permissionMissing: false,
+    // Surfaced so a partial result (one mailbox down, others fine) doesn't
+    // silently read as "this client has no other email."
+    mailboxErrors: perMailbox.filter((r) => !r.ok).map((r) => ({ mailbox: r.mailbox, status: r.status })),
+  };
+}
+
+async function handleAdminListClientEmails(request, env, cors, email) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const addr = String(email || '').trim().toLowerCase();
+  if (!isValidEmail(addr)) return json({ error: 'Invalid email' }, 400, cors);
+  try {
+    const result = await fetchClientEmailHistory(env, addr);
+    // Best-effort, count only — an audit trail of WHO looked at a client's
+    // email history is worth having given Mail.Read's tenant-wide reach; the
+    // messages themselves are never written anywhere by this app.
+    await logAudit(env, adminEmail, 'view-client-emails', { client: addr, count: result.emails.length });
+    return json(result, 200, cors);
+  } catch (err) {
+    console.error('Failed to fetch client email history:', err);
+    return json({ error: 'Failed to load email history: ' + (err && err.message) }, 500, cors);
+  }
+}
+
 // ---------- Advisor CRM: households ----------
 // A household groups people who are advised together (a couple, a family).
 // It is a first-class record rather than the free-text `household` tag that
@@ -5442,6 +5559,10 @@ export default {
       }
       if (infoMatch && request.method === 'POST') {
         return await handleAdminUpdateClientInfo(request, env, cors, decodeURIComponent(infoMatch[1]));
+      }
+      const emailsMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/emails$/);
+      if (emailsMatch && request.method === 'GET') {
+        return await handleAdminListClientEmails(request, env, cors, decodeURIComponent(emailsMatch[1]));
       }
       // The chunk route carries its client in the encrypted ticket, so it is a
       // fixed path rather than a per-contact one.

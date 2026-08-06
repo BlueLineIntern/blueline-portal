@@ -249,12 +249,53 @@ Client portal is untouched and keeps its own look.
   button. Route matched **before** the greedy upsert route so the `/archive`
   suffix isn't swallowed; upsert preserves the `archived` flag. UI: filter pills
   with counts, search, New/Edit Contact modal, tabbed profile in the advisor's
-  working order — **Overview, Notes, Tasks, Meetings, Timeline, Activity Log,
-  Documents, Additional Info | Onboarding, Assessments** (incl. the assignment
-  editor). The divider separates what's looked at on every visit from the two
-  records opened deliberately. **Meetings sits where an Emails tab would go**:
-  there is no mail integration — no Graph `Mail.Read`, no message store — so an
-  Emails tab would have nothing to render.
+  working order — **Overview, Notes, Tasks, Emails, Meetings, Timeline, Activity
+  Log, Documents, Additional Info | Onboarding, Assessments** (incl. the
+  assignment editor). The divider separates what's looked at on every visit from
+  the two records opened deliberately.
+- **Emails** (no storage — `fetchClientEmailHistory()` in worker.js) is a LIVE
+  read of a client's email history via Microsoft Graph, fetched fresh every time
+  the tab is opened and never written anywhere. Needs the same app registration
+  as the SharePoint/calendar sync (`OUTLOOK_CLIENT_ID`/`SECRET`/`TENANT_ID`) plus
+  the **`Mail.Read` Graph APPLICATION permission with admin consent** — a
+  separate grant from `Calendars.ReadWrite.All`, so a firm that already has
+  Meetings working still needs to add this one explicitly.
+  - **There is no "search every mailbox at once" endpoint at this permission
+    tier.** Graph mail search is always scoped to one specific mailbox
+    (`/users/{mailbox}/messages`), so this queries **every current admin
+    account's mailbox** (`allAdminEmails()` — the same dynamic list Settings
+    manages, not a hard-coded name list) and merges the results client-side,
+    deduped by `internetMessageId` (one message CC'd to two admins is found
+    twice, once per mailbox). Confirmed with the firm: single-domain tenant, no
+    Application Access Policy scoping `Mail.Read` down further — "every admin
+    mailbox" is the intended full scope, not a fallback approximation of it.
+  - **Uses `$search`, not `$filter`.** Graph's `/messages` resource can only
+    `$filter` by sender, never by recipient — a filter-only approach would
+    silently miss every email the client *received*. `$search` covers
+    from/to/cc/subject/body, at the accepted cost that a message merely
+    *mentioning* the client's address (not actually to/from them) can also
+    surface. `$orderby` cannot be combined with `$search` on this resource, so
+    Graph returns relevance order and the merge re-sorts by date after the fact.
+  - **Three distinct states, not two.** "Not connected" (the Outlook app
+    registration itself isn't configured) is different from "not authorized"
+    (registration exists, but `Mail.Read` was never consented to — every
+    mailbox query 403s) — collapsing them would send someone chasing the wrong
+    setting. A per-mailbox failure that ISN'T total (one admin's mailbox down,
+    others fine) surfaces as a "results may be incomplete" banner rather than
+    either error state, so a partial result never silently reads as complete.
+  - **Nothing is cached or stored — by design, not omission.** A client's email
+    is exactly the kind of data that shouldn't have a second copy sitting in
+    this app's KV once nobody's looking at it. The tab only re-fetches when
+    actually opened (same on-demand pattern as Additional Info/Documents), not
+    on the 20s background poll, and the frontend skips a re-fetch if the tab is
+    just switched away from and back for the same contact.
+  - **Every view is audit-logged** (`view-client-emails`: client + result count,
+    never message content) — worth having given `Mail.Read` (application)'s
+    tenant-wide reach once granted, same reasoning as the field-names-only audit
+    entry on Additional Info.
+  - Real-Graph-unverified, like the Learning and Client Documents uploads: no
+    Azure credentials in this environment to test the actual `$search` query
+    against a live mailbox.
 - **Attached client documents** (`clientdoc:<email>:<invTs>-<rand>` KV,
   **encrypted**) sit at the TOP of the Documents tab, above the signed
   onboarding agreements: the agreements are a fixed historical record, this is
