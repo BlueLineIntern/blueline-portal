@@ -119,6 +119,37 @@
   .email-preview { color: var(--text); font-size: var(--fs-sm); margin: var(--sp-2) 0 0; white-space: pre-wrap; }
   .email-via { color: var(--muted-soft); font-size: var(--fs-xs); margin: var(--sp-2) 0 0; }
 
+  /* ---------- Family / company profile ----------
+     Every row in an aggregated tab belongs to one member, so each carries a
+     "whose" link. Styled as a link rather than a badge: it navigates (to that
+     person's own profile), and anything that navigates should look like it. */
+  .gm-who {
+    border: none; background: none; padding: 0; cursor: pointer;
+    font-family: inherit; font-size: var(--fs-xs); font-weight: var(--fw-semibold);
+    color: var(--sky-dark);
+  }
+  .gm-who:hover { text-decoration: underline; }
+  /* Heading above a per-member block on the tabs that stack one section per
+     member (Additional Info, Assessments, Onboarding) rather than interleaving
+     rows — those records only make sense read one person at a time. */
+  .g-member-head {
+    display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap;
+    margin: var(--sp-5) 0 var(--sp-3);
+  }
+  .g-member-head:first-child { margin-top: 0; }
+  .g-member-head h2 { font-size: var(--fs-lg); margin: 0; }
+  .g-member-head .gm-who { font-size: var(--fs-sm); }
+  /* Roster on Overview: one line per member, the fastest read of "who is in
+     this family and how do I reach them". */
+  .g-roster-row { display: flex; align-items: center; gap: var(--sp-3); }
+  .g-roster-main { flex: 1; min-width: 0; }
+  .g-roster-side { text-align: right; font-size: var(--fs-sm); color: var(--muted); flex-shrink: 0; }
+  /* Says which member a write will be attributed to, next to the control that
+     does it — a note or task stored against a family has to land on a person,
+     and that choice should not be buried. */
+  .g-attribute { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; font-size: var(--fs-sm); color: var(--muted); }
+  .g-attribute select { max-width: 260px; }
+
   /* ---------- Additional Info ----------
      A masonry-style column flow, not a grid: sections vary a lot in row count
      (Employment has 4, Other Information has 10), and a strict grid leaves a
@@ -324,6 +355,53 @@
       <div class="hidden" id="tab-documents"></div>
       <div class="hidden" id="tab-additional"></div>
       <div class="hidden" id="tab-activity"></div>
+    </div>
+
+    <!-- Family / company profile. A parallel view to #profile-view above, with
+         the same tab strip, where every tab shows the UNION of its members'
+         data with each row attributed to the member it belongs to. Records that
+         are inherently per-person (assessments, suitability answers, a client's
+         own email) are summarised here and edited on the person — the member
+         name on any row is a link straight there. -->
+    <div class="hidden" id="group-view">
+      <div class="detail-header">
+        <div>
+          <h1 id="group-name"></h1>
+          <p class="detail-client-email" id="group-sub"></p>
+          <div class="detail-title-badges" id="group-badges"></div>
+        </div>
+        <div class="detail-header-actions">
+          <button type="button" class="btn btn-ghost" id="group-edit-btn">Edit</button>
+          <button type="button" class="btn btn-ghost" id="group-back-btn">← All Contacts</button>
+        </div>
+      </div>
+
+      <div class="tabs" id="group-tabs">
+        <button type="button" class="tab active" data-gtab="overview">Overview</button>
+        <button type="button" class="tab" data-gtab="notes">Notes</button>
+        <button type="button" class="tab" data-gtab="tasks">Tasks</button>
+        <button type="button" class="tab" data-gtab="emails">Emails</button>
+        <button type="button" class="tab" data-gtab="meetings">Meetings</button>
+        <button type="button" class="tab" data-gtab="timeline">Timeline</button>
+        <button type="button" class="tab" data-gtab="activity">Activity Log</button>
+        <button type="button" class="tab" data-gtab="documents">Documents</button>
+        <button type="button" class="tab" data-gtab="additional">Additional Info</button>
+        <span class="tab-divider" aria-hidden="true"></span>
+        <button type="button" class="tab" data-gtab="onboarding">Onboarding</button>
+        <button type="button" class="tab" data-gtab="assessments">Assessments</button>
+      </div>
+
+      <div id="gtab-overview"></div>
+      <div class="hidden" id="gtab-notes"></div>
+      <div class="hidden" id="gtab-tasks"></div>
+      <div class="hidden" id="gtab-emails"></div>
+      <div class="hidden" id="gtab-meetings"></div>
+      <div class="hidden" id="gtab-timeline"></div>
+      <div class="hidden" id="gtab-activity"></div>
+      <div class="hidden" id="gtab-documents"></div>
+      <div class="hidden" id="gtab-additional"></div>
+      <div class="hidden" id="gtab-onboarding"></div>
+      <div class="hidden" id="gtab-assessments"></div>
     </div>
   </main>
 </div>
@@ -600,6 +678,7 @@
       renderStatusFilters();
       renderContacts();
       if (selectedEmail) renderProfile({ background }); // refresh open profile in place
+      if (selectedGroupId) renderGroupProfile({ background });
       if (showStatus) statusEl.textContent = `Last updated ${new Date().toLocaleTimeString()}`;
     } catch (err) {
       if (showStatus) statusEl.textContent = `Refresh failed: ${err.message}`;
@@ -709,7 +788,7 @@
             title="${open ? 'Collapse' : 'Expand'} ${escapeHtml(h.name)}">${icon('chevron-right')}</button>
           <span class="row-avatar avatar-${kind}">${icon(meta.icon)}</span>
           <div class="name-main">
-            <a class="name-link" href="#" data-edit-hh="${escapeHtml(h.id)}">${escapeHtml(h.name)}</a>
+            <a class="name-link" href="#" data-open-hh="${escapeHtml(h.id)}">${escapeHtml(h.name)}</a>
             <span class="badge badge-type-${kind}">${meta.label}</span>${h.archived ? ' <span class="badge badge-gray">Archived</span>' : ''}
             <div class="group-meta">${count ? countLabel : `<span class="cell-missing">${countLabel}</span>`}</div>
           </div>
@@ -915,17 +994,18 @@
     body.querySelectorAll('.contact-row, .member-row[data-email]').forEach((tr) => {
       tr.addEventListener('click', () => openProfile(tr.dataset.email));
     });
-    // The grouping row toggles; its name link edits. The link handler runs
-    // first and stops propagation, so the two don't fight.
+    // The grouping row toggles its members open; its name link opens the
+    // grouping's own profile. The link handler runs first and stops
+    // propagation, so the two don't fight. (Editing the record moved into that
+    // profile's header — the accordion toggle is worth more on the row itself.)
     body.querySelectorAll('.group-row').forEach((tr) => {
       tr.addEventListener('click', () => toggleGroup(tr.dataset.hh));
     });
-    body.querySelectorAll('[data-edit-hh]').forEach((a) => {
+    body.querySelectorAll('[data-open-hh]').forEach((a) => {
       a.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        const hh = allHouseholds.find((h) => h.id === a.dataset.editHh);
-        if (hh) openGroupModal(hh, groupKind(hh));
+        openGroupProfile(a.dataset.openHh);
       });
     });
 
@@ -1406,6 +1486,10 @@
     clientEmailsConfigured = true;
     clientEmailsPermissionMissing = false;
     clientEmailsMailboxErrors = [];
+    // A grouping's profile and a person's must never both be live: the poll
+    // re-renders whichever is selected, and two selections would fetch for both.
+    selectedGroupId = '';
+    document.getElementById('group-view').classList.add('hidden');
     history.replaceState(null, '', `?c=${encodeURIComponent(email)}`);
     // Feeds the sidebar's Recently Viewed list (see shared.js). Recorded with
     // the display name so the rail doesn't have to re-fetch contacts to render.
@@ -1420,8 +1504,16 @@
   function backToList() {
     selectedEmail = '';
     assignmentEditorEmail = '';
-    history.replaceState(null, '', location.pathname);
+    // Arrived here from a family/company? Go back to it rather than to the full
+    // list — that's where the advisor was working.
+    const returnTo = personCameFromGroup;
+    personCameFromGroup = '';
     document.getElementById('profile-view').classList.add('hidden');
+    if (returnTo && allHouseholds.some((h) => h.id === returnTo)) {
+      openGroupProfile(returnTo);
+      return;
+    }
+    history.replaceState(null, '', location.pathname);
     document.getElementById('list-view').classList.remove('hidden');
     window.scrollTo(0, 0);
   }
@@ -1486,11 +1578,10 @@
       (c.archived ? ' <span class="badge badge-gray">Archived</span>' : '') +
       groupChips +
       (c.tags || []).map((t) => ` <span class="chip">${escapeHtml(t)}</span>`).join('');
+    // Opens the grouping's own profile, not its edit form — from a person, the
+    // useful next step is the family's aggregated view.
     document.querySelectorAll('#detail-badges [data-goto-hh]').forEach((b) => {
-      b.addEventListener('click', () => {
-        const hh = allHouseholds.find((h) => h.id === b.dataset.gotoHh);
-        if (hh) openGroupModal(hh, groupKind(hh));
-      });
+      b.addEventListener('click', () => openGroupProfile(b.dataset.gotoHh));
     });
     document.getElementById('archive-contact-btn').textContent = c.archived ? 'Unarchive' : 'Archive';
     document.getElementById('print-client-line').textContent = `Client: ${c.name || c.email} (${c.email})`;
@@ -1996,8 +2087,17 @@
 
   const docModal = document.getElementById('doc-modal-backdrop');
   let docUploading = false;
+  // Which contact the upload attaches to. Normally the open profile, but the
+  // family/company Documents tab attaches on behalf of a chosen member — a
+  // document has to belong to a person, since that is what keys the record and
+  // names its folder in SharePoint.
+  let docTargetEmail = '';
 
-  function openDocModal() {
+  function openDocModal(email) {
+    docTargetEmail = email || selectedEmail;
+    const who = allContacts.find((c) => c.email === docTargetEmail);
+    document.querySelector('#doc-modal-backdrop .modal h2').textContent =
+      selectedGroupId && who ? `Attach document for ${who.name || who.email}` : 'Attach document';
     document.getElementById('doc-file').value = '';
     document.getElementById('doc-name').value = '';
     document.getElementById('doc-error').textContent = '';
@@ -2029,7 +2129,7 @@
     const errEl = document.getElementById('doc-error');
     const file = document.getElementById('doc-file').files[0];
     const name = document.getElementById('doc-name').value.trim();
-    const email = selectedEmail;
+    const email = docTargetEmail || selectedEmail;
     errEl.textContent = '';
     if (!file) { errEl.textContent = 'Choose a file.'; return; }
     if (!name) { errEl.textContent = 'Give the document a name.'; return; }
@@ -2070,7 +2170,9 @@
       }
       docUploading = false;
       docModal.classList.add('hidden');
-      await loadClientDocs(email, { force: true });
+      // Refresh whichever view asked for the upload.
+      if (selectedGroupId) await renderGroupDocumentsTab({ force: true });
+      else await loadClientDocs(email, { force: true });
     } catch (err) {
       errEl.textContent = err.message;
       note.textContent = 'Stopped.';
@@ -2181,8 +2283,11 @@
     return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString();
   }
 
-  function aiReadValue(key, type) {
-    const v = clientInfo[key];
+  // Takes the record explicitly rather than reading `clientInfo`, so the
+  // family/company view can render the same rows for each member's own record
+  // without swapping the module-level one in and out.
+  function aiReadValueFrom(info, key, type) {
+    const v = info ? info[key] : undefined;
     // Derived figures always show a number — "$0.00" on an empty balance sheet
     // is the answer, not a missing value.
     if (type === 'derived') return `${escapeHtml(fmtMoney(typeof v === 'number' ? v : 0))}`;
@@ -2192,6 +2297,10 @@
       return v ? `<span style="white-space:pre-wrap">${escapeHtml(v)}</span>` : AI_UNSET;
     }
     return v ? escapeHtml(String(v)) : AI_UNSET;
+  }
+
+  function aiReadValue(key, type) {
+    return aiReadValueFrom(clientInfo, key, type);
   }
 
   function aiEditControl(key, type) {
@@ -2975,6 +3084,923 @@
     }
   });
 
+  // ---------- Family / company profile ----------
+  // Every tab here is the union of the grouping's members' data. Nothing new is
+  // stored against the grouping itself: notes, tasks and documents are keyed by
+  // a client EMAIL server-side, so anything written from this view is attributed
+  // to a member chosen explicitly (see the member picker on those tabs). The
+  // rest is read-only aggregation, with each row linking to the member it
+  // belongs to — that person's own profile is where it gets edited.
+
+  let selectedGroupId = '';
+  let groupActiveTab = 'overview';
+  // Set when a person's profile was opened from inside a grouping, so Back
+  // returns to the family rather than dumping the advisor at the full list.
+  let personCameFromGroup = '';
+  // Tabs backed by live fetches. The 20s poll must not silently re-issue
+  // per-member API calls (Emails is N members × every staff mailbox on the
+  // Graph side) or wipe a half-written note.
+  const GROUP_POLL_SKIP_TABS = new Set(
+    ['notes', 'tasks', 'emails', 'meetings', 'timeline', 'activity', 'documents', 'additional']
+  );
+
+  function currentGroup() {
+    return allHouseholds.find((h) => h.id === selectedGroupId);
+  }
+
+  // Members with their contact record attached. `contact` is null when the
+  // grouping lists an address nobody has created a contact for yet — those rows
+  // still render, because the grouping does claim that person.
+  function groupMemberList(hh) {
+    return (hh.members || []).map((m) => ({
+      email: m.email,
+      role: m.role,
+      roleLabel: GROUP_ROLE_LABELS[m.role] || 'Other',
+      contact: allContacts.find((c) => c.email === m.email) || null,
+    }));
+  }
+
+  function memberDisplayName(email) {
+    const c = allContacts.find((x) => x.email === email);
+    return (c && (c.name || c.email)) || email;
+  }
+
+  // The "whose row is this" link every aggregated row carries.
+  function whoLink(email) {
+    const known = allContacts.some((c) => c.email === email);
+    const label = escapeHtml(memberDisplayName(email));
+    return known
+      ? `<button type="button" class="gm-who" data-open-person="${escapeHtml(email)}">${label}</button>`
+      : `<span class="cell-missing">${label}</span>`;
+  }
+
+  // Only members who have a contact record can own a note/task/document.
+  function memberPickerOptions(hh, selected) {
+    return groupMemberList(hh)
+      .filter((m) => m.contact)
+      .map((m) => `<option value="${escapeHtml(m.email)}"${m.email === selected ? ' selected' : ''}>${escapeHtml(memberDisplayName(m.email))} — ${escapeHtml(m.roleLabel)}</option>`)
+      .join('');
+  }
+
+  function groupMemberEmails(hh) {
+    return groupMemberList(hh).map((m) => m.email);
+  }
+
+  function openGroupProfile(id, tab) {
+    selectedGroupId = id;
+    groupActiveTab = tab || 'overview';
+    // Clearing the person selection stops the poll from re-rendering a hidden
+    // profile behind this one (and from fetching for it).
+    selectedEmail = '';
+    personCameFromGroup = '';
+    history.replaceState(null, '', `?hh=${encodeURIComponent(id)}`);
+    document.getElementById('list-view').classList.add('hidden');
+    document.getElementById('profile-view').classList.add('hidden');
+    document.getElementById('group-view').classList.remove('hidden');
+    renderGroupProfile();
+    window.scrollTo(0, 0);
+  }
+
+  function backToListFromGroup() {
+    selectedGroupId = '';
+    history.replaceState(null, '', location.pathname);
+    document.getElementById('group-view').classList.add('hidden');
+    document.getElementById('list-view').classList.remove('hidden');
+    window.scrollTo(0, 0);
+  }
+
+  const GROUP_TABS = ['overview', 'notes', 'tasks', 'emails', 'meetings', 'timeline',
+    'activity', 'documents', 'additional', 'onboarding', 'assessments'];
+
+  function setGroupTab(tab) {
+    groupActiveTab = tab;
+    document.querySelectorAll('#group-tabs .tab').forEach((b) =>
+      b.classList.toggle('active', b.dataset.gtab === tab)
+    );
+    GROUP_TABS.forEach((t) =>
+      document.getElementById(`gtab-${t}`).classList.toggle('hidden', t !== tab)
+    );
+    if (!currentGroup()) return;
+    const RENDERERS = {
+      overview: renderGroupOverviewTab,
+      notes: renderGroupNotesTab,
+      tasks: renderGroupTasksTab,
+      emails: renderGroupEmailsTab,
+      meetings: renderGroupMeetingsTab,
+      timeline: renderGroupTimelineTab,
+      activity: renderGroupActivityTab,
+      documents: renderGroupDocumentsTab,
+      additional: renderGroupAdditionalTab,
+      onboarding: renderGroupOnboardingTab,
+      assessments: renderGroupAssessmentsTab,
+    };
+    if (RENDERERS[tab]) RENDERERS[tab]();
+  }
+
+  document.querySelectorAll('#group-tabs .tab').forEach((b) =>
+    b.addEventListener('click', () => setGroupTab(b.dataset.gtab))
+  );
+
+  // Any "whose" link, on any tab, opens that member's own profile.
+  document.getElementById('group-view').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-open-person]');
+    if (!btn) return;
+    const from = selectedGroupId;
+    openProfile(btn.dataset.openPerson);
+    personCameFromGroup = from;
+  });
+
+  function renderGroupProfile(opts = {}) {
+    const hh = currentGroup();
+    if (!hh) { backToListFromGroup(); return; }
+    const kind = groupKind(hh);
+    const meta = KIND_META[kind];
+    const members = groupMemberList(hh);
+    document.getElementById('group-name').textContent = hh.name || '(unnamed)';
+    document.getElementById('group-sub').textContent = hh.email || '';
+    document.getElementById('group-badges').innerHTML =
+      `<span class="badge badge-type-${kind}">${meta.label}</span>` +
+      statusBadge(hh.status) +
+      (hh.archived ? ' <span class="badge badge-gray">Archived</span>' : '') +
+      ` <span class="chip">${members.length} ${members.length === 1 ? meta.noun : meta.nounPlural}</span>` +
+      (hh.tags || []).map((t) => ` <span class="chip">${escapeHtml(t)}</span>`).join('');
+    document.getElementById('group-edit-btn').textContent = `Edit ${meta.label}`;
+    if (opts.background && GROUP_POLL_SKIP_TABS.has(groupActiveTab)) return;
+    setGroupTab(groupActiveTab);
+  }
+
+  document.getElementById('group-back-btn').addEventListener('click', backToListFromGroup);
+  document.getElementById('group-edit-btn').addEventListener('click', () => {
+    const hh = currentGroup();
+    if (hh) openGroupModal(hh, groupKind(hh));
+  });
+
+  // ---------- Group: Overview ----------
+
+  async function renderGroupOverviewTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-overview');
+    const kind = groupKind(hh);
+    const meta = KIND_META[kind];
+    const members = groupMemberList(hh);
+    const emails = groupMemberEmails(hh);
+
+    const roster = members.length
+      ? members.map((m) => {
+        const c = m.contact;
+        return `<div class="row-item g-roster-row">
+          <span class="row-avatar avatar-person">${icon('user')}</span>
+          <div class="g-roster-main">
+            <div class="row-title">
+              ${c ? `<button type="button" class="gm-who" style="font-size:var(--fs-base)" data-open-person="${escapeHtml(m.email)}">${escapeHtml(c.name || c.email)}</button>`
+                  : escapeHtml(m.email)}
+              <span class="badge badge-gray">${escapeHtml(m.roleLabel)}</span>
+              ${c ? statusBadge(c.status) : '<span class="badge badge-gray">not a contact yet</span>'}
+            </div>
+            <div class="cell-sub">${escapeHtml(m.email)}${c && c.phone ? ` · ${escapeHtml(c.phone)}` : ''}</div>
+          </div>
+          <div class="g-roster-side">${c && c.advisor ? escapeHtml(c.advisor) : '<span class="cell-missing">—</span>'}</div>
+        </div>`;
+      }).join('')
+      : `<p class="empty">No ${meta.nounPlural} yet — add them with Edit ${meta.label}.</p>`;
+
+    // Assessment progress and last portal activity come from data already in
+    // memory (the contacts boot payload), so only the task counts need a fetch.
+    let done = 0;
+    let total = 0;
+    let lastAct = null;
+    members.forEach((m) => {
+      if (!m.contact || !m.contact.hasAccount) return;
+      const p = clientProgress(m.contact);
+      done += p.done;
+      total += p.total;
+      const a = lastActivity(m.contact);
+      if (a && (!lastAct || a > lastAct)) lastAct = a;
+    });
+    const withAccounts = members.filter((m) => m.contact && m.contact.hasAccount).length;
+
+    wrap.innerHTML = `
+      <div class="overview-grid">
+        <div class="panel">
+          <div class="panel-head"><h2>${escapeHtml(meta.label)} Details</h2></div>
+          <div class="kv-rows">
+            ${kvRow('Name', escapeHtml(hh.name || '—'))}
+            ${kvRow('Type', `<span class="badge badge-type-${kind}">${meta.label}</span>`)}
+            ${kvRow('Status', statusBadge(hh.status))}
+            ${kvRow('Shared email', hh.email ? escapeHtml(hh.email) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Assigned to', hh.assignedTo ? escapeHtml(staffLabel(hh.assignedTo)) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Investment advisors rep', hh.advisorRep ? escapeHtml(hh.advisorRep) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Contact type', hh.contactType ? escapeHtml(hh.contactType) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Created', hh.createdAt ? escapeHtml(fmtDate(hh.createdAt)) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Last updated', hh.updatedAt ? escapeHtml(fmtDate(hh.updatedAt)) : '<span class="cell-missing">—</span>')}
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>At a Glance</h2></div>
+          <div class="kv-rows">
+            ${kvRow(meta.label === 'Company' ? 'People' : 'Members', String(members.length))}
+            ${kvRow('Portal accounts', `${withAccounts} of ${members.length}`)}
+            ${kvRow('Assessments completed', total ? `${done} / ${total}` : '<span class="cell-missing">no portal accounts</span>')}
+            ${kvRow('Last portal activity', lastAct ? escapeHtml(relTime(lastAct)) : '<span class="cell-missing">—</span>')}
+            ${kvRow('Open tasks', '<span id="g-open-tasks" class="cell-missing">…</span>')}
+            ${kvRow('Upcoming meetings', '<span id="g-upcoming-meetings" class="cell-missing">…</span>')}
+          </div>
+        </div>
+        ${hh.background ? `<div class="panel panel-full">
+          <div class="panel-head"><h2>Background</h2></div>
+          <p style="white-space:pre-wrap;margin:0;">${escapeHtml(hh.background)}</p>
+        </div>` : ''}
+        <div class="panel panel-full">
+          <div class="panel-head"><h2>${escapeHtml(meta.label === 'Company' ? 'People' : 'Members')} (${members.length})</h2>
+            <button type="button" class="panel-link btn-link" id="g-add-member">Add or change ${escapeHtml(meta.nounPlural)}</button></div>
+          <div class="row-list">${roster}</div>
+        </div>
+      </div>`;
+
+    const addBtn = document.getElementById('g-add-member');
+    if (addBtn) addBtn.addEventListener('click', () => openGroupModal(hh, kind));
+
+    // Counts land when the fetch does; a failure leaves the placeholder as a
+    // dash rather than a number that looks authoritative and isn't.
+    try {
+      const data = await api('/api/admin/tasks');
+      if (selectedGroupId !== hh.id) return;
+      const mine = (data.tasks || []).filter((t) => emails.includes(t.client));
+      const openTasks = mine.filter((t) => t.status === 'open' && t.category !== 'meeting').length;
+      const now = Date.now();
+      const upcoming = mine.filter((t) => t.category === 'meeting' && t.status !== 'done'
+        && (!t.due || new Date(t.due).getTime() >= now)).length;
+      const ot = document.getElementById('g-open-tasks');
+      const um = document.getElementById('g-upcoming-meetings');
+      if (ot) { ot.textContent = String(openTasks); ot.className = ''; }
+      if (um) { um.textContent = String(upcoming); um.className = ''; }
+    } catch {
+      ['g-open-tasks', 'g-upcoming-meetings'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '—';
+      });
+    }
+  }
+
+  // ---------- Group: Notes ----------
+
+  async function renderGroupNotesTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-notes');
+    const members = groupMemberList(hh).filter((m) => m.contact);
+    // Preserve a half-written note across the re-render a save triggers.
+    const draft = {
+      body: document.getElementById('g-note-body')?.value || '',
+      tags: document.getElementById('g-note-tags')?.value || '',
+      who: document.getElementById('g-note-who')?.value || '',
+    };
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const results = await Promise.all(members.map((m) =>
+        api(`/api/admin/notes?client=${encodeURIComponent(m.email)}`)
+          .then((d) => d.notes || [])
+          .catch(() => [])
+      ));
+      if (selectedGroupId !== hh.id) return;
+      const notes = results.flat().sort((a, b) => {
+        if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+        return String(b.createdAt).localeCompare(String(a.createdAt));
+      });
+      const composer = members.length
+        ? `<div class="panel">
+            <div class="panel-head"><h2>Add a Note</h2></div>
+            <div class="field"><textarea id="g-note-body" rows="4" placeholder="Meeting notes, reminders, context…"></textarea></div>
+            <div class="g-attribute" style="margin-bottom:10px;">
+              <label for="g-note-who">Save this note on</label>
+              <select id="g-note-who">${memberPickerOptions(hh, draft.who || members[0].email)}</select>
+              <span class="cell-missing">a note belongs to a person, not a ${escapeHtml(KIND_META[groupKind(hh)].label.toLowerCase())}</span>
+            </div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+              <input type="text" class="input" id="g-note-tags" placeholder="Tags (comma-separated)" style="flex:1; min-width:180px;" />
+              <label style="display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--muted);">
+                <input type="checkbox" id="g-note-pinned" style="width:16px;height:16px;accent-color:var(--sky);" /> Pin</label>
+              <button type="button" class="btn btn-primary btn-small" id="g-note-save">Save Note</button>
+            </div>
+            <p class="form-error" id="g-note-error"></p>
+          </div>`
+        : '';
+      wrap.innerHTML = composer + (notes.length
+        ? notes.map((n) => `<div class="note-card ${n.pinned ? 'pinned' : ''}">
+            <div class="note-head">
+              <span class="note-meta">${n.pinned ? '📌 ' : ''}${whoLink(n.client)} · ${escapeHtml(staffLabel(n.author))} · ${escapeHtml(fmtDateTime(n.createdAt))}${n.updatedAt ? ' (edited)' : ''}
+                ${(n.tags || []).map((t) => ` <span class="chip">${escapeHtml(t)}</span>`).join('')}</span>
+            </div>
+            <div class="note-body">${escapeHtml(n.body)}</div>
+          </div>`).join('')
+        : '<div class="panel"><p class="empty">No notes on any member yet.</p></div>');
+
+      const bodyEl = document.getElementById('g-note-body');
+      if (bodyEl) {
+        bodyEl.value = draft.body;
+        document.getElementById('g-note-tags').value = draft.tags;
+        document.getElementById('g-note-save').addEventListener('click', async (ev) => {
+          const errEl = document.getElementById('g-note-error');
+          const text = bodyEl.value.trim();
+          errEl.textContent = '';
+          if (!text) { errEl.textContent = 'Write something first.'; return; }
+          const btn = ev.currentTarget;
+          btn.disabled = true;
+          try {
+            await api('/api/admin/notes', {
+              method: 'POST',
+              body: JSON.stringify({
+                client: document.getElementById('g-note-who').value,
+                body: text,
+                tags: document.getElementById('g-note-tags').value.split(',').map((t) => t.trim()).filter(Boolean),
+                pinned: document.getElementById('g-note-pinned').checked,
+              }),
+            });
+            bodyEl.value = '';
+            document.getElementById('g-note-tags').value = '';
+            renderGroupNotesTab();
+          } catch (err) {
+            errEl.textContent = err.message;
+            btn.disabled = false;
+          }
+        });
+      }
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Group: Tasks ----------
+
+  async function renderGroupTasksTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-tasks');
+    const emails = groupMemberEmails(hh);
+    const members = groupMemberList(hh).filter((m) => m.contact);
+    const draft = {
+      title: document.getElementById('g-task-title')?.value || '',
+      due: document.getElementById('g-task-due')?.value || '',
+      who: document.getElementById('g-task-who')?.value || '',
+    };
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const data = await api('/api/admin/tasks');
+      if (selectedGroupId !== hh.id) return;
+      // Meetings have their own tab, same as on a person's profile — listing
+      // them here too would show one record in two tickable places.
+      const mine = (data.tasks || []).filter((t) => emails.includes(t.client) && t.category !== 'meeting');
+      const P_RANK = { high: 0, medium: 1, low: 2 };
+      const byUrgency = (a, b) => {
+        const ad = a.due ? new Date(a.due).getTime() : Infinity;
+        const bd = b.due ? new Date(b.due).getTime() : Infinity;
+        if (ad !== bd) return ad - bd;
+        return (P_RANK[a.priority] ?? 1) - (P_RANK[b.priority] ?? 1);
+      };
+      const open = mine.filter((t) => t.status === 'open').sort(byUrgency);
+      const done = mine.filter((t) => t.status === 'done')
+        .sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
+      // The checkbox stays live: completing a task needs only its id, so it
+      // works the same from here as from the member's own profile.
+      const row = (t) => `<div class="row-item ${prioRailClass(t.priority)} ${t.status === 'done' ? 'task-done' : ''}">
+        <input type="checkbox" class="g-task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''}
+          title="${t.status === 'done' ? 'Reopen' : 'Mark done'}"
+          style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
+        <div class="row-main">
+          <div class="row-title">${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
+          <div class="row-sub">${whoLink(t.client)} · ${duePill(t)}
+            <span class="prio-label">${escapeHtml(t.priority || 'low')}</span>
+            ${t.assignee ? ` · ${escapeHtml(staffLabel(t.assignee))}` : ''}</div>
+          ${t.description ? `<div class="row-sub">${escapeHtml(t.description)}</div>` : ''}
+        </div>
+      </div>`;
+      wrap.innerHTML = `
+        <div class="panel">
+          <div class="panel-head"><h2>Open Tasks (${open.length})</h2>
+            <a class="panel-link" href="/admin/tasks.html">Full task manager →</a></div>
+          <div class="row-list">${open.length ? open.map(row).join('') : '<p class="empty">No open tasks across these members.</p>'}</div>
+          ${members.length ? `<div class="quick-add">
+            <input type="text" class="input" id="g-task-title" placeholder="Task name…" />
+            <div class="quick-add-row">
+              <input type="date" class="input" id="g-task-due" title="Due date" />
+              <select id="g-task-who" title="For which member">${memberPickerOptions(hh, draft.who || members[0].email)}</select>
+              <select id="g-task-assignee" title="Assigned to">
+                <option value="">— unassigned —</option>
+                ${adminList.map((a) => `<option value="${escapeHtml(a)}"${a === SESSION.email ? ' selected' : ''}>${escapeHtml(staffLabel(a))}</option>`).join('')}
+              </select>
+              <select id="g-task-priority" title="Priority">${priorityOptions('')}</select>
+              <select id="g-task-category" title="Category">${categoryOptions('')}</select>
+            </div>
+            <div><button type="button" class="btn btn-primary" id="g-task-add">Add Task</button></div>
+            <p class="form-error" id="g-task-error"></p>
+          </div>` : ''}
+        </div>
+        ${done.length ? `<div class="panel"><div class="panel-head"><h2>Completed (${done.length})</h2></div>
+          <div class="row-list">${done.map(row).join('')}</div></div>` : ''}`;
+
+      const titleEl = document.getElementById('g-task-title');
+      if (titleEl) {
+        titleEl.value = draft.title;
+        document.getElementById('g-task-due').value = draft.due;
+        document.getElementById('g-task-add').addEventListener('click', async (ev) => {
+          const errEl = document.getElementById('g-task-error');
+          const title = titleEl.value.trim();
+          const priority = document.getElementById('g-task-priority').value;
+          const category = document.getElementById('g-task-category').value;
+          errEl.textContent = '';
+          // The priority/category placeholders are disabled options with an
+          // empty value, so both must be chosen. Caught here rather than left to
+          // the server's "Invalid priority", which doesn't say which control to
+          // go and fix — same checks the person's quick-add makes.
+          if (!title) { errEl.textContent = 'Give the task a name.'; return; }
+          if (!priority) { errEl.textContent = 'Choose a priority.'; return; }
+          if (!category || category === NEW_CATEGORY_VALUE) { errEl.textContent = 'Choose a category.'; return; }
+          const btn = ev.currentTarget;
+          btn.disabled = true;
+          try {
+            await api('/api/admin/tasks', {
+              method: 'POST',
+              body: JSON.stringify({
+                title,
+                client: document.getElementById('g-task-who').value,
+                due: document.getElementById('g-task-due').value,
+                assignee: document.getElementById('g-task-assignee').value,
+                priority,
+                category,
+              }),
+            });
+            // Cleared before the re-render, or the draft snapshot restores what
+            // was just turned into a task.
+            titleEl.value = '';
+            document.getElementById('g-task-due').value = '';
+            renderGroupTasksTab();
+          } catch (err) {
+            errEl.textContent = err.message;
+            btn.disabled = false;
+          }
+        });
+      }
+      wrap.querySelectorAll('.g-task-check').forEach((cb) =>
+        cb.addEventListener('change', async () => {
+          try {
+            await api(`/api/admin/tasks/${encodeURIComponent(cb.dataset.id)}`, {
+              method: 'POST', body: JSON.stringify({ status: cb.checked ? 'done' : 'open' }),
+            });
+            renderGroupTasksTab();
+          } catch (err) {
+            const errEl = document.getElementById('g-task-error');
+            if (errEl) errEl.textContent = err.message;
+          }
+        })
+      );
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Group: Emails ----------
+
+  async function renderGroupEmailsTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-emails');
+    const members = groupMemberList(hh);
+    wrap.innerHTML = '<div class="panel"><p class="empty">Searching staff mailboxes…</p></div>';
+    try {
+      // One request per member, each of which fans out across every staff
+      // mailbox server-side — the most expensive tab here by a wide margin,
+      // which is why it only ever runs on an explicit tab open.
+      const results = await Promise.all(members.map((m) =>
+        api(`/api/admin/contacts/${encodeURIComponent(m.email)}/emails`)
+          .then((d) => ({ ok: true, member: m.email, data: d }))
+          .catch((e) => ({ ok: false, member: m.email, error: e }))
+      ));
+      if (selectedGroupId !== hh.id) return;
+      const good = results.filter((r) => r.ok);
+      if (good.length && good.every((r) => r.data.permissionMissing)) {
+        wrap.innerHTML = `<div class="panel"><p class="empty lr-setup">
+          Not authorized yet. The app registration needs the <code>Mail.Read</code> Microsoft Graph
+          <strong>application</strong> permission, with admin consent granted, before any mailbox can be searched.</p></div>`;
+        return;
+      }
+      if (good.length && good.every((r) => r.data.configured === false)) {
+        wrap.innerHTML = `<div class="panel"><p class="empty lr-setup">
+          Not connected yet. This needs the Outlook Graph app registration
+          (<code>OUTLOOK_CLIENT_ID</code> / <code>OUTLOOK_CLIENT_SECRET</code> / <code>OUTLOOK_TENANT_ID</code>)
+          configured before email history can be read.</p></div>`;
+        return;
+      }
+      const seen = new Set();
+      const merged = [];
+      good.forEach((r) => (r.data.emails || []).forEach((m) => {
+        if (seen.has(m.id)) return; // one message can reach two members
+        seen.add(m.id);
+        merged.push({ ...m, matchedMember: r.member });
+      }));
+      merged.sort((a, b) => String(b.receivedDateTime || '').localeCompare(String(a.receivedDateTime || '')));
+      const failed = results.filter((r) => !r.ok).map((r) => r.member);
+      const warn = failed.length
+        ? `<p class="hint">Could not search for ${failed.map((f) => escapeHtml(memberDisplayName(f))).join(', ')} — results may be incomplete.</p>`
+        : '';
+      wrap.innerHTML = warn + (merged.length
+        ? merged.map((m) => {
+          const to = m.to.map(emailAddrLabel).filter(Boolean).join(', ');
+          const cc = m.cc.map(emailAddrLabel).filter(Boolean).join(', ');
+          const meta = [
+            m.from ? `From ${emailAddrLabel(m.from)}` : '',
+            to ? `To ${to}` : '',
+            cc ? `Cc ${cc}` : '',
+          ].filter(Boolean).map(escapeHtml).join(' · ');
+          return `<div class="panel email-row">
+            <div class="panel-head">
+              <h2>${escapeHtml(m.subject)}${m.isDraft ? ' <span class="badge badge-gray">Draft</span>' : ''}</h2>
+              ${m.webLink ? `<a class="panel-link" href="${escapeHtml(m.webLink)}" target="_blank" rel="noopener noreferrer">Open in Outlook →</a>` : ''}
+            </div>
+            <p class="email-meta">${meta}</p>
+            <p class="email-preview">${escapeHtml(m.bodyPreview)}${m.bodyPreview.length >= 400 ? '…' : ''}</p>
+            <p class="email-via">Matched ${whoLink(m.matchedMember)} · found via ${escapeHtml(m.viaMailbox)}${m.receivedDateTime ? ` · ${escapeHtml(fmtDateTime(m.receivedDateTime))}` : ''}</p>
+          </div>`;
+        }).join('')
+        : '<div class="panel"><p class="empty">No emails found for any member across staff mailboxes.</p></div>');
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Group: Meetings ----------
+
+  async function renderGroupMeetingsTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-meetings');
+    const emails = groupMemberEmails(hh);
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const data = await api('/api/admin/tasks');
+      if (selectedGroupId !== hh.id) return;
+      const meetings = (data.tasks || []).filter((t) => emails.includes(t.client) && t.category === 'meeting');
+      const now = Date.now();
+      const dueMs = (t) => (t.due ? new Date(t.due).getTime() : NaN);
+      const upcoming = meetings
+        .filter((t) => t.status !== 'done' && (isNaN(dueMs(t)) || dueMs(t) >= now))
+        .sort((a, b) => (dueMs(a) || Infinity) - (dueMs(b) || Infinity));
+      const past = meetings
+        .filter((t) => !(t.status !== 'done' && (isNaN(dueMs(t)) || dueMs(t) >= now)))
+        .sort((a, b) => (dueMs(b) || 0) - (dueMs(a) || 0));
+      // Read-only: scheduling a meeting takes a type, an advisor and a time, and
+      // the calendar already owns that form. Each row links straight into it.
+      const row = (t) => `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
+        <div class="row-main">
+          <div class="row-title">${escapeHtml(t.title)}${t.meetingType ? ` <span class="badge badge-navy">${escapeHtml(MEETING_TYPES[t.meetingType] || t.meetingType)}</span>` : ''}</div>
+          <div class="row-sub">${whoLink(t.client)} · ${meetingWhen(t.due)}${t.assignee ? ` · ${escapeHtml(staffLabel(t.assignee))}` : ' · unassigned'}</div>
+        </div>
+        <div class="row-side"><a class="panel-link" href="/admin/calendar.html?task=${encodeURIComponent(t.id)}">Details →</a></div>
+      </div>`;
+      wrap.innerHTML = `
+        <div class="panel">
+          <div class="panel-head"><h2>Upcoming Meetings (${upcoming.length})</h2>
+            <a class="panel-link" href="/admin/calendar.html">Full calendar →</a></div>
+          <div class="row-list">${upcoming.length ? upcoming.map(row).join('') : '<p class="empty">No meetings scheduled across these members.</p>'}</div>
+          <p class="hint">Meetings are scheduled from a member's own profile or the calendar — both carry the
+          type, advisor and prep checklist this view doesn't.</p>
+        </div>
+        ${past.length ? `<div class="panel"><div class="panel-head"><h2>Past (${past.length})</h2></div>
+          <div class="row-list">${past.map(row).join('')}</div></div>` : ''}`;
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Group: Timeline ----------
+
+  const GROUP_TIMELINE_MAX = 80;
+
+  async function renderGroupTimelineTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-timeline');
+    const members = groupMemberList(hh);
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const results = await Promise.all(members.map((m) =>
+        api(`/api/admin/timeline/${encodeURIComponent(m.email)}`)
+          .then((d) => (d.entries || []).map((e) => ({ ...e, member: m.email })))
+          .catch(() => [])
+      ));
+      if (selectedGroupId !== hh.id) return;
+      const entries = results.flat()
+        .sort((a, b) => String(b.ts).localeCompare(String(a.ts)))
+        .slice(0, GROUP_TIMELINE_MAX);
+      // No "load older" here, unlike a person's timeline: paging N member
+      // cursors in step would interleave wrongly, and saying what this shows is
+      // more honest than a button that pages one member at a time.
+      wrap.innerHTML = `<div class="panel">
+        <div class="panel-head"><h2>Combined Timeline</h2></div>
+        <p class="hint">Every member's touchpoints merged, newest first — up to the most recent
+        ${GROUP_TIMELINE_MAX}. Open a member to page through their full history.</p>
+        ${entries.length
+          ? entries.map((e) => `<div>${timelineLine(e)}<div class="tl-when" style="margin:-8px 0 8px 30px;">${whoLink(e.member)}</div></div>`).join('')
+          : '<p class="empty">Nothing recorded for any member yet.</p>'}
+      </div>`;
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Group: Activity Log ----------
+
+  async function renderGroupActivityTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-activity');
+    const emails = groupMemberEmails(hh);
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const data = await api('/api/admin/audit');
+      if (selectedGroupId !== hh.id) return;
+      const mine = (data.entries || []).filter((e) => e.detail && emails.includes(e.detail.client));
+      wrap.innerHTML = `<div class="panel">
+        <div class="panel-head"><h2>Admin Actions on These Members</h2></div>
+        <p class="hint">From the audit log (newest ${data.entries ? data.entries.length : 0} entries scanned). The full log is under Settings.</p>
+        ${mine.length
+          ? `<div class="row-list">${mine.map((e) => `<div class="row-item">
+              <div class="row-main">
+                <div class="row-title">${escapeHtml(e.action)}</div>
+                <div class="row-sub">${whoLink(e.detail.client)} · by ${escapeHtml(e.email)} · ${escapeHtml(fmtDateTime(e.ts))}</div>
+              </div>
+            </div>`).join('')}</div>`
+          : '<p class="empty">No logged admin actions reference these members in the recent audit entries.</p>'}
+      </div>`;
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Group: Documents ----------
+
+  async function renderGroupDocumentsTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-documents');
+    const members = groupMemberList(hh);
+    const withRecords = members.filter((m) => m.contact);
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const results = await Promise.all(members.map((m) =>
+        api(`/api/admin/contacts/${encodeURIComponent(m.email)}/documents`)
+          .then((d) => ({ member: m.email, docs: d.documents || [], configured: d.configured !== false }))
+          .catch(() => ({ member: m.email, docs: [], configured: true }))
+      ));
+      if (selectedGroupId !== hh.id) return;
+      const configured = results.every((r) => r.configured);
+      const docs = results.flatMap((r) => r.docs.map((d) => ({ ...d, member: r.member })))
+        .sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
+
+      const attachedPanel = !configured
+        ? `<div class="panel"><div class="panel-head"><h2>Attached Documents</h2></div>
+            <p class="empty lr-setup">Not connected yet. <code>SHAREPOINT_CLIENT_DOCS_LIST_ID</code> needs the
+            list id of the SharePoint <strong>Client Documents</strong> library before files can be attached.</p></div>`
+        : `<div class="panel">
+            <div class="panel-head"><h2>Attached Documents (${docs.length})</h2></div>
+            ${withRecords.length ? `<div class="g-attribute" style="margin-bottom:12px;">
+              <label for="g-doc-who">Attach for</label>
+              <select id="g-doc-who">${memberPickerOptions(hh, withRecords[0].email)}</select>
+              <button type="button" class="btn btn-primary btn-small" id="g-doc-add">+ Attach document</button>
+              <span class="cell-missing">a document belongs to a person — it is filed under their name</span>
+            </div>` : ''}
+            <div class="row-list">${docs.length ? docs.map((d) => {
+              const meta = [d.filename !== d.name ? d.filename : '', formatBytes(d.size),
+                d.uploadedAt ? `attached ${fmtDate(d.uploadedAt)}` : '',
+                d.uploadedBy ? `by ${staffLabel(d.uploadedBy)}` : '']
+                .filter(Boolean).map(escapeHtml).join(' · ');
+              const link = d.webUrl
+                ? `<a class="name-link" href="${escapeHtml(d.webUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(d.name)}</a>`
+                : escapeHtml(d.name);
+              return `<div class="row-item doc-row">
+                <div class="doc-main">
+                  <div class="row-title">${link}</div>
+                  <div class="doc-meta">${whoLink(d.member)}${meta ? ` · ${meta}` : ''}</div>
+                </div>
+                <div class="doc-actions">
+                  <button type="button" class="btn btn-ghost btn-small" data-gdoc-rename="${escapeHtml(d.id)}">Rename</button>
+                  <button type="button" class="btn btn-ghost btn-small" data-gdoc-delete="${escapeHtml(d.id)}">Delete</button>
+                </div>
+              </div>`;
+            }).join('') : '<p class="empty">Nothing attached to any member yet.</p>'}</div>
+          </div>`;
+
+      // Signed onboarding agreements, per member — the same fixed record the
+      // person's Documents tab shows, below the attachments for the same reason.
+      const agreements = members.flatMap((m) => {
+        if (!m.contact) return [];
+        return linkedOnboardings(m.contact)
+          .filter((r) => r.data && r.data.agreement)
+          .map((r) => {
+            const a = r.data.agreement;
+            return `<div class="panel">
+              <div class="panel-head"><h2>Advisory Agreement — ${escapeHtml(r.onboardingId)}</h2>
+                ${whoLink(m.email)}</div>
+              <div class="kv-rows">
+                ${kvRow('Typed name', a.typedName ? escapeHtml(a.typedName) : '—')}
+                ${kvRow('Signed at', a.signedAt ? escapeHtml(fmtDateTime(a.signedAt)) : '—')}
+                ${kvRow('Acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No')}
+              </div>
+              ${a.signatureDataUrl ? `<div class="onb-signature"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Client signature" /></div>` : ''}
+            </div>`;
+          });
+      });
+
+      wrap.innerHTML = attachedPanel + (agreements.length ? agreements.join('')
+        : '<div class="panel"><p class="empty">No signed agreements on file for any member.</p></div>');
+
+      const addBtn = document.getElementById('g-doc-add');
+      if (addBtn) {
+        addBtn.addEventListener('click', () => openDocModal(document.getElementById('g-doc-who').value));
+      }
+      wrap.querySelectorAll('[data-gdoc-rename]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          const doc = docs.find((d) => d.id === b.dataset.gdocRename);
+          if (!doc) return;
+          const name = prompt('Document name', doc.name);
+          if (name === null || !name.trim() || name.trim() === doc.name) return;
+          try {
+            await api(`/api/admin/client-documents/${encodeURIComponent(doc.id)}`, {
+              method: 'POST', body: JSON.stringify({ name: name.trim() }),
+            });
+            renderGroupDocumentsTab();
+          } catch (err) {
+            alert(`Could not rename: ${err.message}`);
+          }
+        });
+      });
+      wrap.querySelectorAll('[data-gdoc-delete]').forEach((b) => {
+        b.addEventListener('click', async () => {
+          const doc = docs.find((d) => d.id === b.dataset.gdocDelete);
+          if (!doc) return;
+          if (!confirm(`Delete "${doc.name}"? The file is removed from SharePoint too (recoverable from its recycle bin).`)) return;
+          try {
+            await api(`/api/admin/client-documents/${encodeURIComponent(doc.id)}`, { method: 'DELETE' });
+            renderGroupDocumentsTab();
+          } catch (err) {
+            alert(`Could not delete: ${err.message}`);
+          }
+        });
+      });
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Group: Additional Info ----------
+
+  async function renderGroupAdditionalTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-additional');
+    const members = groupMemberList(hh).filter((m) => m.contact);
+    if (!members.length) {
+      wrap.innerHTML = '<div class="panel"><p class="empty">No members with contact records yet.</p></div>';
+      return;
+    }
+    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
+    try {
+      const results = await Promise.all(members.map((m) =>
+        api(`/api/admin/contacts/${encodeURIComponent(m.email)}/info`)
+          .then((d) => ({ member: m, info: d.info || {} }))
+          .catch(() => ({ member: m, info: {} }))
+      ));
+      if (selectedGroupId !== hh.id) return;
+
+      // Combined balance sheet: the one figure a family-level view adds that no
+      // single member's record holds. Summed from the same three inputs the
+      // per-person derivation uses, so it can't disagree with them.
+      const sum = (key) => results.reduce((acc, r) =>
+        acc + (typeof r.info[key] === 'number' ? r.info[key] : 0), 0);
+      const assets = sum('assets');
+      const nonLiquid = sum('nonLiquidAssets');
+      const liabilities = sum('liabilities');
+      const combined = `<div class="panel">
+        <div class="panel-head"><h2>Combined — all ${escapeHtml(KIND_META[groupKind(hh)].nounPlural)}</h2></div>
+        <div class="kv-rows">
+          ${kvRow('Assets', escapeHtml(fmtMoney(assets)))}
+          ${kvRow('Non Liquid Assets', escapeHtml(fmtMoney(nonLiquid)))}
+          ${kvRow('Liabilities', escapeHtml(fmtMoney(liabilities)))}
+          ${kvRow('Estimated Net Worth', `<strong>${escapeHtml(fmtMoney(assets + nonLiquid - liabilities))}</strong>`)}
+          ${kvRow('Estimated Liquid Net Worth', `<strong>${escapeHtml(fmtMoney(assets - liabilities))}</strong>`)}
+          ${kvRow('Gross Annual Income', escapeHtml(fmtMoney(sum('grossAnnualIncome'))))}
+        </div>
+        <p class="ai-derived-note">Summed across every member who has these figures recorded. A member with
+        nothing entered contributes zero, so this reads low until each member's own record is filled in.</p>
+      </div>`;
+
+      // Then one full read-only block per member. Editing stays on the person:
+      // these are individual answers (occupation, licence, health), and a form
+      // that wrote to several records at once would be a foot-gun.
+      const perMember = results.map((r) => {
+        const sections = AI_SECTIONS.map((sec) => `<div class="panel">
+          <div class="panel-head"><h2>${escapeHtml(sec.title)}</h2></div>
+          <div class="kv-rows">${sec.fields.map(([key, label, type]) =>
+            `<div class="kv-row${type === 'derived' ? ' ai-derived-row' : ''}">
+              <span>${escapeHtml(label)}</span><strong>${aiReadValueFrom(r.info, key, type)}</strong></div>`).join('')}</div>
+        </div>`).join('');
+        return `<div class="g-member-head">
+            <h2>${escapeHtml(memberDisplayName(r.member.email))}</h2>
+            <span class="badge badge-gray">${escapeHtml(r.member.roleLabel)}</span>
+            <button type="button" class="gm-who" data-open-person="${escapeHtml(r.member.email)}">Edit on their profile →</button>
+          </div>
+          <div class="ai-grid">${sections}</div>`;
+      }).join('');
+
+      wrap.innerHTML = combined + perMember;
+    } catch (err) {
+      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  // ---------- Group: Onboarding ----------
+
+  function renderGroupOnboardingTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-onboarding');
+    const members = groupMemberList(hh);
+    const blocks = members.map((m) => {
+      const records = m.contact ? linkedOnboardings(m.contact) : [];
+      const rows = records.length
+        ? records.map((r) => {
+          const done = onbSectionsDone(r);
+          return `<div class="onb-link-row">
+            <span><strong>${escapeHtml(r.onboardingId)}</strong> · ${done} / ${ONB_SECTIONS.length} sections ·
+              ${r.completionTime ? 'Completed' : 'In progress'}</span>
+            <a class="btn btn-ghost btn-small" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">View record</a>
+          </div>`;
+        }).join('')
+        : `<p class="empty">No onboarding submission linked to ${escapeHtml(m.email)}.</p>`;
+      return `<div class="g-member-head">
+          <h2>${escapeHtml(memberDisplayName(m.email))}</h2>
+          <span class="badge badge-gray">${escapeHtml(m.roleLabel)}</span>
+          ${m.contact ? `<button type="button" class="gm-who" data-open-person="${escapeHtml(m.email)}">Open profile →</button>` : ''}
+        </div>
+        <div class="panel">${rows}</div>`;
+    }).join('');
+    wrap.innerHTML = members.length ? blocks
+      : '<div class="panel"><p class="empty">No members yet.</p></div>';
+  }
+
+  // ---------- Group: Assessments ----------
+
+  function renderGroupAssessmentsTab() {
+    const hh = currentGroup();
+    if (!hh) return;
+    const wrap = document.getElementById('gtab-assessments');
+    const members = groupMemberList(hh);
+    // A summary per member rather than every module card for everyone: a
+    // three-member family would otherwise render dozens of charts on one tab.
+    // The completed list says what to look at; the link goes to the detail.
+    const rows = members.map((m) => {
+      const c = m.contact;
+      if (!c || !c.hasAccount) {
+        return `<div class="row-item">
+          <div class="row-main">
+            <div class="row-title">${escapeHtml(memberDisplayName(m.email))}
+              <span class="badge badge-gray">${escapeHtml(m.roleLabel)}</span></div>
+            <div class="row-sub"><span class="cell-missing">No portal account — nothing to assess yet.</span></div>
+          </div>
+        </div>`;
+      }
+      const p = clientProgress(c);
+      const mods = c.modules || {};
+      const completed = ALL_MODULE_KEYS
+        .filter((k) => mods[k] && clientIsAssigned(c, k))
+        .map((k) => {
+          const mod = MODULES.find((x) => x.key === k) || CATEGORY_MODULE_MAP[k];
+          return mod ? mod.title : k;
+        });
+      return `<div class="row-item">
+        <div class="row-main">
+          <div class="row-title">
+            <button type="button" class="gm-who" style="font-size:var(--fs-base)" data-open-person="${escapeHtml(m.email)}">${escapeHtml(c.name || c.email)}</button>
+            <span class="badge badge-gray">${escapeHtml(m.roleLabel)}</span>
+            <span class="badge ${p.done === p.total && p.total ? 'badge-green' : 'badge-sky'}">${p.done} / ${p.total}</span>
+          </div>
+          <div class="row-sub">${completed.length
+            ? completed.map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join(' ')
+            : '<span class="cell-missing">Nothing completed yet.</span>'}</div>
+        </div>
+        <div class="row-side">
+          <button type="button" class="panel-link btn-link" data-open-person="${escapeHtml(m.email)}">Open →</button>
+        </div>
+      </div>`;
+    }).join('');
+    wrap.innerHTML = `<div class="panel">
+      <div class="panel-head"><h2>Assessment Progress</h2></div>
+      <p class="hint">Completion per member. Module results, charts and the assignment editor live on each
+      member's own Assessments tab — open a member to see or change them.</p>
+      <div class="row-list">${members.length ? rows : '<p class="empty">No members yet.</p>'}</div>
+    </div>`;
+  }
+
   document.getElementById('edit-contact-btn').addEventListener('click', () => {
     const c = currentContact();
     if (c) openContactModal(c);
@@ -3004,13 +4030,18 @@
   // Poll to keep the list + open profile fresh.
   setInterval(() => loadData({ background: true }), POLL_INTERVAL_MS);
 
-  // Deep link: ?c=email opens that profile; ?tab=notes (etc.) lands on a tab.
+  // Deep link: ?c=email opens that person's profile, ?hh=<id> a family or
+  // company's; ?tab=notes (etc.) lands on a tab in either.
   (async function init() {
     await loadData();
     const params = new URLSearchParams(location.search);
     const want = params.get('c');
+    const wantGroup = params.get('hh');
     const tab = params.get('tab');
-    if (want && allContacts.some((c) => c.email === want)) {
+    if (wantGroup && allHouseholds.some((h) => h.id === wantGroup)) {
+      openGroupProfile(wantGroup);
+      if (tab && document.querySelector(`#group-tabs .tab[data-gtab="${CSS.escape(tab)}"]`)) setGroupTab(tab);
+    } else if (want && allContacts.some((c) => c.email === want)) {
       openProfile(want);
       if (tab && document.querySelector(`#profile-tabs .tab[data-tab="${CSS.escape(tab)}"]`)) setTab(tab);
     }

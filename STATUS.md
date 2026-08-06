@@ -390,8 +390,43 @@ Client portal is untouched and keeps its own look.
     inside a collapsed grouping are still in view. CSV export likewise contains
     every visible person, so the file doesn't depend on which carets were open;
     its `Type` column reads Person/Family/Company.
-  - Not yet: a grouping has no profile page of its own (the name link opens its
-    form), and there is no UI to convert a family into a company.
+  - **A grouping has its own profile** (`#group-view`, deep-linked `?hh=<id>`),
+    with the same tab strip a person has — Overview, Notes, Tasks, Emails,
+    Meetings, Timeline, Activity Log, Documents, Additional Info | Onboarding,
+    Assessments — where **every tab shows the union of its members' data**, each
+    row attributed to the member it belongs to and linking to that person.
+    Clicking a grouping's **name** in the list opens it; the caret and the rest
+    of the row still toggle the accordion, and **Edit moved into the profile
+    header** (the toggle is worth more on the row than a second edit affordance).
+    A person's family/company chip now opens this profile too, and Back from a
+    member returns to the grouping rather than the full list.
+  - **Nothing is stored against the grouping itself.** Notes and tasks are keyed
+    by a client *email* server-side (`isValidEmail` on both), so anything written
+    from this view is attributed to a member picked explicitly — the picker sits
+    next to the control with "a note belongs to a person, not a family" spelled
+    out. Members without a contact record are listed in the roster (the grouping
+    does claim them) but are **excluded from those pickers**, since there is no
+    record to attach to. Writable: Notes, Tasks (plus the live done-checkbox,
+    which needs only a task id), Documents (filed under the chosen member).
+  - **Read-only, by deliberate choice, not omission:** Meetings (scheduling needs
+    a type, advisor and prep checklist — the calendar owns that form, and each
+    row links into it); Assessments (a summary per member, because a
+    three-member family would otherwise render dozens of charts on one tab);
+    Additional Info (individual answers — occupation, licence, health — where a
+    form writing to several records at once would be a foot-gun); Onboarding.
+  - **Additional Info adds one thing no member's record holds**: a combined
+    balance sheet, summed from the same three inputs the per-person derivation
+    uses so it cannot disagree with them. Members with nothing recorded
+    contribute zero, which the panel says out loud.
+  - **The combined Timeline has no "load older"** — paging N member cursors in
+    step would interleave wrongly, so it shows the most recent 80 merged and
+    says so, pointing at a member for their full history.
+  - **Cost note:** Emails is the expensive tab — one request per member, each
+    fanning out across every staff mailbox server-side. Every fetch-backed tab is
+    in `GROUP_POLL_SKIP_TABS`, so the 20s poll re-renders the header only and
+    never silently re-issues those calls.
+  - Not yet: no UI to convert a family into a company, and a grouping has no
+    print/PDF report of its own.
 - **Tasks** (`task:<invTs>-<rand>` KV, **encrypted**): title, description,
   client, assignee (admin), **`list`** (board-column id, see below), due,
   priority (low/medium/high), category
