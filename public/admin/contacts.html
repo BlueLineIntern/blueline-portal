@@ -623,6 +623,27 @@
   const ALL_MODULE_KEYS = [...MODULES.map((mod) => mod.key), ...CATEGORY_MODULES.map((mod) => mod.key)];
   const CATEGORY_MODULE_MAP = Object.fromEntries(CATEGORY_MODULES.map((mod) => [mod.key, mod]));
   const ONBOARDING_WIZARD_KEY = 'onboardingWizard';
+
+  // ---------- Onboarding tab: switched off ----------
+  // Hidden on request (2026-08-06), NOT deleted — flipping this to true brings
+  // it back on both the person and the family/company profile with nothing else
+  // to change: the tab buttons, panels, renderers and `?tab=onboarding` deep
+  // link are all still in place and still work.
+  //
+  // While it is off: the two tab buttons are hidden, `?tab=onboarding` falls
+  // back to Overview rather than opening a tab with no way to leave it, the
+  // renderers are skipped (no wasted work on every profile draw and poll), and
+  // the "View Onboarding" / "Full record" buttons that used to jump to the tab
+  // link to the Onboarding page instead, so they stay live rather than becoming
+  // dead controls. Onboarding data itself is untouched — the Onboarding page,
+  // the submissions and the signed agreements on the Documents tab are all
+  // unaffected.
+  const SHOW_ONBOARDING_TAB = false;
+
+  if (!SHOW_ONBOARDING_TAB) {
+    document.querySelectorAll('[data-tab="onboarding"], [data-gtab="onboarding"]')
+      .forEach((b) => b.classList.add('hidden'));
+  }
   const STATUS_BADGE = {
     prospect: 'badge-amber',
     onboarding: 'badge-sky',
@@ -1523,6 +1544,9 @@
   }
 
   function setTab(tab) {
+    // A stale bookmark or link to ?tab=onboarding would otherwise open a tab
+    // with no visible button to leave it.
+    if (tab === 'onboarding' && !SHOW_ONBOARDING_TAB) tab = 'overview';
     activeTab = tab;
     document.querySelectorAll('#profile-tabs .tab').forEach((b) =>
       b.classList.toggle('active', b.dataset.tab === tab)
@@ -1551,8 +1575,11 @@
   );
 
   // "View Onboarding" / "Full record" buttons on other tabs. Delegated because
-  // those tabs are re-rendered on every profile draw and poll.
+  // those tabs are re-rendered on every profile draw and poll. With the tab off
+  // these are rendered as links to the Onboarding page instead (see
+  // clientOnboardingHtml), so this only ever fires while the tab is on.
   document.addEventListener('click', (e) => {
+    if (!SHOW_ONBOARDING_TAB) return;
     if (e.target.closest('.onb-goto-tab')) setTab('onboarding');
   });
 
@@ -1589,7 +1616,7 @@
 
     renderOverviewTab(c, p, opts.background);
     renderAssessmentsTab(c);
-    renderOnboardingTab(c);
+    if (SHOW_ONBOARDING_TAB) renderOnboardingTab(c);
     renderDocumentsTab(c);
     renderEmailsTab(c);
     // A background poll must never yank a tab out from under the advisor.
@@ -1747,9 +1774,15 @@
   function clientOnboardingHtml(c) {
     const rows = linkedOnboardings(c).map((r) => {
       const done = onbSectionsDone(r);
+      // With the Onboarding tab off, this goes to the Onboarding page rather
+      // than jumping to a hidden tab — the record is still reachable, just not
+      // from inside the profile.
+      const view = SHOW_ONBOARDING_TAB
+        ? '<button type="button" class="btn btn-ghost btn-small onb-goto-tab">View Onboarding</button>'
+        : `<a class="btn btn-ghost btn-small" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">View Onboarding</a>`;
       return `<div class="onb-link-row">
         <span><strong>${escapeHtml(r.onboardingId)}</strong> · ${done} / ${ONB_SECTIONS.length} sections · ${r.completionTime ? 'Completed' : 'In progress'}</span>
-        <button type="button" class="btn btn-ghost btn-small onb-goto-tab">View Onboarding</button>
+        ${view}
       </div>`;
     });
     return rows.length
@@ -1966,7 +1999,9 @@
           : '<p class="empty">No signature captured.</p>';
         return `<div class="panel">
           <div class="panel-head"><h2>Advisory Agreement — ${escapeHtml(r.onboardingId)}</h2>
-            <button type="button" class="panel-link onb-goto-tab">Full record →</button></div>
+            ${SHOW_ONBOARDING_TAB
+              ? '<button type="button" class="panel-link onb-goto-tab">Full record →</button>'
+              : `<a class="panel-link" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">Full record →</a>`}</div>
           <div class="kv-rows">
             ${kvRow('Typed name', a.typedName ? escapeHtml(a.typedName) : '—')}
             ${kvRow('Signed at', a.signedAt ? escapeHtml(fmtDateTime(a.signedAt)) : '—')}
@@ -3173,6 +3208,7 @@
     'activity', 'documents', 'additional', 'onboarding', 'assessments'];
 
   function setGroupTab(tab) {
+    if (tab === 'onboarding' && !SHOW_ONBOARDING_TAB) tab = 'overview';
     groupActiveTab = tab;
     document.querySelectorAll('#group-tabs .tab').forEach((b) =>
       b.classList.toggle('active', b.dataset.gtab === tab)

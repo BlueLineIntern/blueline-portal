@@ -250,9 +250,21 @@ Client portal is untouched and keeps its own look.
   suffix isn't swallowed; upsert preserves the `archived` flag. UI: filter pills
   with counts, search, New/Edit Contact modal, tabbed profile in the advisor's
   working order — **Overview, Notes, Tasks, Emails, Meetings, Timeline, Activity
-  Log, Documents, Additional Info | Onboarding, Assessments** (incl. the
-  assignment editor). The divider separates what's looked at on every visit from
-  the two records opened deliberately.
+  Log, Documents, Additional Info | Assessments** (incl. the assignment editor).
+  The divider separates what's looked at on every visit from the record opened
+  deliberately.
+- **The Onboarding tab is switched OFF, not removed** (`SHOW_ONBOARDING_TAB =
+  false` in contacts.html, hidden on request 2026-08-06). Flip that one constant
+  to `true` and it returns on both the person and the family/company profile
+  with nothing else to change — buttons, panels, renderers and the
+  `?tab=onboarding` deep link are all still in place. While off: the two tab
+  buttons are hidden, `?tab=onboarding` falls back to Overview (rather than
+  opening a tab with no visible way to leave it), the renderers are skipped so a
+  profile draw and every 20s poll do no wasted work, and the **"View Onboarding"
+  / "Full record →" controls become links to `/admin/onboarding.html?id=…`**
+  instead of tab jumps — they stay live rather than becoming dead buttons.
+  Onboarding *data* is untouched: the Onboarding page, the submissions, the
+  auto-tasks and the signed agreements shown on the Documents tab all still work.
 - **Emails** (no storage — `fetchClientEmailHistory()` in worker.js) is a LIVE
   read of a client's email history via Microsoft Graph, fetched fresh every time
   the tab is opened and never written anywhere. Needs the same app registration
@@ -407,8 +419,10 @@ Client portal is untouched and keeps its own look.
     its `Type` column reads Person/Family/Company.
   - **A grouping has its own profile** (`#group-view`, deep-linked `?hh=<id>`),
     with the same tab strip a person has — Overview, Notes, Tasks, Emails,
-    Meetings, Timeline, Activity Log, Documents, Additional Info | Onboarding,
-    Assessments — where **every tab shows the union of its members' data**, each
+    Meetings, Timeline, Activity Log, Documents, Additional Info | Assessments
+    (plus Onboarding, currently switched off with the person's — see
+    `SHOW_ONBOARDING_TAB`) — where **every tab shows the union of its members'
+    data**, each
     row attributed to the member it belongs to and linking to that person.
     Clicking a grouping's **name** in the list opens it; the caret and the rest
     of the row still toggle the accordion, and **Edit moved into the profile
