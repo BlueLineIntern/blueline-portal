@@ -247,8 +247,36 @@ $clientEmailsMock = @{
             webLink = 'https://outlook.office.com/mail/id/mock-m2'
             isDraft = $false
             viaMailbox = 'fsabin@blueline-advisors.com'
+        },
+        # DECOY. Stands in for what Graph's $search actually returns and what the
+        # first version of this feature wrongly displayed: a message that only
+        # QUOTES the client's address in its text, between two advisors, with the
+        # client on none of the address lines. The participant gate must drop it.
+        @{
+            id = 'm3'; subject = 'Internal: prospect list review'
+            from = @{ name = 'Jenn Young'; address = 'jyoung@blueline-advisors.com' }
+            to = @(@{ name = 'Fred Sabin'; address = 'fsabin@blueline-advisors.com' })
+            cc = @()
+            receivedDateTime = '2026-07-30T11:00:00Z'
+            bodyPreview = 'Pulled the Q3 prospect list - john.smith@example.com and two others are up for a review call. No action needed yet.'
+            webLink = 'https://outlook.office.com/mail/id/mock-m3'
+            isDraft = $false
+            viaMailbox = 'jyoung@blueline-advisors.com'
         }
     )
+}
+
+# Mirrors messageParticipants() in worker.js: a message belongs to a client's
+# correspondence only if the address is an actual sender or recipient, never
+# because the text mentions it. The mock's messages are already in the flattened
+# shape the worker emits, so this checks from/to/cc rather than Graph's nested
+# emailAddress objects.
+function Test-ClientIsParticipant($msg, $email) {
+    $addrs = New-Object System.Collections.Generic.HashSet[string]
+    if ($msg.from -and $msg.from.address) { $null = $addrs.Add(([string]$msg.from.address).ToLower()) }
+    foreach ($r in @($msg.to)) { if ($r -and $r.address) { $null = $addrs.Add(([string]$r.address).ToLower()) } }
+    foreach ($r in @($msg.cc)) { if ($r -and $r.address) { $null = $addrs.Add(([string]$r.address).ToLower()) } }
+    return $addrs.Contains(([string]$email).ToLower())
 }
 $clientInfoDates = @('occupationStartDate', 'retirementDate', 'signedFeeAgreementDate',
     'signedIpsAgreementDate', 'signedFpAgreementDate', 'lastAdvOfferingDate',
@@ -1413,9 +1441,15 @@ while ($listener.IsListening) {
             # one seeded test contact and empty for everyone else - enough to
             # exercise the tab's three states (has mail / no mail / not
             # configured) without live Outlook credentials.
-            $msgs = if ($clientEmailsMock.ContainsKey($target)) { $clientEmailsMock[$target] } else { @() }
+            $candidates = if ($clientEmailsMock.ContainsKey($target)) { $clientEmailsMock[$target] } else { @() }
+            # Same two-stage shape as the worker: the seeded list stands in for
+            # what $search returns, then the participant gate drops text-only
+            # matches (see the decoy in $clientEmailsMock).
+            $msgs = @($candidates | Where-Object { Test-ClientIsParticipant $_ $target })
+            $dropped = @($candidates).Count - $msgs.Count
             Write-Audit $adminEmail 'view-client-emails' @{ client = $target; count = $msgs.Count }
-            Send-Json $ctx 200 @{ emails = $msgs; configured = $true; permissionMissing = $false; mailboxErrors = @() }
+            Send-Json $ctx 200 @{ emails = $msgs; configured = $true; permissionMissing = $false
+                mailboxErrors = @(); droppedNotParticipant = $dropped }
         }
         elseif ($path -match '^/api/admin/contacts/(.+)/documents$' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }

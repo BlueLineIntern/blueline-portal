@@ -269,13 +269,28 @@ Client portal is untouched and keeps its own look.
     twice, once per mailbox). Confirmed with the firm: single-domain tenant, no
     Application Access Policy scoping `Mail.Read` down further — "every admin
     mailbox" is the intended full scope, not a fallback approximation of it.
-  - **Uses `$search`, not `$filter`.** Graph's `/messages` resource can only
-    `$filter` by sender, never by recipient — a filter-only approach would
-    silently miss every email the client *received*. `$search` covers
-    from/to/cc/subject/body, at the accepted cost that a message merely
-    *mentioning* the client's address (not actually to/from them) can also
-    surface. `$orderby` cannot be combined with `$search` on this resource, so
-    Graph returns relevance order and the merge re-sorts by date after the fact.
+  - **Search is two-stage, and the second stage is the one that matters.**
+    Stage 1 finds candidates with `$search` (not `$filter`: Graph's `/messages`
+    can only `$filter` by sender, never by recipient, so a filter-only approach
+    would silently miss every email the client *received*). It prefers
+    `participants:<addr>` KQL, which restricts matching to the people on the
+    message, and falls back to a plain term search if the tenant rejects that
+    shape — a 401/403 breaks out instead of retrying, so a permission failure
+    still reads as "not authorized" rather than as a bad query. Stage 2,
+    `messageParticipants()`, **drops any result whose
+    from/sender/to/cc/bcc/replyTo doesn't actually contain the address.**
+    `$search` scores on message *text*, so it returns mail that merely quotes an
+    address — a forwarded thread, a signature block, a statement listing it. The
+    first version shipped without this gate, as an "accepted tradeoff", and it
+    showed up in production as unrelated mail under a client. The gate runs on
+    the response rather than being trusted from the query, so it holds whichever
+    search shape ran; `$top` is deliberately generous (100) because the gate
+    discards part of every page. `$orderby` cannot be combined with `$search`, so
+    Graph returns relevance order and the merge re-sorts by date.
+  - `internetMessageId` is in the `$select` because dedupe keys on it — each
+    mailbox's copy of one message has its own `id`, so deduping on `id` keeps
+    both copies. It was missing from the original `$select`, which silently
+    defeated the dedupe for anything CC'd to two admins.
   - **Three distinct states, not two.** "Not connected" (the Outlook app
     registration itself isn't configured) is different from "not authorized"
     (registration exists, but `Mail.Read` was never consented to — every

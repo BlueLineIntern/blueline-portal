@@ -4118,24 +4118,65 @@ async function handleAdminDeleteClientDoc(request, env, cors, id) {
 // call. A client's email is exactly the kind of data that should have no
 // second copy sitting in this app's storage once someone stops looking at it.
 //
+// SEARCH IS TWO-STAGE, and the second stage is the one that matters.
+//
+// Stage 1 — find candidates. $search, not $filter: Graph's /messages resource
+// cannot $filter by recipient (to/cc) at all, only by sender, so a filter-only
+// approach would silently miss every email the client RECEIVED. The query
+// prefers `participants:<addr>` KQL, which restricts matching to the people on
+// the message, and falls back to a plain term search if the tenant rejects that
+// shape.
+//
+// Stage 2 — reject anything the client isn't actually on. $search scores on
+// message *text*, so it returns mail that merely quotes an address: a forwarded
+// thread, a signature block, a statement that lists it. This was the original
+// version's accepted-tradeoff bug, and it showed up in practice as unrelated
+// mail appearing under a client. messageParticipants() now gates every result on
+// the address being a real sender or recipient. The gate runs on the response
+// rather than being trusted from the query, so it holds no matter which of the
+// two search shapes ran, and no matter how Graph chose to rank things.
+//
 // Real-Graph-unverified, like the Learning and Client Documents uploads: there
-// are no Azure credentials in this environment to test the actual query
-// against a live mailbox. $search is used deliberately over $filter — Graph's
-// /messages resource does not support filtering by recipient (to/cc) at all,
-// only by sender, so a $filter-only approach would silently miss every email
-// the client received rather than sent. $search covers from/to/cc/subject/body,
-// which also means it can surface a message that only MENTIONS the client's
-// address without being addressed to them — an accepted precision tradeoff
-// given the alternative is missing real correspondence.
-async function fetchClientEmailHistory(env, clientEmail) {
-  if (!outlookConfigured(env)) return { emails: [], configured: false, permissionMissing: false };
+// are no Azure credentials in this environment to run either query against a
+// live mailbox. The participant gate itself is plain set membership over the
+// address fields and is exercised end-to-end against the dev mock, which seeds a
+// deliberate body-text-only decoy.
+// Every address on a message: sender, from, to, cc, bcc and reply-to. This is
+// what decides whether a message is actually part of a client's correspondence,
+// INDEPENDENT of how Graph decided to match it.
+function messageParticipants(m) {
+  const out = new Set();
+  const add = (entry) => {
+    const addr = entry && entry.emailAddress && entry.emailAddress.address;
+    if (addr) out.add(String(addr).trim().toLowerCase());
+  };
+  add(m.from);
+  add(m.sender);
+  (m.toRecipients || []).forEach(add);
+  (m.ccRecipients || []).forEach(add);
+  (m.bccRecipients || []).forEach(add);
+  (m.replyTo || []).forEach(add);
+  return out;
+}
 
-  const token = await getGraphToken(env);
-  const mailboxes = await allAdminEmails(env);
-  const perMailbox = await Promise.all(mailboxes.map(async (mailbox) => {
-    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages`
-      + `?$search="${encodeURIComponent(clientEmail)}"&$top=25`
-      + `&$select=subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,webLink,isDraft`;
+const CLIENT_EMAIL_SELECT = 'subject,from,sender,toRecipients,ccRecipients,bccRecipients,replyTo,'
+  + 'receivedDateTime,bodyPreview,webLink,isDraft,internetMessageId';
+
+// One mailbox, one client address. Tries a `participants:` KQL search first,
+// which restricts the match to the people on the message instead of any text
+// inside it, and falls back to the plain term search if the tenant rejects that
+// query shape — the participant filter downstream makes both precise, so the
+// fallback costs recall precision, never correctness.
+async function searchMailboxForClient(env, token, mailbox, clientEmail) {
+  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages`;
+  // $top is generous because the participant filter below discards whatever
+  // Graph matched on body text; a tight $top would spend the page on noise.
+  const queries = [
+    `${base}?$search="participants:${encodeURIComponent(clientEmail)}"&$top=100&$select=${CLIENT_EMAIL_SELECT}`,
+    `${base}?$search="${encodeURIComponent(clientEmail)}"&$top=100&$select=${CLIENT_EMAIL_SELECT}`,
+  ];
+  let lastStatus = 0;
+  for (const url of queries) {
     try {
       // $orderby cannot be combined with $search on this resource — Graph
       // rejects the combination — so results come back relevance-ordered and
@@ -4143,15 +4184,28 @@ async function fetchClientEmailHistory(env, clientEmail) {
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.body-content-type="text"' },
       });
-      if (!res.ok) {
-        const status = res.status;
-        return { mailbox, ok: false, status, messages: [] };
-      }
-      const data = await res.json();
-      return { mailbox, ok: true, status: 200, messages: data.value || [] };
+      if (res.ok) return { ok: true, status: 200, messages: (await res.json()).value || [] };
+      lastStatus = res.status;
+      // A permission failure is about Mail.Read, not the query shape — retrying
+      // with a different search syntax would fail identically and only muddy
+      // the "not authorized" signal the UI keys off.
+      if (res.status === 403 || res.status === 401) break;
     } catch (err) {
-      return { mailbox, ok: false, status: 0, error: String(err), messages: [] };
+      lastStatus = 0;
     }
+  }
+  return { ok: false, status: lastStatus, messages: [] };
+}
+
+async function fetchClientEmailHistory(env, clientEmail) {
+  if (!outlookConfigured(env)) return { emails: [], configured: false, permissionMissing: false };
+
+  const token = await getGraphToken(env);
+  const mailboxes = await allAdminEmails(env);
+  const target = String(clientEmail).trim().toLowerCase();
+  const perMailbox = await Promise.all(mailboxes.map(async (mailbox) => {
+    const r = await searchMailboxForClient(env, token, mailbox, target);
+    return { mailbox, ...r };
   }));
 
   const anySucceeded = perMailbox.some((r) => r.ok);
@@ -4165,10 +4219,22 @@ async function fetchClientEmailHistory(env, clientEmail) {
 
   const seen = new Set();
   const merged = [];
+  let droppedNotParticipant = 0;
   for (const { mailbox, messages } of perMailbox) {
     for (const m of messages) {
+      // THE precision gate. Graph's $search scores on message *text*, so a mail
+      // that merely quotes an address — a forwarded thread, a signature block, a
+      // statement listing it — comes back as a hit. Requiring the address to be
+      // an actual sender or recipient is the only way to be sure a message
+      // belongs to this client's correspondence, and it is checked here rather
+      // than trusted from the query so it holds whichever search shape ran.
+      if (!messageParticipants(m).has(target)) {
+        droppedNotParticipant += 1;
+        continue;
+      }
       // A message CC'd to two admins is found once per mailbox it landed in;
-      // internetMessageId identifies the actual message across those copies.
+      // internetMessageId identifies the actual message across those copies
+      // (each copy has its own `id`, so deduping on that would keep both).
       const dedupeKey = m.internetMessageId || m.id;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
@@ -4195,6 +4261,9 @@ async function fetchClientEmailHistory(env, clientEmail) {
     // Surfaced so a partial result (one mailbox down, others fine) doesn't
     // silently read as "this client has no other email."
     mailboxErrors: perMailbox.filter((r) => !r.ok).map((r) => ({ mailbox: r.mailbox, status: r.status })),
+    // Diagnostic: how many text-only matches the participant gate rejected. A
+    // large number here is the gate doing its job, not a fault.
+    droppedNotParticipant,
   };
 }
 
