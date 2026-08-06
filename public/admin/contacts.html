@@ -111,11 +111,15 @@
   .doc-upload-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 5px; }
 
   /* ---------- Additional Info ----------
-     Two columns of sections on a wide screen, one on a narrow one. Each section
-     is its own panel so a section's rows stay visually attached to its heading
-     when the columns reflow. */
-  .ai-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; align-items: start; }
-  .ai-grid .panel { margin-bottom: 0; }
+     A masonry-style column flow, not a grid: sections vary a lot in row count
+     (Employment has 4, Other Information has 10), and a strict grid leaves a
+     tall panel stranded alone in its row with dead space beside it — CSS grid
+     places by row, not by which column has the most room. `column-width` packs
+     each panel into whichever column is shortest so far, closing that gap, and
+     still collapses to fewer columns (then one) as the viewport narrows,
+     matching the old grid's responsive behavior without a media query. */
+  .ai-grid { column-width: 340px; column-gap: 20px; }
+  .ai-grid .panel { margin-bottom: 20px; break-inside: avoid; }
   /* "Not Set" is the spec'd empty value here, not an em-dash — it reads as a
      field waiting to be filled rather than one that has no answer. */
   .ai-unset { color: var(--muted-soft); font-weight: var(--fw-medium); }
