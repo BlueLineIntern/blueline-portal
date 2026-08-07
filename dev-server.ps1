@@ -177,6 +177,15 @@ $timelineLog = [System.Collections.ArrayList]::new()  # client history entries (
 $autoTaskMarkers = @{}  # rule:client -> fired
 $notifSeen = @{}        # admin email -> last time they opened notifications
 $boardLists = @()       # board columns: [{id, type(person/custom), account?, name?, createdAt}]
+# Links the client portal's Links tab shows. Seeded with the two the firm asked
+# for so local dev has something to render. NO credentials here by design — see
+# the PORTAL_LINKS_KEY comment in worker.js for why.
+$portalLinks = @(
+    [ordered]@{ id = 'lnk-tamarac'; label = 'Tamarac'; url = 'https://clientportal.tamaracinc.com/'
+        description = 'Your portfolio, performance reporting and statements.'; enabled = $true }
+    [ordered]@{ id = 'lnk-emoney'; label = 'eMoney'; url = 'https://wealth.emaplan.com/'
+        description = 'Your financial plan and account aggregation.'; enabled = $true }
+)
 $script:crmCounter = 0
 $taskPriorities = @('low', 'medium', 'high')
 $taskCategories = @(
@@ -1198,6 +1207,52 @@ while ($listener.IsListening) {
             $timelineLog.Clear()
             foreach ($e in $keep) { $null = $timelineLog.Add($e) }
             Send-Json $ctx 200 @{ ok = $true }
+        }
+        # ---- Portal links (mirror of worker.js handleAdminGetPortalLinks etc.) ----
+        # https-only validation is mirrored here on purpose: the client portal
+        # renders these as hrefs, so a javascript: URL would be stored XSS, and
+        # the mock is where that path gets exercised locally.
+        elseif ($path -eq '/api/admin/portal-links' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            Send-Json $ctx 200 @{ links = @($portalLinks) }
+        }
+        elseif ($path -eq '/api/admin/portal-links' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $body = Read-Body $ctx
+            if (-not $body -or $null -eq $body.links) { Send-Json $ctx 400 @{ error = 'links must be a list' }; continue }
+            if (@($body.links).Count -gt 12) { Send-Json $ctx 400 @{ error = 'No more than 12 links' }; continue }
+            $clean = [System.Collections.ArrayList]@()
+            $bad = $null
+            foreach ($l in @($body.links)) {
+                if (-not $l) { continue }
+                $label = ([string]$l.label).Trim()
+                $url = ([string]$l.url).Trim()
+                if (-not $label) { $bad = 'Every link needs a label'; break }
+                $ok = $false
+                try { $ok = ([Uri]$url).Scheme -eq 'https' } catch { $ok = $false }
+                if (-not $ok) { $bad = "`"$label`" needs a valid https:// address"; break }
+                $id = ([string]$l.id).Trim()
+                if (-not $id) { $script:crmCounter++; $id = 'lnk-{0:d4}' -f $script:crmCounter }
+                $null = $clean.Add([ordered]@{
+                    id = $id; label = $label; url = $url
+                    description = ([string]$l.description).Trim()
+                    enabled = ($l.enabled -ne $false)
+                })
+            }
+            if ($bad) { Send-Json $ctx 400 @{ error = $bad }; continue }
+            $script:portalLinks = @($clean)
+            Write-Audit $adminEmail 'update-portal-links' @{ count = $portalLinks.Count }
+            Send-Json $ctx 200 @{ links = @($portalLinks) }
+        }
+        elseif ($path -eq '/api/portal-links' -and $method -eq 'GET') {
+            if (-not (Get-SessionEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
+            $visible = @($portalLinks | Where-Object {
+                $ok = $false
+                try { $ok = ([Uri]$_.url).Scheme -eq 'https' } catch { $ok = $false }
+                $_.enabled -ne $false -and $ok
+            } | ForEach-Object { [ordered]@{ id = $_.id; label = $_.label; url = $_.url; description = $_.description } })
+            Send-Json $ctx 200 @{ links = $visible }
         }
         elseif ($path -eq '/api/admin/lists' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }

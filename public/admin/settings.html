@@ -14,7 +14,7 @@
     <div class="page-head">
       <div>
         <h1>Settings</h1>
-        <p class="sub">Admin accounts, security, and the audit trail.</p>
+        <p class="sub">Admin accounts, client portal links, security, and the audit trail.</p>
       </div>
     </div>
 
@@ -40,6 +40,27 @@
       <p class="hint" style="margin-top:var(--sp-2);">Tell them this password directly — there's no email invite. They'll be
       asked to set up an authenticator app (two-factor) the first time they sign in, same as everyone else.</p>
       <p class="form-error" id="new-admin-error"></p>
+    </div>
+
+    <div class="panel" id="links-card">
+      <div class="panel-head">
+        <h2>Client Portal Links</h2>
+        <button type="button" class="btn btn-ghost btn-small" id="links-add-btn">+ Add link</button>
+      </div>
+      <p class="hint">The links every client sees on the <strong>Links</strong> tab of their portal — Tamarac,
+      eMoney, anything else you hand off. Addresses must be <code>https://</code>. Untick <em>Show</em> to
+      retire a link without losing its address.</p>
+      <p class="hint"><strong>Usernames and passwords are deliberately not stored here.</strong> Both platforms
+      invite clients directly and let them set their own password, so the portal only points at the front door.
+      Holding client credentials would put the firm in custody of their logins, let any admin sign in as them
+      with no trail on the provider's side, and generally breaches those providers' terms.</p>
+      <p class="panel-status" id="links-status"></p>
+      <div id="links-rows"></div>
+      <div style="margin-top:var(--sp-4); display:flex; gap:var(--sp-3); align-items:center;">
+        <button type="button" class="btn btn-primary btn-small" id="links-save-btn">Save links</button>
+        <span class="hint" id="links-dirty"></span>
+      </div>
+      <p class="form-error" id="links-error"></p>
     </div>
 
     <div class="panel" id="audit-card">
@@ -71,6 +92,110 @@
 
   let allAudit = [];
   let auditCursor = null;
+
+  // ---------- Client portal links ----------
+  // Edited as a whole list and saved in one POST (the worker replaces the list),
+  // so row order here is display order in the client portal. Rows live in
+  // `portalLinks` rather than being read back out of the DOM on save, so an
+  // added-then-removed row can't leave a stale input behind.
+  let portalLinks = [];
+
+  // https only. Mirrors isSafeLinkUrl in worker.js — the server is the real gate
+  // (it refuses the save), this is here so the admin gets told which row is
+  // wrong before a round trip rejects the lot.
+  function isHttpsUrl(raw) {
+    try {
+      return new URL(String(raw)).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  function renderPortalLinks() {
+    const wrap = document.getElementById('links-rows');
+    if (!portalLinks.length) {
+      wrap.innerHTML = '<p class="empty">No links yet — use “+ Add link” to add Tamarac, eMoney or anything else.</p>';
+      return;
+    }
+    wrap.innerHTML = portalLinks.map((l, i) => `
+      <div class="row-item" data-i="${i}">
+        <div class="row-main">
+          <div style="display:flex; gap:var(--sp-3); flex-wrap:wrap; align-items:flex-start;">
+            <input type="text" class="input link-label" data-i="${i}" placeholder="Label (e.g. Tamarac)"
+              maxlength="80" value="${escapeHtml(l.label || '')}" style="flex:1; min-width:150px;" />
+            <input type="url" class="input link-url" data-i="${i}" placeholder="https://…"
+              maxlength="500" value="${escapeHtml(l.url || '')}" style="flex:2; min-width:220px;" />
+          </div>
+          <input type="text" class="input link-desc" data-i="${i}" placeholder="Short description shown to the client (optional)"
+            maxlength="300" value="${escapeHtml(l.description || '')}" style="margin-top:var(--sp-2); width:100%;" />
+        </div>
+        <div class="row-side">
+          <label class="hint" style="display:inline-flex; align-items:center; gap:6px; white-space:nowrap;">
+            <input type="checkbox" class="link-enabled" data-i="${i}" ${l.enabled !== false ? 'checked' : ''} /> Show
+          </label>
+          <button type="button" class="btn btn-danger btn-small link-remove" data-i="${i}">Remove</button>
+        </div>
+      </div>`).join('');
+
+    // Every edit writes straight back into portalLinks so Save has no DOM
+    // reading to do and Remove can't shift values between rows.
+    const bind = (sel, field) => wrap.querySelectorAll(sel).forEach((el) =>
+      el.addEventListener('input', () => { portalLinks[el.dataset.i][field] = el.value; markLinksDirty(); })
+    );
+    bind('.link-label', 'label');
+    bind('.link-url', 'url');
+    bind('.link-desc', 'description');
+    wrap.querySelectorAll('.link-enabled').forEach((el) =>
+      el.addEventListener('change', () => { portalLinks[el.dataset.i].enabled = el.checked; markLinksDirty(); })
+    );
+    wrap.querySelectorAll('.link-remove').forEach((b) =>
+      b.addEventListener('click', () => {
+        portalLinks.splice(Number(b.dataset.i), 1);
+        renderPortalLinks();
+        markLinksDirty();
+      })
+    );
+  }
+
+  function markLinksDirty() {
+    document.getElementById('links-dirty').textContent = 'Unsaved changes';
+  }
+
+  document.getElementById('links-add-btn').addEventListener('click', () => {
+    portalLinks.push({ id: '', label: '', url: '', description: '', enabled: true });
+    renderPortalLinks();
+    markLinksDirty();
+  });
+
+  document.getElementById('links-save-btn').addEventListener('click', async () => {
+    const errEl = document.getElementById('links-error');
+    errEl.textContent = '';
+    // Validate before sending so the message names the offending row rather
+    // than the server's generic first-failure.
+    for (const [i, l] of portalLinks.entries()) {
+      if (!String(l.label || '').trim()) { errEl.textContent = `Row ${i + 1} needs a label.`; return; }
+      if (!isHttpsUrl(l.url)) { errEl.textContent = `“${l.label}” needs a valid https:// address.`; return; }
+    }
+    try {
+      const data = await api('/api/admin/portal-links', { method: 'POST', body: JSON.stringify({ links: portalLinks }) });
+      portalLinks = data.links || [];
+      renderPortalLinks();
+      document.getElementById('links-dirty').textContent = '';
+      document.getElementById('links-status').textContent = `Saved — clients see ${portalLinks.filter((l) => l.enabled !== false).length} link(s).`;
+    } catch (err) {
+      errEl.textContent = err.message;
+    }
+  });
+
+  async function loadPortalLinks() {
+    try {
+      const data = await api('/api/admin/portal-links');
+      portalLinks = data.links || [];
+      renderPortalLinks();
+    } catch (err) {
+      document.getElementById('links-status').textContent = `Could not load links: ${err.message}`;
+    }
+  }
 
   // ---------- Admin accounts / MFA ----------
   function renderAdmins(admins, you) {
@@ -227,6 +352,7 @@
   document.getElementById('audit-more-btn').addEventListener('click', () => loadOlderAudit());
 
   loadAdmins();
+  loadPortalLinks();
   loadAudit();
 </script>
 </body>

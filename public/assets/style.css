@@ -91,6 +91,66 @@ body {
   padding: var(--sp-10) var(--sp-6);
 }
 
+/* Client tab strip. Sits directly under the navy topbar as a light band, and
+   matches .container's 900px measure so the tabs line up with the content
+   below them rather than floating at a different width.
+   NOTE: this block is client-only. admin/contacts.html and admin/onboarding.html
+   load this stylesheet too (see the file header), but neither renders
+   .client-tabs, so these rules can't reach them. */
+.client-tabs {
+  background: var(--panel, #fff);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: var(--sp-2);
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 var(--sp-6);
+  /* Horizontal scroll rather than wrap: a wrapped strip changes the page's
+     vertical rhythm on a narrow phone, and there are few enough tabs that
+     scrolling is the lesser evil. */
+  overflow-x: auto;
+}
+
+.client-tab {
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  padding: var(--sp-4) var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.client-tab:hover { color: var(--navy); }
+
+.client-tab.active {
+  color: var(--navy);
+  border-bottom-color: var(--sky);
+  font-weight: var(--fw-semibold);
+}
+
+/* Home landing */
+.home-status-card h2 { margin-bottom: var(--sp-2); }
+
+.home-status-line {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  margin-bottom: var(--sp-5);
+}
+
+.home-shortcuts {
+  display: flex;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+/* Trailing note under the Links grid. Hidden by renderLinks when there are no
+   links, so an empty tab doesn't explain how to sign in to nothing. */
+.links-note { margin-top: var(--sp-5); }
+
 .footer {
   text-align: center;
   padding: var(--sp-5);

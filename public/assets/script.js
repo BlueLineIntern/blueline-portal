@@ -46,14 +46,64 @@ async function apiRequest(path, { method = "GET", body, auth = false } = {}) {
 
 // FPA module sections are static in index.html; the 12 category module
 // sections are generated at boot (see "Generated category module forms").
-const VIEW_IDS = ["auth", "home", "dashboard", "category"]
+const VIEW_IDS = ["auth", "home", "assignments", "links", "dashboard", "category"]
   .concat(MODULES.map((mod) => mod.key))
   .concat(CATEGORY_MODULES.map((mod) => mod.key));
+
+// The tab strip. `view` is the section the tab lands on; `loader` runs on click.
+// Adding the Documents tab later is one entry here plus its section — nothing
+// else in the nav needs to change.
+const CLIENT_TABS = [
+  { id: "home", label: "Home", view: "home" },
+  { id: "assignments", label: "Assignments", view: "assignments" },
+  { id: "links", label: "Links", view: "links" },
+];
+
+// Which tab is lit. Tracked separately from the visible view because the
+// drill-downs (the FPA dashboard, a category, an individual module form) are all
+// *inside* Assignments — showView swaps the section, but the strip must keep
+// showing Assignments rather than going blank on a sub-page.
+let activeTab = "home";
+
+// Every view that lives under a tab, so a drill-down keeps the right tab lit.
+const VIEW_TAB = { home: "home", links: "links" };
+["assignments", "dashboard", "category"]
+  .concat(MODULES.map((m) => m.key))
+  .concat(CATEGORY_MODULES.map((m) => m.key))
+  .forEach((v) => { VIEW_TAB[v] = "assignments"; });
 
 function showView(name) {
   VIEW_IDS.forEach((id) => document.getElementById(`view-${id}`).classList.add("hidden"));
   document.getElementById(`view-${name}`).classList.remove("hidden");
+  if (VIEW_TAB[name]) activeTab = VIEW_TAB[name];
+  renderTabs();
   window.scrollTo(0, 0);
+}
+
+function renderTabs() {
+  const wrap = document.getElementById("client-tabs");
+  if (!getSession()) {
+    wrap.classList.add("hidden");
+    wrap.innerHTML = "";
+    return;
+  }
+  wrap.classList.remove("hidden");
+  wrap.innerHTML = CLIENT_TABS.map((t) =>
+    `<button type="button" class="client-tab${activeTab === t.id ? " active" : ""}" data-tab-id="${t.id}"
+      aria-current="${activeTab === t.id ? "page" : "false"}">${escapeHtml(t.label)}</button>`
+  ).join("");
+  wrap.querySelectorAll(".client-tab").forEach((b) =>
+    b.addEventListener("click", () => openTab(b.dataset.tabId))
+  );
+}
+
+// Tab clicks always re-fetch rather than showing whatever was last rendered:
+// assignments and links are both admin-controlled and can change between
+// visits, and refreshState doubles as the session check.
+function openTab(id) {
+  if (id === "home") return loadHome();
+  if (id === "assignments") return loadAssignments();
+  if (id === "links") return loadLinks();
 }
 
 function updateNav() {
@@ -67,6 +117,7 @@ function updateNav() {
     navAuth.classList.add("hidden");
     navUsername.textContent = "";
   }
+  renderTabs();
 }
 
 // ---------- Module assignments ----------
@@ -82,12 +133,18 @@ function isAssigned(key) {
 // Fetch assessment progress and assignments together. Both require a valid
 // session, so this doubles as the session check on every entry point.
 async function refreshState() {
-  const [assessments, assignments] = await Promise.all([
+  // Links ride along so Home can decide whether to offer the Links shortcut
+  // without a second round trip. A links failure must not take down the
+  // assessment state the rest of the portal depends on, so it degrades to an
+  // empty list rather than rejecting the whole Promise.all.
+  const [assessments, assignments, links] = await Promise.all([
     apiRequest("/api/assessments", { auth: true }),
     apiRequest("/api/assignments", { auth: true }),
+    apiRequest("/api/portal-links", { auth: true }).catch(() => ({ links: [] })),
   ]);
   currentModules = assessments.modules || {};
   assignedKeys = assignments.assignments;
+  portalLinks = links.links || [];
 }
 
 // ---------- Auth ----------
@@ -152,12 +209,118 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
   showView("auth");
 });
 
-// ---------- Home hub ----------
+// ---------- Home (landing) ----------
 
-function renderHome() {
+// Counts what the client still owes across everything assigned to them, so Home
+// can lead with a number instead of restating the module grid that Assignments
+// already shows.
+function outstandingCount() {
+  const assigned = MODULES.concat(CATEGORY_MODULES).filter((mod) => isAssigned(mod.key));
+  return assigned.filter((mod) => !currentModules[mod.key]).length;
+}
+
+function renderHomeLanding() {
   const session = getSession();
   document.getElementById("home-welcome").textContent = session ? `Welcome, ${session.name}` : "Welcome";
 
+  const outstanding = outstandingCount();
+  const anyAssigned = MODULES.concat(CATEGORY_MODULES).some((mod) => isAssigned(mod.key))
+    || isAssigned("onboardingWizard");
+  document.getElementById("home-status-line").textContent = !anyAssigned
+    ? "Nothing is waiting on you right now. Your advisor will add assessments here when they're ready."
+    : outstanding === 0
+      ? "You're all caught up — every assessment assigned to you has been submitted."
+      : `You have ${outstanding} assessment${outstanding === 1 ? "" : "s"} left to complete.`;
+
+  // Shortcuts rather than a duplicate grid: Home points into the tabs, it
+  // doesn't reimplement them.
+  const shortcuts = [];
+  if (anyAssigned) {
+    shortcuts.push({ tab: "assignments", label: outstanding > 0 ? "Continue your assessments" : "Review your assessments" });
+  }
+  if (portalLinks.length) shortcuts.push({ tab: "links", label: "Open your platform links" });
+  const wrap = document.getElementById("home-shortcuts");
+  wrap.innerHTML = shortcuts
+    .map((s) => `<button type="button" class="btn btn-primary home-shortcut-btn" data-goto="${s.tab}">${escapeHtml(s.label)}</button>`)
+    .join("");
+  wrap.querySelectorAll(".home-shortcut-btn").forEach((b) =>
+    b.addEventListener("click", () => openTab(b.dataset.goto))
+  );
+}
+
+async function loadHome() {
+  const errorEl = document.getElementById("home-error");
+  errorEl.textContent = "";
+  try {
+    await refreshState();
+  } catch (err) {
+    if (err.message.includes("authenticated")) return bounceToAuth();
+    errorEl.textContent = "We couldn't load your latest progress — refresh to try again.";
+  }
+  renderHomeLanding();
+  showView("home");
+}
+
+// ---------- Links ----------
+
+let portalLinks = [];
+
+// Defence in depth: the write path already refuses anything but https
+// (isSafeLinkUrl in worker.js) and the read path filters again, but this value
+// ends up in an href, so it is re-checked at the point of use. A record written
+// before that validation existed can't become a javascript: link here.
+function isHttpsUrl(raw) {
+  try {
+    return new URL(String(raw)).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function renderLinks() {
+  const grid = document.getElementById("links-grid");
+  const safe = portalLinks.filter((l) => isHttpsUrl(l.url));
+  document.querySelector(".links-note").classList.toggle("hidden", !safe.length);
+  if (!safe.length) {
+    grid.innerHTML = `<p class="empty">No links have been set up yet. Your advisor will add them here.</p>`;
+    return;
+  }
+  // rel="noopener noreferrer" on every outbound link: without noopener the
+  // opened page gets a handle back to this one via window.opener.
+  grid.innerHTML = safe
+    .map((l) => `
+      <div class="card hub-card">
+        <h2>${escapeHtml(l.label)}</h2>
+        ${l.description ? `<p class="hub-card-desc">${escapeHtml(l.description)}</p>` : ""}
+        <a class="btn btn-primary hub-card-btn" href="${escapeHtml(l.url)}"
+           target="_blank" rel="noopener noreferrer">Open ${escapeHtml(l.label)} ↗</a>
+      </div>`)
+    .join("");
+}
+
+async function loadLinks() {
+  const errorEl = document.getElementById("links-error");
+  errorEl.textContent = "";
+  try {
+    const data = await apiRequest("/api/portal-links", { auth: true });
+    portalLinks = data.links || [];
+  } catch (err) {
+    if (err.message.includes("authenticated")) return bounceToAuth();
+    errorEl.textContent = "We couldn't load your links — refresh to try again.";
+  }
+  renderLinks();
+  showView("links");
+}
+
+// ---------- Assignments ----------
+
+function bounceToAuth() {
+  clearSession();
+  updateNav();
+  showView("auth");
+}
+
+function renderHome() {
   // Onboarding card — its two offerings (Financial Picture Analysis and the
   // New Client Onboarding wizard) are each gated by assignment; the whole card
   // hides only when both are unassigned.
@@ -204,29 +367,29 @@ function renderHome() {
   });
 }
 
-// Land here after login: fetch assessment progress (which also validates the
-// session), then show the hub with both offerings.
-async function loadHome() {
-  const errorEl = document.getElementById("home-error");
+// Fetch assessment progress (which also validates the session), then show the
+// assigned work. The empty state is driven off the same assignment checks
+// renderHome uses, so a client with nothing assigned sees one clear line
+// instead of a page of hidden cards.
+async function loadAssignments() {
+  const errorEl = document.getElementById("assignments-error");
   errorEl.textContent = "";
   try {
     await refreshState();
   } catch (err) {
-    if (err.message.includes("authenticated")) {
-      clearSession();
-      updateNav();
-      showView("auth");
-      return;
-    }
+    if (err.message.includes("authenticated")) return bounceToAuth();
     errorEl.textContent = "We couldn't load your latest progress — refresh to try again.";
   }
   renderHome();
-  showView("home");
+  const anyAssigned = MODULES.concat(CATEGORY_MODULES).some((mod) => isAssigned(mod.key))
+    || isAssigned("onboardingWizard");
+  document.getElementById("assignments-empty").classList.toggle("hidden", anyAssigned);
+  showView("assignments");
 }
 
 document.getElementById("home-open-fpa").addEventListener("click", () => loadDashboard());
-document.getElementById("dashboard-home-btn").addEventListener("click", () => loadHome());
-document.getElementById("category-home-btn").addEventListener("click", () => loadHome());
+document.getElementById("dashboard-home-btn").addEventListener("click", () => loadAssignments());
+document.getElementById("category-home-btn").addEventListener("click", () => loadAssignments());
 
 // ---------- Financial Picture Analysis (assessment dashboard) ----------
 

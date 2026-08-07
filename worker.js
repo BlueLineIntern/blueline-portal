@@ -5380,6 +5380,99 @@ async function handleAdminDeleteList(request, env, cors, id) {
   return json({ lists }, 200, cors);
 }
 
+// ---------- Portal links (client-facing external logins) ----------
+// The links the Links tab shows a client — Tamarac, eMoney, anything else the
+// firm wants to hand off to. Firm-wide rather than per-client: the login URL for
+// a platform is the same for everyone, and a per-client copy would be N records
+// to keep in step for no gain. `enabled` is how a link is retired without
+// losing its URL.
+//
+// NO CREDENTIALS ARE STORED HERE, deliberately. Holding a client's password to
+// a third-party financial platform would put the firm in custody of the
+// credential to their aggregated data, let any admin sign in as them with no
+// audit trail on the vendor's side, and generally breaks those vendors' terms.
+// Both platforms invite clients directly and let them set their own password;
+// this tab only points at the front door. If a username ever needs to ride
+// along it can be added per-client without touching this shape — but a password
+// field does not belong in it.
+const PORTAL_LINKS_KEY = 'portal_links';
+const PORTAL_LINKS_MAX = 12;
+
+// https ONLY, and parsed rather than pattern-matched. This value becomes an
+// href in the client portal, so `javascript:...` here would be stored XSS
+// against clients, entered by an admin. Checked on the way in (below) and again
+// on the way out when rendering (see renderLinks in script.js) — the write-side
+// check is the real gate, the read-side one is for records written before it.
+function isSafeLinkUrl(raw) {
+  try {
+    return new URL(String(raw)).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+async function getPortalLinks(env) {
+  try {
+    const rec = await decryptToObject(env, await env.PORTAL_KV.get(PORTAL_LINKS_KEY));
+    if (rec && Array.isArray(rec.links)) return rec.links;
+  } catch { /* fall through to empty */ }
+  return [];
+}
+
+function sanitizePortalLinks(body) {
+  if (!body || !Array.isArray(body.links)) return { error: 'links must be a list' };
+  if (body.links.length > PORTAL_LINKS_MAX) return { error: `No more than ${PORTAL_LINKS_MAX} links` };
+  const links = [];
+  for (const raw of body.links) {
+    if (!raw) continue;
+    const label = String(raw.label || '').trim().slice(0, 80);
+    const url = String(raw.url || '').trim().slice(0, 500);
+    if (!label) return { error: 'Every link needs a label' };
+    if (!isSafeLinkUrl(url)) return { error: `"${label}" needs a valid https:// address` };
+    links.push({
+      // Ids are stable across edits so a future per-client visibility list can
+      // reference them; generated here when a new row arrives without one.
+      id: String(raw.id || '').trim().slice(0, 40) || `lnk-${randomHex(4)}`,
+      label,
+      url,
+      description: String(raw.description || '').trim().slice(0, 300),
+      enabled: raw.enabled !== false,
+    });
+  }
+  return { links };
+}
+
+async function handleAdminGetPortalLinks(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  return json({ links: await getPortalLinks(env) }, 200, cors);
+}
+
+// Whole-list replace rather than per-row endpoints: the editor is a short list
+// the admin edits as a unit, and a replace keeps ordering (which is display
+// order) trivially correct.
+async function handleAdminSavePortalLinks(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const body = await request.json().catch(() => null);
+  const { links, error } = sanitizePortalLinks(body);
+  if (error) return json({ error }, 400, cors);
+  await env.PORTAL_KV.put(PORTAL_LINKS_KEY, await encryptJSON(env, { links }));
+  await logAudit(env, adminEmail, 'update-portal-links', { count: links.length });
+  return json({ links }, 200, cors);
+}
+
+// Client-facing. Returns only enabled links, and only the fields the portal
+// renders — `enabled` is an admin concern and doesn't need to leave the server.
+async function handleGetPortalLinks(request, env, cors) {
+  const email = await getSessionEmail(request, env);
+  if (!email) return json({ error: 'Not authenticated' }, 401, cors);
+  const links = (await getPortalLinks(env))
+    .filter((l) => l.enabled !== false && isSafeLinkUrl(l.url))
+    .map((l) => ({ id: l.id, label: l.label, url: l.url, description: l.description || '' }));
+  return json({ links }, 200, cors);
+}
+
 // ---------- Notes ----------
 
 async function handleAdminListNotes(request, env, cors) {
@@ -5633,6 +5726,9 @@ export default {
       if (url.pathname === '/api/assignments' && request.method === 'GET') {
         return await handleGetAssignments(request, env, cors);
       }
+      if (url.pathname === '/api/portal-links' && request.method === 'GET') {
+        return await handleGetPortalLinks(request, env, cors);
+      }
       const saveMatch = url.pathname.match(/^\/api\/assessments\/([a-z]+)$/);
       if (saveMatch && request.method === 'POST') {
         return await handleSaveAssessment(request, env, cors, saveMatch[1]);
@@ -5855,6 +5951,12 @@ export default {
       }
       if (taskMatch && request.method === 'DELETE') {
         return await handleAdminDeleteTask(request, env, cors, decodeURIComponent(taskMatch[1]));
+      }
+      if (url.pathname === '/api/admin/portal-links' && request.method === 'GET') {
+        return await handleAdminGetPortalLinks(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/portal-links' && request.method === 'POST') {
+        return await handleAdminSavePortalLinks(request, env, cors);
       }
       if (url.pathname === '/api/admin/lists' && request.method === 'GET') {
         return await handleAdminListLists(request, env, cors);
