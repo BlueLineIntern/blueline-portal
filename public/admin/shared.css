@@ -478,7 +478,11 @@ select:has(option[value=""]:checked:disabled) { color: var(--muted-soft); }
 .row-list { display: flex; flex-direction: column; }
 .row-item {
   display: flex; align-items: flex-start; gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-1); border-bottom: 1px solid var(--border);
+  /* var(--sp-4) horizontally, not the old var(--sp-1) — that left the tick/
+     checkbox and the priority rail sitting almost flush against the panel
+     edge. Matches the compliance tracker's .cmp-row, which uses the same value
+     for the same reason. */
+  padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--border);
   transition: background var(--transition);
 }
 .row-item:last-child { border-bottom: none; }
