@@ -1619,6 +1619,16 @@
     // and Activity accumulate paged-in history and scroll position that a
     // rebuild would silently discard. Those refresh on tab switch instead.
     if (opts.background && POLL_SKIP_TABS.has(activeTab)) return;
+    // A document a client sends in should appear while the advisor is sitting on
+    // the Documents tab, not only after navigating away and back. Both loaders
+    // are cache-guarded on `LoadedFor`, so a plain setTab() would early-return
+    // and never refetch — this forces it. renderDocumentsTab preserves the
+    // half-typed request form across the rebuild.
+    if (opts.background && activeTab === 'documents' && selectedEmail) {
+      loadClientDocs(selectedEmail, { force: true });
+      loadDocRequests(selectedEmail, { force: true });
+      return;
+    }
     setTab(activeTab);
   }
 
@@ -2137,12 +2147,23 @@
           ${sig}
         </div>`;
       });
+    // The new-request fields are the only unsaved state on this tab, and the
+    // 20s poll rebuilds it (see loadData) — so carry them across the rebuild.
+    // Without this, typing a request slowly meant losing it mid-sentence.
+    const keep = ['req-label', 'req-notes', 'req-due'].map((id) => {
+      const el = document.getElementById(id);
+      return { id, value: el ? el.value : '' };
+    });
     // Requests first: what you're still waiting on matters more than what has
     // already arrived.
     document.getElementById('tab-documents').innerHTML =
       docRequestsHtml() +
       attachedDocsHtml() +
       (agreements.length ? agreements.join('') : '<div class="panel"><p class="empty">No signed agreements on file for this contact.</p></div>');
+    keep.forEach((k) => {
+      const el = document.getElementById(k.id);
+      if (el && k.value) el.value = k.value;
+    });
     wireDocRequestActions();
     wireDocActions();
   }

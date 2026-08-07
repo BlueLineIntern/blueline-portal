@@ -469,6 +469,10 @@ const ACTIVITY_KIND = {
   'onboarding-completed': { icon: '★', cls: 'fi-milestone' },
   'agreement-signed': { icon: '★', cls: 'fi-milestone' },
   'assignments-changed': { icon: '⚙', cls: 'fi-client' },
+  // A client sending a document in is inbound work, so it gets the same
+  // "needs you" treatment as a new task rather than the neutral client dot.
+  'document-uploaded': { icon: '⇪', cls: 'fi-task' },
+  'document-requested': { icon: '⇪', cls: 'fi-client' },
 };
 function activityKind(type) {
   return ACTIVITY_KIND[type] || { icon: '•', cls: 'fi-client' };
@@ -615,6 +619,11 @@ const TL_LABELS = {
   'task-completed': 'task completed',
   'meeting-held': 'meeting held',
   'note-added': 'note added',
+  // Phrased as a clause following the client's name ("Dana Client sent a
+  // document"), matching the entries above — these render through the same
+  // `${client} ${label}` shape in the notification panel and the Workspace feed.
+  'document-uploaded': 'sent a document',
+  'document-requested': 'was asked for a document',
 };
 
 let notifState = { overdue: [], fresh: [], seen: null, loaded: false };

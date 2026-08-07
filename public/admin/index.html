@@ -192,6 +192,12 @@
           <div class="panel-head"><h2>Tasks</h2><a class="panel-link" href="/admin/operations.html">All tasks →</a></div>
           <div class="rail-body" id="r-tasks"></div>
         </div>
+        <!-- Documents clients have sent in. Derived from the activity feed this
+             page already fetches, so it costs no extra request. -->
+        <div class="panel">
+          <div class="panel-head"><h2>Client Documents</h2><span class="panel-status">recently received</span></div>
+          <div class="rail-body" id="r-docs"></div>
+        </div>
         <div class="panel">
           <div class="panel-head"><h2>Special Dates</h2><span class="panel-status">next 30 days</span></div>
           <div class="rail-body" id="r-dates"></div>
@@ -279,6 +285,20 @@
         break;
       case 'meeting-held':
         text = `<strong>${title}</strong>${rel} was held`;
+        break;
+      // Explicit cases rather than falling through to the default: these carry
+      // the document in `name`, not `title`, so the generic branch would render
+      // "(untitled)". Phrased with the client as the subject because they are
+      // the actor here — nobody on staff did this.
+      case 'document-uploaded': {
+        const docName = escapeHtml(d.name || d.filename || 'a document');
+        text = `${clientLink(e.client) || 'A client'} sent <span class="fq">${docName}</span>`;
+        meta = d.filename && d.filename !== d.name ? escapeHtml(d.filename) : '';
+        break;
+      }
+      case 'document-requested':
+        text = `<strong>${escapeHtml(d.label || 'A document')}</strong> was requested`
+          + `${e.client ? ` from ${clientLink(e.client)}` : ''}${by}`;
         break;
       default: {
         const label = TL_LABELS[e.type] || e.type;
@@ -722,6 +742,25 @@
         (railOverdue.length ? `<div class="rail-group">Overdue</div>` + railOverdue.slice(0, 8).map(railTask).join('') : '') +
         (railDueToday.length ? `<div class="rail-group soon">Due today</div>` + railDueToday.slice(0, 8).map(railTask).join('') : '');
       fill('r-tasks', taskHtml, 'Nothing overdue or due today.');
+
+      // ----- Client documents: what clients have sent in -----
+      // Read off the activity entries already fetched above rather than a new
+      // endpoint. Each row deep-links straight to that contact's Documents tab,
+      // because "a document arrived" is only useful if opening it is one click.
+      const sentDocs = (actData.entries || [])
+        .filter((e) => e.type === 'document-uploaded')
+        .slice(0, 8);
+      fill('r-docs', sentDocs.map((e) => {
+        const d = e.detail || {};
+        const name = escapeHtml(d.name || d.filename || 'Document');
+        return `<a class="rail-row" style="text-decoration:none;color:inherit"
+          href="/admin/contacts.html?c=${encodeURIComponent(e.client || '')}&tab=documents">
+          <div class="rr-main">
+            <div class="rr-title">${name}</div>
+            <div class="rr-rel">${escapeHtml(contactName(e.client))} · ${escapeHtml(relTime(e.ts))}</div>
+          </div>
+        </a>`;
+      }).join(''), 'No documents sent in recently.');
 
       // Completed onboardings whose advisory agreement is still unsigned. The
       // Queues card that also counted these is gone; the Compliance alerts
