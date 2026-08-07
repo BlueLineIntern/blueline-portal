@@ -708,8 +708,12 @@
       // heading (Overdue / Due today) already states the urgency in words, so
       // the row itself carries no urgency colour; a coloured edge bar here just
       // restated the heading in a second, competing hue.
-      const railTask = (t) => `<div class="rail-row">
-        <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" title="Mark complete" />
+      // A task already ticked off on the Tasks page shows struck through here so
+      // the rail doesn't read as though nobody has touched it. The checkbox still
+      // completes in one press: a two-step gate belongs on the Tasks page, not on
+      // a compact rail row where the second control has nowhere to go.
+      const railTask = (t) => `<div class="rail-row ${t.readyAt ? 'task-ready' : ''}">
+        <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" title="${t.readyAt ? 'Ticked off on the Tasks page — completes it' : 'Mark complete'}" />
         <div class="rr-main">
           ${t.category ? categoryBadge(t.category) + ' ' : ''}<a class="rr-title" href="/admin/contacts.html?c=${encodeURIComponent(t.client || '')}&tab=tasks">${escapeHtml(t.title)}</a>${t.client ? ` <span class="rr-rel">related to</span> ${clientLink(t.client)}` : ''}
         </div>

@@ -492,6 +492,9 @@ function New-MockTask($fields) {
         priority = if ($taskPriorities -contains $fields.priority) { $fields.priority } else { 'medium' }
         category = if ($taskCategories -contains $fields.category) { $fields.category } elseif (([string]$fields.category).Trim()) { ([string]$fields.category).Trim() } else { 'other' }
         status = 'open'
+        # Ticked off but not yet closed — see the worker's createTask.
+        readyAt = $null
+        readyBy = ''
         repeat = if ($taskRepeats -contains [string]$fields.repeat) { [string]$fields.repeat } else { '' }
         checklist = ConvertTo-Checklist $fields.checklist
         meetingType = [string]$fields.meetingType
@@ -1112,6 +1115,7 @@ while ($listener.IsListening) {
             $body = Read-Body $ctx
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
             $wasOpen = $task.status -eq 'open'
+            $wasReady = [bool]$task.readyAt
             $prevAssignee = [string]$task.assignee
             $ownersGiven = $body.PSObject.Properties['calendarOwners'] -or $body.PSObject.Properties['calendarOwner']
             $newOwners = if ($ownersGiven) { ConvertTo-CalendarOwners $body.calendarOwners $body.calendarOwner } else { $null }
@@ -1131,6 +1135,26 @@ while ($listener.IsListening) {
             if ($body.PSObject.Properties['allDay']) { $task.allDay = [bool]$body.allDay }
             if ($body.PSObject.Properties['checklist']) { $task.checklist = ConvertTo-Checklist $body.checklist }
             if ($body.PSObject.Properties['documents']) { $task.documents = ConvertTo-Documents $body.documents }
+            # Mirror of the worker's ready transitions (see handleAdminUpdateTask):
+            # `ready` stamps who/when, un-ticking a done task withdraws the
+            # completion, and completing without a tick stamps one so every done
+            # task records when it was ticked off.
+            if ($body.PSObject.Properties['ready']) {
+                if ([bool]$body.ready) {
+                    if (-not $task.readyAt) {
+                        $task.readyAt = (Get-Date).ToString('o')
+                        $task.readyBy = $adminEmail
+                    }
+                } else {
+                    $task.readyAt = $null
+                    $task.readyBy = ''
+                    if ($task.status -eq 'done') { $task.status = 'open' }
+                }
+            }
+            if ($task.status -eq 'done' -and -not $task.readyAt) {
+                $task.readyAt = (Get-Date).ToString('o')
+                $task.readyBy = $adminEmail
+            }
             if (-not $task.history) { $task.history = @() }
             $appendHistory = {
                 param($type, $detail)
@@ -1149,7 +1173,13 @@ while ($listener.IsListening) {
             }
             if ((-not $wasOpen) -and $task.status -eq 'open') {
                 $task.completedAt = $null
+                $task.readyAt = $null
+                $task.readyBy = ''
                 & $appendHistory 'reopened' $null
+            }
+            if ($wasOpen -and $task.status -eq 'open') {
+                if ((-not $wasReady) -and $task.readyAt) { & $appendHistory 'ready' $null }
+                if ($wasReady -and (-not $task.readyAt)) { & $appendHistory 'unready' $null }
             }
             if ($body.PSObject.Properties['comment'] -and ([string]$body.comment).Trim()) {
                 & $appendHistory 'comment' ([ordered]@{ text = ([string]$body.comment).Trim() })

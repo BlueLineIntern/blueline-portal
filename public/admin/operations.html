@@ -38,7 +38,6 @@
   .kanban-card.dragging { opacity: 0.45; }
   .kanban-card.card-done .kc-title { text-decoration: line-through; color: var(--muted); }
   .kc-top { display: flex; align-items: flex-start; gap: 8px; }
-  .kc-done-toggle { width: 16px; height: 16px; margin-top: 1px; accent-color: var(--green); cursor: pointer; flex-shrink: 0; }
   .kc-prio { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
   /* Priority on a kanban card is a dot rather than the list view's edge rail —
      a card is too small for a rail — but it reads the same three tokens. */
@@ -101,11 +100,81 @@
   .view-toggle button + button { border-left: 1px solid var(--border-strong); }
   .view-toggle button.active { background: var(--navy); color: #fff; }
 
-  /* List view (ported from the old Tasks page) */
-  .task-filters-secondary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-  .task-filters-secondary select, .task-filters-secondary input { min-width: 150px; }
-  /* .task-done and the due-date urgency colours now live in shared.css, so the
-     list view and the contact Tasks tab can't drift apart again. */
+  /* List view. .task-done, .task-ready and the due-date urgency colours live in
+     shared.css, so the list view and the contact Tasks tab can't drift apart
+     again. The filter chrome below mirrors the compliance tracker's, which keeps
+     it page-local there too — it is view furniture, not a task primitive. */
+
+  /* Quick views: count first, label second, so the numbers form a scannable
+     column. Active state is derived from listQuickFilter, never stored twice. */
+  .qv-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; margin-bottom: var(--sp-3); }
+  .qv {
+    display: inline-flex; align-items: baseline; gap: var(--sp-2); cursor: pointer;
+    border: 1px solid var(--border-strong); background: var(--panel); color: var(--text);
+    border-radius: var(--radius); padding: var(--sp-2) var(--sp-3);
+    font-family: var(--font-sans); font-size: var(--fs-sm);
+  }
+  .qv:hover { border-color: var(--sky); }
+  .qv.active { background: var(--navy); border-color: var(--navy); color: #fff; }
+  .qv-n { font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; }
+  .qv.active .qv-n { color: #fff; }
+  .qv-l { color: var(--muted); }
+  .qv.active .qv-l { color: rgba(255, 255, 255, 0.85); }
+  /* Awaiting completion is the one quick view that is an outstanding action
+     rather than a slice of time, so it gets an amber edge to separate it from
+     the neutral ones without becoming a fifth colour in the row. */
+  .qv.qv-await:not(.active) { border-color: var(--amber-line); }
+  .qv.qv-await:not(.active) .qv-n { color: var(--amber); }
+
+  .cmp-searchrow { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; margin-bottom: var(--sp-3); }
+  .cmp-searchrow #task-search { flex: 1 1 240px; min-width: 0; }
+  .f-inline { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--muted); }
+  .f-inline select { width: auto; }
+
+  .f-panel { border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: var(--sp-4); margin-bottom: var(--sp-3); }
+  .f-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--sp-3); }
+  .f-field { min-width: 0; }
+  .f-field > label { display: block; font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--muted); margin-bottom: 3px; }
+  .f-field select, .f-field input { width: 100%; }
+
+  /* Removable active-filter tokens. Hover empties the fill rather than
+     darkening it, so it reads as "click to remove", not "click to apply". */
+  .chip-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+  .fchip {
+    display: inline-flex; align-items: center; gap: var(--sp-2); cursor: pointer;
+    background: var(--sky-bg); color: var(--sky-dark); border: 1px solid var(--sky);
+    border-radius: var(--radius-pill); padding: 2px var(--sp-3);
+    font-family: var(--font-sans); font-size: var(--fs-xs); font-weight: var(--fw-semibold);
+  }
+  .fchip:hover { background: var(--panel); }
+  .cmp-count { font-size: var(--fs-xs); color: var(--muted); margin: 0 0 var(--sp-2); }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  /* The tick. A real <button> with aria-pressed rather than a styled checkbox:
+     it carries its own accessible pressed state and keyboard handling, and a
+     checkbox would imply the single-click completion this replaces. The ✓ glyph
+     is always present but transparent until .on, so toggling shifts no layout. */
+  .ck {
+    width: 24px; height: 24px; padding: 0; border-radius: 50%; cursor: pointer;
+    border: 2px solid var(--border-strong); background: var(--panel); color: transparent;
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    font-size: 13px; font-weight: 700; line-height: 1;
+    transition: background var(--transition), border-color var(--transition), color var(--transition);
+  }
+  .ck:hover { border-color: var(--sky); }
+  .ck.on { background: var(--green); border-color: var(--green); color: #fff; }
+  .ck.pending { opacity: 0.5; cursor: progress; }
+
+  /* Card-sized tick. Same component, smaller box — a kanban card has no room
+     for the 24px version next to the priority dot and title. */
+  .kanban-card .ck { width: 19px; height: 19px; font-size: 11px; border-width: 2px; margin-top: 1px; }
+  .kanban-card.card-ready .kc-title { text-decoration: line-through; }
+  /* Sits under the meta row so it spans the card rather than crowding the title. */
+  .kc-complete { width: 100%; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -138,27 +207,71 @@
     </div>
 
     <div id="list-view">
-      <div class="filter-row" id="list-filters"></div>
-      <div class="task-filters-secondary">
-        <input type="search" class="input" id="task-search" placeholder="Search tasks…" />
-        <select class="input" id="filter-client"><option value="">All clients</option></select>
-        <select class="input" id="filter-assignee"><option value="">All assignees</option></select>
-        <select class="input" id="filter-priority">
-          <option value="">Any priority</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-        </select>
-        <select class="input" id="filter-category">
-          <option value="">Any category</option>
-          <option value="follow-up">Follow-up</option>
-          <option value="review">Review</option>
-          <option value="meeting">Meeting</option>
-          <option value="onboarding">Onboarding</option>
-          <option value="compliance">Compliance</option>
-          <option value="other">Other</option>
-        </select>
+      <!-- Quick views carry their own counts, so the size of each slice of work
+           is readable without selecting it. Same shape as the compliance
+           tracker: counts left, "viewing as" pushed to the right. -->
+      <div class="qv-row" id="list-filters"></div>
+
+      <div class="cmp-searchrow">
+        <label class="sr-only" for="task-search">Search tasks</label>
+        <input type="search" class="input" id="task-search" placeholder="Search tasks, notes, client, assignee…" />
+        <label class="f-inline" for="filter-period">Due
+          <select class="input" id="filter-period">
+            <option value="all" selected>All due dates</option>
+            <option value="overdue">Overdue</option>
+            <option value="today">Due today</option>
+            <option value="week">Next 7 days</option>
+            <option value="30">Next 30 days</option>
+            <option value="none">No due date</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-ghost btn-small" id="list-allfilters" aria-expanded="false" aria-controls="list-panel">⚙ All filters</button>
+        <button type="button" class="btn btn-ghost btn-small hidden" id="list-reset">Reset filters</button>
       </div>
+
+      <div class="f-panel hidden" id="list-panel">
+        <div class="f-grid">
+          <div class="f-field">
+            <label for="filter-client">Client</label>
+            <select class="input" id="filter-client"><option value="">All clients</option></select>
+          </div>
+          <div class="f-field">
+            <label for="filter-assignee">Assignee</label>
+            <select class="input" id="filter-assignee"><option value="">All assignees</option></select>
+          </div>
+          <div class="f-field">
+            <label for="filter-priority">Priority</label>
+            <select class="input" id="filter-priority">
+              <option value="">Any priority</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+          <div class="f-field">
+            <label for="filter-category">Category</label>
+            <!-- Built from categoryOptions() in shared.js like the drawer's, so
+                 the five categories added after this page shipped and any custom
+                 one are all selectable. The old static list silently lacked them. -->
+            <select class="input" id="filter-category"></select>
+          </div>
+          <div class="f-field">
+            <label for="filter-list">Board list</label>
+            <select class="input" id="filter-list"><option value="">Any list</option></select>
+          </div>
+          <div class="f-field">
+            <label for="filter-repeat">Repeats</label>
+            <select class="input" id="filter-repeat">
+              <option value="">Any</option>
+              <option value="yes">Repeating only</option>
+              <option value="no">One-off only</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="chip-row" id="list-chips"></div>
+      <p class="cmp-count" id="list-count"></p>
       <div class="panel"><div class="row-list" id="task-list"></div></div>
     </div>
   </main>
@@ -421,13 +534,25 @@
       <span class="kc-bar"><span style="width:${cp.pct}%"></span></span>${cp.done}/${cp.total}</span>`);
     if (t.repeat) metaBits.push(`<span class="kc-repeat" title="Repeats ${escapeHtml(t.repeat)}">↻</span>`);
     if (t.createdBy === 'auto') metaBits.push('<span class="badge badge-navy kc-auto">auto</span>');
-    return `<div class="kanban-card ${t.status === 'done' ? 'card-done' : ''}" draggable="true" data-id="${escapeHtml(t.id)}">
+    const ready = isReady(t);
+    // Same two-press gate as the list: the tick sits where the checkbox did, and
+    // Complete only appears once ticked. Full-width under the meta so it can't
+    // squeeze the title on a 300px column.
+    const completeBtn = ready
+      ? `<button type="button" class="btn btn-primary btn-small kc-complete" data-complete="${escapeHtml(t.id)}"
+           title="Ticked off — close this task">Complete</button>`
+      : t.status === 'done'
+        ? `<button type="button" class="badge badge-green btn-link kc-complete" data-reopen="${escapeHtml(t.id)}"
+             title="Completed — click to reopen">COMPLETE</button>`
+        : '';
+    return `<div class="kanban-card ${t.status === 'done' ? 'card-done' : ''} ${ready ? 'card-ready' : ''}" draggable="true" data-id="${escapeHtml(t.id)}">
       <div class="kc-top">
-        <input type="checkbox" class="kc-done-toggle" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen task' : 'Mark complete'}" />
+        ${tickButton(t)}
         <span class="kc-prio ${escapeHtml(t.priority || 'medium')}" title="${escapeHtml(t.priority || 'medium')} priority"></span>
         <span class="kc-title">${escapeHtml(t.title)}</span>
       </div>
       ${metaBits.length ? `<div class="kc-meta">${metaBits.join('')}</div>` : ''}
+      ${completeBtn}
     </div>`;
   }
 
@@ -497,12 +622,8 @@
 
   function wireBoardEvents() {
     const board = document.getElementById('board');
-    // Checkbox: complete/reopen without opening the drawer. Stop propagation so
-    // the card's click (edit) and drag don't fire.
-    board.querySelectorAll('.kc-done-toggle').forEach((cb) => {
-      cb.addEventListener('click', (e) => e.stopPropagation());
-      cb.addEventListener('change', (e) => { e.stopPropagation(); toggleDone(cb.dataset.id, cb.checked); });
-    });
+    // Tick / Complete / reopen, same handlers the list rows use.
+    wireTaskControls(board);
     board.querySelectorAll('.kanban-card').forEach((card) => {
       card.addEventListener('click', () => openDrawerEdit(card.dataset.id));
       card.addEventListener('dragstart', (e) => {
@@ -532,38 +653,24 @@
     );
   }
 
-  // Checking a card off completes it (it moves to Completed and leaves its
-  // column); unchecking reopens it (back to its assignee/list column).
-  async function toggleDone(id, done) {
-    const t = allTasks.find((x) => x.id === id);
-    if (!t) return;
-    const snapshot = { ...t };
-    t.status = done ? 'done' : 'open';
-    t.completedAt = done ? (t.completedAt || new Date().toISOString()) : null;
-    render();
-    try {
-      const data = await api(`/api/admin/tasks/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify({ status: t.status }) });
-      const i = allTasks.findIndex((x) => x.id === id);
-      if (i >= 0) allTasks[i] = data.task;
-      // Completing a repeating task creates its next occurrence server-side;
-      // show it now rather than leaving it invisible until the next poll.
-      if (data.spawned) allTasks.push(data.spawned);
-      render();
-    } catch (err) {
-      Object.assign(t, snapshot);
-      render();
-      setStatus(`Update failed: ${err.message}`);
-    }
-  }
-
-  // Dragging a card = the primary reassignment/completion gesture.
+  // Dragging a card = the primary reassignment gesture. Completion is no longer
+  // one of the things it can do outright — see the Completed branch below.
   async function handleDrop(id, colKey) {
     const t = allTasks.find((x) => x.id === id);
     if (!t) return;
     if (columnForTask(t) === colKey) return; // dropped where it already is
 
     let payload;
-    if (colKey === SPECIAL.COMPLETED) payload = { status: 'done' };
+    // Dropping on Completed ticks the task off; it does NOT close it. The card
+    // therefore stays in its own column, struck through with a Complete button,
+    // rather than moving — so the drag looks like it did nothing unless we say
+    // what happened. Gating here too is the point: drag is the easiest gesture
+    // to fire by accident, and completing is what has side effects.
+    if (colKey === SPECIAL.COMPLETED) {
+      if (t.status === 'done' || isReady(t)) return;
+      setStatus(`“${t.title}” is ticked off — press Complete on the card to close it.`);
+      payload = { ready: true };
+    }
     else if (colKey === SPECIAL.UNASSIGNED) payload = { assignee: '', list: '', status: 'open' };
     else {
       const col = boardLists.find((l) => l.id === colKey);
@@ -575,10 +682,11 @@
         : { list: col.id, status: 'open' };
     }
 
-    // Optimistic move, then reconcile with the server response.
+    // Optimistic move, then reconcile with the server response. `ready` is
+    // deliberately not applied optimistically: readyAt is stamped server-side,
+    // so guessing it here would render a tick the server may not agree with.
     const snapshot = { ...t };
     Object.assign(t, payload);
-    if (payload.status === 'done' && !t.completedAt) t.completedAt = new Date().toISOString();
     if (payload.status === 'open') t.completedAt = null;
     render();
     try {
@@ -936,9 +1044,16 @@
 
   // ---------- List view (same tasks, table layout) ----------
 
+  // A task is "ready" once it has been ticked off but not yet completed. Server
+  // field, so the state survives a reload and whoever looks next sees it — see
+  // handleAdminUpdateTask. Records written before the field existed have no
+  // readyAt, which reads correctly as not ticked.
+  const isReady = (t) => t.status === 'open' && !!t.readyAt;
+
   const QUICK_FILTERS = [
     { id: 'my-open', label: 'My Tasks' },
     { id: 'open', label: 'All Open' },
+    { id: 'awaiting', label: 'Awaiting completion' },
     { id: 'today', label: 'Due Today' },
     { id: 'week', label: 'This Week' },
     { id: 'overdue', label: 'Overdue' },
@@ -950,6 +1065,7 @@
     switch (filterId) {
       case 'my-open': return t.status === 'open' && (t.assignee === SESSION.email || !t.assignee);
       case 'open': return t.status === 'open';
+      case 'awaiting': return isReady(t);
       case 'today': return t.status === 'open' && d.today;
       case 'week': return t.status === 'open' && (d.today || d.thisWeek);
       case 'overdue': return t.status === 'open' && d.overdue;
@@ -958,38 +1074,129 @@
     }
   }
 
-  // The Client/Assignee/Priority/Category dropdowns and the search box apply
-  // regardless of which quick-filter pill is selected. Quick-filter counts and
-  // the rendered list must both start from this same set, or a badge can show
-  // a nonzero count for a combination the visible list actually filters out to
-  // zero (e.g. "All Open (12)" while a client filter with no open tasks is set).
+  // Dropdown filter state lives here rather than being read out of the DOM on
+  // every render: Reset and the removable chips both need to *write* it, and
+  // syncFilterControls pushes it back to the controls. Reading the DOM directly
+  // (as this page used to) makes those impossible to express.
+  const LIST_FILTER_DEFAULTS = { client: '', assignee: '', priority: '', category: '', list: '', repeat: '', period: 'all' };
+  let listFilters = { ...LIST_FILTER_DEFAULTS };
+
+  const listFiltersActive = () =>
+    Object.keys(LIST_FILTER_DEFAULTS).some((k) => listFilters[k] !== LIST_FILTER_DEFAULTS[k]);
+
+  function matchesPeriod(t) {
+    if (listFilters.period === 'all') return true;
+    const d = dueInfo(t);
+    if (listFilters.period === 'none') return !t.due;
+    if (!t.due) return false; // every other period is a window, which undated work isn't in
+    if (listFilters.period === 'overdue') return d.overdue;
+    if (listFilters.period === 'today') return d.today;
+    if (listFilters.period === 'week') return d.today || d.thisWeek;
+    if (listFilters.period === '30') {
+      const ms = new Date(t.due).getTime() - Date.now();
+      return ms < 30 * 86400e3; // includes overdue: "next 30 days" of work to do
+    }
+    return true;
+  }
+
+  // The dropdowns and the search box apply regardless of which quick view is
+  // selected. Quick-view counts and the rendered list must both start from this
+  // same set, or a bubble can show a nonzero count for a combination the visible
+  // list filters out to zero (e.g. "All Open (12)" while a client filter with no
+  // open tasks is set).
   function listBaseFiltered() {
     const q = listSearch.trim().toLowerCase();
-    const fClient = document.getElementById('filter-client').value;
-    const fAssignee = document.getElementById('filter-assignee').value;
-    const fPriority = document.getElementById('filter-priority').value;
-    const fCategory = document.getElementById('filter-category').value;
+    const f = listFilters;
     return allTasks
-      .filter((t) => !fClient || t.client === fClient)
-      .filter((t) => !fAssignee || t.assignee === fAssignee)
-      .filter((t) => !fPriority || t.priority === fPriority)
-      .filter((t) => !fCategory || t.category === fCategory)
-      .filter((t) => !q || `${t.title} ${t.description} ${t.client}`.toLowerCase().includes(q));
+      .filter((t) => !f.client || t.client === f.client)
+      .filter((t) => !f.assignee || t.assignee === f.assignee)
+      .filter((t) => !f.priority || t.priority === f.priority)
+      .filter((t) => !f.category || t.category === f.category)
+      .filter((t) => !f.list || t.list === f.list)
+      .filter((t) => !f.repeat || (f.repeat === 'yes' ? !!t.repeat : !t.repeat))
+      .filter(matchesPeriod)
+      .filter((t) => !q || `${t.title} ${t.description} ${t.client} ${staffLabel(t.assignee || '')} ${t.category || ''}`
+        .toLowerCase().includes(q));
   }
 
   function renderQuickFilters() {
     const base = listBaseFiltered();
-    const counts = {};
-    QUICK_FILTERS.forEach((f) => {
-      counts[f.id] = base.filter((t) => taskPassesQuickFilter(t, f.id)).length;
-    });
     const wrap = document.getElementById('list-filters');
     wrap.innerHTML = QUICK_FILTERS
-      .map((f) => `<button type="button" class="filter-pill ${listQuickFilter === f.id ? 'active' : ''}" data-f="${f.id}">${f.label} (${counts[f.id]})</button>`)
+      .map((f) => {
+        const n = base.filter((t) => taskPassesQuickFilter(t, f.id)).length;
+        const extra = f.id === 'awaiting' ? ' qv-await' : '';
+        return `<button type="button" class="qv${extra} ${listQuickFilter === f.id ? 'active' : ''}" data-f="${f.id}"
+          ${f.id === 'awaiting' ? 'title="Ticked off, still needs the Complete button pressed"' : ''}
+          ><span class="qv-n">${n}</span><span class="qv-l">${escapeHtml(f.label)}</span></button>`;
+      })
       .join('');
-    wrap.querySelectorAll('.filter-pill').forEach((b) =>
-      b.addEventListener('click', () => { listQuickFilter = b.dataset.f; renderQuickFilters(); renderTasks(); })
+    wrap.querySelectorAll('.qv').forEach((b) =>
+      b.addEventListener('click', () => { listQuickFilter = b.dataset.f; renderQuickFilters(); renderChips(); renderTasks(); })
     );
+  }
+
+  const PERIOD_LABELS = {
+    overdue: 'Overdue', today: 'Due today', week: 'Next 7 days', 30: 'Next 30 days', none: 'No due date',
+  };
+  const REPEAT_LABELS = { yes: 'Repeating', no: 'One-off' };
+
+  // One removable token per active filter, plus the Reset button's visibility.
+  function renderChips() {
+    const f = listFilters;
+    const chips = [];
+    if (f.client) chips.push({ k: 'client', label: `Client: ${contactName(f.client)}` });
+    if (f.assignee) chips.push({ k: 'assignee', label: `Assignee: ${staffLabel(f.assignee)}` });
+    if (f.priority) chips.push({ k: 'priority', label: `Priority: ${f.priority}` });
+    if (f.category) chips.push({ k: 'category', label: `Category: ${categoryLabel(f.category)}` });
+    if (f.list) {
+      const bl = boardLists.find((l) => l.id === f.list);
+      chips.push({ k: 'list', label: `List: ${bl ? bl.name || staffLabel(bl.account) : f.list}` });
+    }
+    if (f.repeat) chips.push({ k: 'repeat', label: REPEAT_LABELS[f.repeat] || f.repeat });
+    if (f.period !== 'all') chips.push({ k: 'period', label: PERIOD_LABELS[f.period] || f.period });
+
+    const wrap = document.getElementById('list-chips');
+    wrap.innerHTML = chips.map((c) =>
+      `<button type="button" class="fchip" data-k="${c.k}" title="Remove this filter">${escapeHtml(c.label)}<span aria-hidden="true">×</span></button>`).join('');
+    wrap.querySelectorAll('.fchip').forEach((b) =>
+      b.addEventListener('click', () => {
+        listFilters[b.dataset.k] = LIST_FILTER_DEFAULTS[b.dataset.k];
+        syncFilterControls();
+        renderQuickFilters(); renderChips(); renderTasks();
+      })
+    );
+    document.getElementById('list-reset').classList.toggle('hidden', !listFiltersActive() && !listSearch.trim());
+  }
+
+  // State -> controls, so Reset and chip removal visibly move the dropdowns.
+  function syncFilterControls() {
+    document.getElementById('filter-client').value = listFilters.client;
+    document.getElementById('filter-assignee').value = listFilters.assignee;
+    document.getElementById('filter-priority').value = listFilters.priority;
+    document.getElementById('filter-list').value = listFilters.list;
+    document.getElementById('filter-repeat').value = listFilters.repeat;
+    document.getElementById('filter-period').value = listFilters.period;
+    // Built from the categories actually present in the data, NOT from
+    // TASK_CATEGORY_CHOICES. That list is the *creation* whitelist and
+    // deliberately omits the legacy values (review, onboarding, compliance,
+    // other) that the onboarding and review flows still write — offering only
+    // the whitelist here would make every one of those tasks unfilterable.
+    // Same reason compliance.html drives its filter options off its rows.
+    const present = [...new Set(allTasks.map((t) => t.category).filter(Boolean))];
+    // Whitelisted categories first in their display order, then anything else
+    // (legacy or custom) alphabetically, so the common cases stay at the top.
+    const known = TASK_CATEGORY_CHOICES.filter((c) => present.includes(c));
+    const rest = present.filter((c) => !TASK_CATEGORY_CHOICES.includes(c)).sort();
+    const cat = document.getElementById('filter-category');
+    // The selected value is kept as its own option even if no task currently
+    // carries it, so a deep link or a poll that removes the last such task
+    // can't silently reset the control and quietly widen the view.
+    const ordered = [...known, ...rest];
+    if (listFilters.category && !ordered.includes(listFilters.category)) ordered.push(listFilters.category);
+    cat.innerHTML = '<option value="">Any category</option>'
+      + ordered.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(categoryLabel(c))}</option>`).join('');
+    cat.value = listFilters.category;
   }
 
   function renderTasks() {
@@ -998,6 +1205,10 @@
 
     if (listQuickFilter === 'done') {
       items.sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
+    } else if (listQuickFilter === 'awaiting') {
+      // Longest-waiting first: this view exists to clear a backlog of ticks, and
+      // the oldest tick is the one most likely to have been forgotten.
+      items.sort((a, b) => String(a.readyAt || '').localeCompare(String(b.readyAt || '')));
     } else {
       const pRank = { high: 0, medium: 1, low: 2 };
       items.sort((a, b) => {
@@ -1007,6 +1218,14 @@
         return (pRank[a.priority] ?? 1) - (pRank[b.priority] ?? 1);
       });
     }
+
+    // "12 of 40" whenever the dropdowns or search narrow the set, plain "12"
+    // when they don't — so it's obvious whether something is being hidden.
+    const inView = allTasks.filter((t) => taskPassesQuickFilter(t)).length;
+    const label = QUICK_FILTERS.find((f) => f.id === listQuickFilter);
+    document.getElementById('list-count').textContent = items.length === inView
+      ? `${items.length} ${items.length === 1 ? 'task' : 'tasks'}`
+      : `${items.length} of ${inView} in ${(label ? label.label : '').toLowerCase()}`;
 
     list.innerHTML = items.length
       ? items.map((t) => {
@@ -1018,10 +1237,12 @@
           const cp = checklistProgress(t);
           const checkBit = cp ? `<span>✓ ${cp.done}/${cp.total}</span>` : '';
           const repeatBit = t.repeat ? `<span>↻ ${escapeHtml(t.repeat)}</span>` : '';
+          const ready = isReady(t);
           // Priority is the leading rail, urgency the due pill, category a
-          // nominal tag — one meaning per visual channel.
-          return `<div class="row-item ${prioRailClass(t.priority)} ${t.status === 'done' ? 'task-done' : ''}">
-            <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark complete'}" />
+          // nominal tag — one meaning per visual channel. .task-ready strikes the
+          // title without dimming it; .task-done does both (see shared.css).
+          return `<div class="row-item ${prioRailClass(t.priority)} ${t.status === 'done' ? 'task-done' : ''} ${ready ? 'task-ready' : ''}">
+            ${tickButton(t)}
             <div class="row-main">
               <div class="row-title">${escapeHtml(t.title)}${autoBit}</div>
               <div class="row-sub">
@@ -1033,16 +1254,15 @@
             </div>
             <div class="row-side">
               ${categoryBadge(t.category)}
+              ${statusCell(t)}
               <button type="button" class="btn btn-ghost btn-small list-edit-btn" data-id="${escapeHtml(t.id)}">Edit</button>
               <button type="button" class="btn btn-danger btn-small list-del-btn" data-id="${escapeHtml(t.id)}">Delete</button>
             </div>
           </div>`;
         }).join('')
-      : '<p class="empty">Nothing here. Enjoy the quiet, or create a task.</p>';
+      : `<p class="empty" style="padding:var(--sp-4);">${escapeHtml(emptyMessage())}</p>`;
 
-    list.querySelectorAll('.task-check').forEach((cb) =>
-      cb.addEventListener('change', () => toggleTask(cb.dataset.id, cb.checked))
-    );
+    wireTaskControls(list);
     list.querySelectorAll('.list-edit-btn').forEach((b) =>
       b.addEventListener('click', () => openDrawerEdit(b.dataset.id))
     );
@@ -1051,7 +1271,88 @@
     );
   }
 
-  async function toggleTask(id, done) {
+  // Distinguishes "no tasks at all" from "filters matched nothing" from "the
+  // Awaiting/Completed views are legitimately empty" — one generic line for all
+  // three reads as broken when it's really just a filter.
+  function emptyMessage() {
+    if (!allTasks.length) return 'No tasks yet — use “+ New task”.';
+    if (listQuickFilter === 'awaiting') return 'Nothing ticked off and waiting. Tick a task, then press Complete.';
+    if (listQuickFilter === 'done') return 'Nothing completed yet.';
+    if (listFiltersActive() || listSearch.trim()) return 'No tasks match these filters.';
+    return 'Nothing here. Enjoy the quiet, or create a task.';
+  }
+
+  // ---------- Completion: tick, then press Complete ----------
+  // Two presses on purpose. Completing runs side effects that are awkward to
+  // undo — it writes a client timeline entry and, for a repeating task, creates
+  // the next occurrence — so a single stray click shouldn't fire them. The tick
+  // is stored server-side (readyAt), so it survives a reload and is visible to
+  // whoever looks next; it is a hand-off, not a UI flourish.
+
+  function tickButton(t) {
+    const on = isReady(t) || t.status === 'done';
+    const title = t.status === 'done' ? 'Completed — reopen from the COMPLETE badge'
+      : isReady(t) ? 'Ticked off — click to untick' : 'Tick off (you still press Complete after)';
+    return `<button type="button" class="ck ${on ? 'on' : ''}" data-tick="${escapeHtml(t.id)}"
+      aria-pressed="${on}" ${t.status === 'done' ? 'disabled' : ''} title="${escapeHtml(title)}">&check;</button>`;
+  }
+
+  // No always-visible disabled Complete button: a permanently greyed control
+  // reads as broken rather than as not-yet-available. The badge states the
+  // status instead, and the button appears exactly when it can be used.
+  function statusCell(t) {
+    if (t.status === 'done') {
+      const when = t.completedAt ? new Date(t.completedAt).toLocaleDateString() : '';
+      return `<button type="button" class="badge badge-green btn-link" data-reopen="${escapeHtml(t.id)}"
+        title="Completed ${escapeHtml(when)} — click to reopen">COMPLETE</button>`;
+    }
+    if (isReady(t)) {
+      return `<button type="button" class="btn btn-primary btn-small" data-complete="${escapeHtml(t.id)}"
+        title="Ticked off — close this task">Complete</button>`;
+    }
+    return '<span class="badge badge-amber">OPEN</span>';
+  }
+
+  // Shared by the list rows and the board cards so the gate behaves identically
+  // in both views. stopPropagation keeps a card's click (edit) and drag quiet.
+  function wireTaskControls(root) {
+    root.querySelectorAll('[data-tick]').forEach((b) =>
+      b.addEventListener('click', (e) => { e.stopPropagation(); setReady(b, b.dataset.tick, !b.classList.contains('on')); })
+    );
+    root.querySelectorAll('[data-complete]').forEach((b) =>
+      b.addEventListener('click', (e) => { e.stopPropagation(); setDone(b, b.dataset.complete, true); })
+    );
+    root.querySelectorAll('[data-reopen]').forEach((b) =>
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm('Reopen this completed task?')) setDone(b, b.dataset.reopen, false);
+      })
+    );
+  }
+
+  // Both mutations wait for the server and then patch the local record from the
+  // response, rather than guessing: readyAt/readyBy and the reopen-clears-the-tick
+  // rule are decided server-side, so an optimistic local edit would drift.
+  // `.pending` guards against a double-fire while the request is in flight.
+  async function setReady(btn, id, ready) {
+    if (btn.classList.contains('pending')) return;
+    btn.classList.add('pending');
+    try {
+      const data = await api(`/api/admin/tasks/${encodeURIComponent(id)}`, {
+        method: 'POST', body: JSON.stringify({ ready }),
+      });
+      const i = allTasks.findIndex((t) => t.id === id);
+      if (i >= 0) allTasks[i] = data.task;
+      render();
+    } catch (err) {
+      btn.classList.remove('pending');
+      setStatus(`Could not save: ${err.message}`);
+    }
+  }
+
+  async function setDone(btn, id, done) {
+    if (btn.classList.contains('pending')) return;
+    btn.classList.add('pending');
     try {
       const data = await api(`/api/admin/tasks/${encodeURIComponent(id)}`, {
         method: 'POST', body: JSON.stringify({ status: done ? 'done' : 'open' }),
@@ -1060,7 +1361,10 @@
       if (i >= 0) allTasks[i] = data.task;
       if (data.spawned) allTasks.push(data.spawned); // next occurrence of a repeating task
       render();
-    } catch (err) { setStatus(`Update failed: ${err.message}`); }
+    } catch (err) {
+      btn.classList.remove('pending');
+      setStatus(`Update failed: ${err.message}`);
+    }
   }
 
   async function deleteTaskById(id) {
@@ -1082,7 +1386,7 @@
     document.getElementById('ops-manage').classList.toggle('hidden', currentView !== 'board');
     document.querySelectorAll('#view-toggle button').forEach((b) => b.classList.toggle('active', b.dataset.view === currentView));
     if (currentView === 'board') { renderFilters(); renderBoard(); }
-    else { renderQuickFilters(); renderTasks(); }
+    else { renderQuickFilters(); renderChips(); renderTasks(); }
   }
 
   document.querySelectorAll('#view-toggle button').forEach((b) =>
@@ -1093,10 +1397,37 @@
 
   document.getElementById('ops-refresh').addEventListener('click', () => loadData());
   document.getElementById('ops-new').addEventListener('click', () => openDrawerNew(''));
-  ['filter-client', 'filter-assignee', 'filter-priority', 'filter-category'].forEach((id) =>
-    document.getElementById(id).addEventListener('change', renderTasks)
-  );
-  document.getElementById('task-search').addEventListener('input', (e) => { listSearch = e.target.value; renderTasks(); });
+  // Controls -> state. Every one re-renders the quick-view counts too, since the
+  // counts are computed from the dropdown-filtered set.
+  const FILTER_CONTROLS = {
+    'filter-client': 'client', 'filter-assignee': 'assignee', 'filter-priority': 'priority',
+    'filter-category': 'category', 'filter-list': 'list', 'filter-repeat': 'repeat',
+    'filter-period': 'period',
+  };
+  Object.entries(FILTER_CONTROLS).forEach(([id, key]) => {
+    document.getElementById(id).addEventListener('change', (e) => {
+      listFilters[key] = e.target.value;
+      renderQuickFilters(); renderChips(); renderTasks();
+    });
+  });
+  document.getElementById('task-search').addEventListener('input', (e) => {
+    listSearch = e.target.value;
+    renderQuickFilters(); renderChips(); renderTasks();
+  });
+
+  document.getElementById('list-allfilters').addEventListener('click', (e) => {
+    const panel = document.getElementById('list-panel');
+    const open = panel.classList.toggle('hidden') === false;
+    e.currentTarget.setAttribute('aria-expanded', String(open));
+  });
+
+  document.getElementById('list-reset').addEventListener('click', () => {
+    listFilters = { ...LIST_FILTER_DEFAULTS };
+    listSearch = '';
+    document.getElementById('task-search').value = '';
+    syncFilterControls();
+    renderQuickFilters(); renderChips(); renderTasks();
+  });
 
   async function loadData() {
     // Don't yank the board out from under an open drawer or an in-flight drag.
@@ -1112,9 +1443,13 @@
       adminList = contactData.admins || [];
       registerStaff(Object.entries(contactData.adminNames || {}).map(([id, name]) => ({ id, name })));
       boardLists = listData.lists || [];
-      // List-view filter selects (board uses its own pill row).
-      fillSelect('filter-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), document.getElementById('filter-client').value, true);
-      fillSelect('filter-assignee', assignableOptions(), document.getElementById('filter-assignee').value, true);
+      // List-view filter selects (board uses its own pill row). Seeded from
+      // listFilters, not from the control's current value, so a filter set by a
+      // deep link or a chip removal survives the rebuild.
+      fillSelect('filter-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), listFilters.client, true);
+      fillSelect('filter-assignee', assignableOptions(), listFilters.assignee, true);
+      fillSelect('filter-list', boardLists.map((l) => ({ value: l.id, label: l.type === 'person' ? staffLabel(l.account) : l.name })), listFilters.list, true);
+      syncFilterControls();
       if (taskData.decryptErrors) setStatus(`Warning: ${taskData.decryptErrors} task(s) could not be decrypted.`);
       else setStatus('');
       render();
@@ -1141,9 +1476,17 @@
     const f = p.get('f');
     if (f && QUICK_FILTERS.some((x) => x.id === f)) listQuickFilter = f;
     const cat = p.get('cat');
-    if (cat) document.getElementById('filter-category').value = cat;
+    // Into the state, not the control: loadData rebuilds the category select
+    // from listFilters, so writing the element here would be overwritten.
+    if (cat) listFilters.category = cat;
     const q = p.get('q');
     if (q) { listSearch = q; document.getElementById('task-search').value = q; }
+    // A deep link that arrives with filters set should show them as removable
+    // chips and expose the panel they came from, not hide them behind ⚙.
+    if (cat) {
+      document.getElementById('list-panel').classList.remove('hidden');
+      document.getElementById('list-allfilters').setAttribute('aria-expanded', 'true');
+    }
   })();
 
   setInterval(loadData, POLL_INTERVAL_MS);

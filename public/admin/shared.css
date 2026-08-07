@@ -473,6 +473,15 @@ select:has(option[value=""]:checked:disabled) { color: var(--muted-soft); }
 /* A completed row recedes; it stays legible but stops competing with open work. */
 .row-item.task-done { opacity: 0.62; }
 .row-item.task-done .row-title { text-decoration: line-through; color: var(--muted); }
+/* Ticked off but not yet completed. Struck through like a finished task, but
+   NOT dimmed — pressing Complete is still the outstanding action, and receding
+   the row the way .task-done does would make it read as already dealt with.
+   Same two-state distinction the compliance tracker draws between signed-off
+   and closed. Defined here rather than per-page so the Home rail and the
+   contact task tabs show the state too, even though they can't act on it. */
+.task-ready .row-title,
+.row-item.task-ready .row-title,
+.rail-row.task-ready .rr-title { text-decoration: line-through; }
 
 /* Timeline */
 .tl-item { display: flex; gap: var(--sp-3); padding: var(--sp-3) var(--sp-1); }

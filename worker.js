@@ -4978,6 +4978,14 @@ async function createTask(env, fields) {
     priority: TASK_PRIORITIES.includes(fields.priority) ? fields.priority : 'medium',
     category: sanitizeTaskCategory(fields.category),
     status: 'open',
+    // Ticked off but not yet closed. The Tasks page ticks this first and only
+    // completes on a second, deliberate press, so a stray click can't fire
+    // completion's side effects (client timeline entry, next occurrence of a
+    // repeating task). Held on the record rather than in the page so it survives
+    // a reload and is visible to whoever looks next — that is the whole point of
+    // a hand-off state. See handleAdminUpdateTask for the transitions.
+    readyAt: null,
+    readyBy: '',
     checklist: sanitizeChecklist(fields.checklist),
     meetingType: fields.meetingType || '',
     documents: sanitizeDocuments(fields.documents),
@@ -5160,8 +5168,39 @@ async function handleAdminUpdateTask(request, env, cors, id) {
   if (error) return json({ error }, 400, cors);
 
   const wasOpen = task.status === 'open';
+  const wasReady = !!task.readyAt;
   const prevAssignee = task.assignee || '';
   Object.assign(task, fields);
+
+  // `ready` rides on the body rather than being a sanitized field: like
+  // compliance's `complete`, it stamps who and when, which sanitizeTaskFields
+  // has no admin identity to do.
+  if (body.ready !== undefined) {
+    if (body.ready) {
+      if (!task.readyAt) {
+        task.readyAt = new Date().toISOString();
+        task.readyBy = adminEmail;
+      }
+    } else {
+      task.readyAt = null;
+      task.readyBy = '';
+      // Un-ticking an already-completed task would leave it done with no record
+      // of ever having been ticked off, so completion is withdrawn with it —
+      // the same rule compliance applies when a sign-off is retracted. Set
+      // before the transition checks below so the reopen branch picks it up.
+      if (task.status === 'done') task.status = 'open';
+    }
+  }
+  // Completing implies readiness. Callers that close a task in one step — the
+  // Home rail and the contact task/meeting tabs, where a two-press gate on a
+  // compact row would be worse than the misclick it prevents — send only
+  // status:'done', and stamping here keeps the invariant that every completed
+  // task records when it was ticked off. Without this they would 400 or, worse,
+  // complete with an empty readyAt and read as never having been ticked.
+  if (task.status === 'done' && !task.readyAt) {
+    task.readyAt = new Date().toISOString();
+    task.readyBy = adminEmail;
+  }
 
   // Per-task history: append meaningful events so the Operations drawer can
   // show a task's story (assignments, completion, notes) without a new store.
@@ -5215,7 +5254,18 @@ async function handleAdminUpdateTask(request, env, cors, id) {
   }
   if (!wasOpen && task.status === 'open') {
     task.completedAt = null; // reopened
+    // Reopening drops the tick too, so the task goes back to needing both
+    // presses rather than sitting one click from closing again.
+    task.readyAt = null;
+    task.readyBy = '';
     logHistory('reopened', null);
+  }
+  // Logged after the transitions above, and only while the task stays open, so
+  // a one-step completion reads as "completed" rather than "ticked off" plus
+  // "completed", and un-ticking a done task reads as "reopened" rather than both.
+  if (wasOpen && task.status === 'open') {
+    if (!wasReady && task.readyAt) logHistory('ready', null);
+    if (wasReady && !task.readyAt) logHistory('unready', null);
   }
   // A free-text note/comment travels on the update body (not a task field).
   if (body.comment !== undefined && String(body.comment).trim()) {

@@ -2527,7 +2527,7 @@
       // Priority reads as the leading rail, urgency as the due pill, category as
       // a nominal tag. The category select is kept (it's how a task gets
       // recategorised) but sits with the assignee control on the trailing side.
-      const row = (t) => `<div class="row-item ${prioRailClass(t.priority)} ${t.status === 'done' ? 'task-done' : ''}">
+      const row = (t) => `<div class="row-item ${prioRailClass(t.priority)} ${t.status === 'done' ? 'task-done' : ''} ${t.status === 'open' && t.readyAt ? 'task-ready' : ''}">
         <input type="checkbox" class="task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark done'}" style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
         <div class="row-main">
           <div class="row-title">${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
@@ -2736,7 +2736,7 @@
       const row = (t) => {
         const cl = Array.isArray(t.checklist) ? t.checklist : [];
         const prep = cl.length ? `${cl.filter((c) => c.done).length}/${cl.length} prep` : '';
-        return `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
+        return `<div class="row-item ${t.status === 'done' ? 'task-done' : ''} ${t.status === 'open' && t.readyAt ? 'task-ready' : ''}">
           <input type="checkbox" class="meeting-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''} title="${t.status === 'done' ? 'Reopen' : 'Mark as held'}" style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
           <div class="row-main">
             <div class="row-title" ${t.status === 'done' ? 'style="text-decoration:line-through;color:var(--muted)"' : ''}>${escapeHtml(t.title)}${t.meetingType ? ` <span class="badge badge-navy">${escapeHtml(MEETING_TYPES[t.meetingType] || t.meetingType)}</span>` : ''}</div>
@@ -3507,7 +3507,7 @@
         .sort((a, b) => String(b.completedAt || '').localeCompare(String(a.completedAt || '')));
       // The checkbox stays live: completing a task needs only its id, so it
       // works the same from here as from the member's own profile.
-      const row = (t) => `<div class="row-item ${prioRailClass(t.priority)} ${t.status === 'done' ? 'task-done' : ''}">
+      const row = (t) => `<div class="row-item ${prioRailClass(t.priority)} ${t.status === 'done' ? 'task-done' : ''} ${t.status === 'open' && t.readyAt ? 'task-ready' : ''}">
         <input type="checkbox" class="g-task-check" data-id="${escapeHtml(t.id)}" ${t.status === 'done' ? 'checked' : ''}
           title="${t.status === 'done' ? 'Reopen' : 'Mark done'}"
           style="width:18px;height:18px;accent-color:var(--sky);cursor:pointer;margin-top:2px;" />
@@ -3694,7 +3694,7 @@
         .sort((a, b) => (dueMs(b) || 0) - (dueMs(a) || 0));
       // Read-only: scheduling a meeting takes a type, an advisor and a time, and
       // the calendar already owns that form. Each row links straight into it.
-      const row = (t) => `<div class="row-item ${t.status === 'done' ? 'task-done' : ''}">
+      const row = (t) => `<div class="row-item ${t.status === 'done' ? 'task-done' : ''} ${t.status === 'open' && t.readyAt ? 'task-ready' : ''}">
         <div class="row-main">
           <div class="row-title">${escapeHtml(t.title)}${t.meetingType ? ` <span class="badge badge-navy">${escapeHtml(MEETING_TYPES[t.meetingType] || t.meetingType)}</span>` : ''}</div>
           <div class="row-sub">${whoLink(t.client)} · ${meetingWhen(t.due)}${t.assignee ? ` · ${escapeHtml(staffLabel(t.assignee))}` : ' · unassigned'}</div>
