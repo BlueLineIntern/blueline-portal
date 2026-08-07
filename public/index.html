@@ -153,6 +153,43 @@
       &ldquo;forgot password&rdquo; link or contact your advisor.</p>
     </section>
 
+    <!-- DOCUMENTS VIEW — outstanding requests from the advisor, a free-form
+         upload, and what this client has already sent. Clients see ONLY their own
+         uploads here, never advisor attachments (see handleGetClientDocuments). -->
+    <section id="view-documents" class="view hidden">
+      <div class="dashboard-header">
+        <div>
+          <h1>Your Documents</h1>
+          <p class="subtitle">Send documents securely to your advisor.</p>
+          <p class="form-error" id="documents-error"></p>
+        </div>
+      </div>
+
+      <div class="card" id="doc-requests-card">
+        <h2>Requested by your advisor</h2>
+        <div id="doc-requests-list"></div>
+      </div>
+
+      <div class="card">
+        <h2>Send another document</h2>
+        <p class="hub-card-desc">Something your advisor hasn't asked for yet — a trust document, an estate
+        plan, a statement.</p>
+        <div class="doc-upload-row">
+          <label class="sr-only-client" for="doc-free-name">Document name</label>
+          <input type="text" class="doc-input" id="doc-free-name" placeholder="What is it? (e.g. 2024 tax return)" maxlength="200" />
+          <input type="file" id="doc-free-file" class="doc-file" />
+          <button type="button" class="btn btn-primary" id="doc-free-send">Send</button>
+        </div>
+        <p class="hint" id="doc-free-hint"></p>
+        <div class="progress-track hidden" id="doc-free-progress"><div class="progress-fill" id="doc-free-fill"></div></div>
+      </div>
+
+      <div class="card">
+        <h2>What you've sent</h2>
+        <div id="doc-sent-list"></div>
+      </div>
+    </section>
+
     <!-- CATEGORY VIEW (reusable — header and grid re-rendered per category) -->
     <section id="view-category" class="view hidden">
       <div class="dashboard-header">

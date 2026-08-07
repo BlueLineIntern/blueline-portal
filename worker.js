@@ -4063,6 +4063,107 @@ async function handleAdminListClientDocs(request, env, cors, email) {
   }, 200, cors);
 }
 
+// ---- Shared upload plumbing (admin attach AND client send-in) ----
+// Extracted rather than copied for the client path: the Graph dance is fiddly
+// (upload session, the sharepoint.com host check on the returned URL,
+// Content-Range arithmetic, inverted-timestamp ids) and two copies of it would
+// drift — which is exactly the failure this file's comments keep warning about.
+// Callers own what legitimately differs: authentication, their own size and
+// type limits, and what the finished record says.
+
+// `extra` is merged into the encrypted ticket, so a caller can carry its own
+// context through the chunk loop (the client path uses it for requestId).
+async function createClientDocUploadSession(env, addr, filename, name, extra) {
+  const token = await getGraphToken(env);
+  const driveId = await getClientDocsDriveId(env, token);
+  const folder = await resolveClientDocFolder(env, addr);
+  const path = `${folder}/${filename}`;
+  // The folder is created implicitly by uploading into its path, so no
+  // separate "does this client have a folder yet" round trip is needed.
+  const sessionUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/`
+    + `${path.split('/').map(encodeURIComponent).join('/')}:/createUploadSession`;
+  const res = await fetch(sessionUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'rename', name: filename } }),
+  });
+  if (!res.ok) throw new Error('Graph API error ' + res.status + ': ' + (await res.text()).slice(0, 300));
+  const session = await res.json();
+  if (!session.uploadUrl) throw new Error('Graph returned no uploadUrl');
+  // `folder` rides along so the finished record can name the folder the bytes
+  // actually went into, rather than re-resolving it after the upload and
+  // possibly recording a different answer than the path used above.
+  return encryptJSON(env, {
+    uploadUrl: session.uploadUrl, driveId, folder, filename, name, client: addr, ...(extra || {}),
+  });
+}
+
+// Reads and validates the ticket. Returns { error } for the caller to return
+// verbatim, or { ticket }.
+async function readUploadTicket(env, request) {
+  let ticket;
+  try {
+    ticket = await decryptToObject(env, request.headers.get('X-Upload-Ticket') || '');
+  } catch {
+    return { error: 'Upload ticket could not be read — start the upload again' };
+  }
+  if (!ticket || !ticket.uploadUrl) return { error: 'Missing upload ticket' };
+  let host = '';
+  try { host = new URL(ticket.uploadUrl).hostname; } catch { host = ''; }
+  // The ticket is encrypted with our own key, so this can't be attacker-supplied
+  // — but it is a URL we then POST bytes to, and pinning the host means a bug
+  // that ever let one be forged still can't be used to proxy them elsewhere.
+  if (!/\.sharepoint\.com$/i.test(host)) return { error: 'Upload ticket points somewhere unexpected' };
+  return { ticket };
+}
+
+// Pushes one chunk. Returns { status: 202-ish } shapes the caller turns into
+// JSON: { done: false, nextOffset } while more is expected, or { item } with the
+// finished driveItem once SharePoint has the whole file.
+async function proxyClientDocChunk(env, ticket, offset, chunk) {
+  const end = offset + chunk.byteLength - 1;
+  const res = await fetch(ticket.uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Range': `bytes ${offset}-${end}/${ticket.size}` },
+    body: chunk,
+  });
+  if (res.status === 202) {
+    await res.text().catch(() => '');
+    return { done: false, nextOffset: end + 1 };
+  }
+  if (!res.ok) {
+    throw new Error('SharePoint rejected the chunk (' + res.status + '): ' + (await res.text()).slice(0, 300));
+  }
+  return { done: true, item: await res.json() };
+}
+
+// Builds the KV record for a finished upload. `uploadedBy` is an admin email on
+// the attach path and the client's own address on the send-in path; `source`
+// distinguishes them, and is what gates client visibility (see
+// handleGetClientDocuments — a client must never be shown an advisor's
+// attachment, which was filed with no expectation of being visible to them).
+function clientDocRecord(ticket, item, uploadedBy, source) {
+  const id = `${ticket.client}:${invTs()}-${randomHex(4)}`;
+  return {
+    id,
+    client: ticket.client,
+    name: ticket.name,
+    filename: item.name || ticket.filename,
+    // The folder this file went into. Folder names are derived per upload and
+    // nothing renames a folder afterwards, so without this there is no way to
+    // tell where an older file landed — records written before this field
+    // existed have none and predate family folders entirely.
+    folder: ticket.folder || '',
+    webUrl: item.webUrl || '',
+    driveId: ticket.driveId,
+    driveItemId: item.id || '',
+    size: typeof item.size === 'number' ? item.size : ticket.size,
+    uploadedBy,
+    source,
+    uploadedAt: new Date().toISOString(),
+  };
+}
+
 async function handleAdminClientDocUploadStart(request, env, cors, email) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -4082,29 +4183,7 @@ async function handleAdminClientDocUploadStart(request, env, cors, email) {
   if (size > CLIENT_DOC_MAX) return json({ error: 'File is larger than the 250 MB limit' }, 400, cors);
 
   try {
-    const token = await getGraphToken(env);
-    const driveId = await getClientDocsDriveId(env, token);
-    const folder = await resolveClientDocFolder(env, addr);
-    const path = `${folder}/${filename}`;
-    // The folder is created implicitly by uploading into its path, so no
-    // separate "does this client have a folder yet" round trip is needed.
-    const sessionUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/`
-      + `${path.split('/').map(encodeURIComponent).join('/')}:/createUploadSession`;
-    const res = await fetch(sessionUrl, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'rename', name: filename } }),
-    });
-    if (!res.ok) throw new Error('Graph API error ' + res.status + ': ' + (await res.text()).slice(0, 300));
-    const session = await res.json();
-    if (!session.uploadUrl) throw new Error('Graph returned no uploadUrl');
-
-    // `folder` rides along so the finished record can name the folder the bytes
-    // actually went into, rather than re-resolving it after the upload and
-    // possibly recording a different answer than the path used above.
-    const ticket = await encryptJSON(env, {
-      uploadUrl: session.uploadUrl, driveId, size, filename, name, client: addr, folder,
-    });
+    const ticket = await createClientDocUploadSession(env, addr, filename, name, { size });
     return json({ ticket, chunkSize: CLIENT_DOC_CHUNK }, 200, cors);
   } catch (err) {
     console.error('Failed to start client document upload:', err);
@@ -4120,59 +4199,22 @@ async function handleAdminClientDocUploadChunk(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
 
-  let ticket;
-  try {
-    ticket = await decryptToObject(env, request.headers.get('X-Upload-Ticket') || '');
-  } catch {
-    return json({ error: 'Upload ticket could not be read — start the upload again' }, 400, cors);
-  }
-  if (!ticket || !ticket.uploadUrl) return json({ error: 'Missing upload ticket' }, 400, cors);
-  let host = '';
-  try { host = new URL(ticket.uploadUrl).hostname; } catch { host = ''; }
-  if (!/\.sharepoint\.com$/i.test(host)) {
-    return json({ error: 'Upload ticket points somewhere unexpected' }, 400, cors);
-  }
+  const { ticket, error } = await readUploadTicket(env, request);
+  if (error) return json({ error }, 400, cors);
 
   const offset = Number(request.headers.get('X-Upload-Offset'));
   if (!Number.isFinite(offset) || offset < 0) return json({ error: 'Bad chunk offset' }, 400, cors);
   const chunk = await request.arrayBuffer();
   if (!chunk.byteLength) return json({ error: 'Empty chunk' }, 400, cors);
-  const end = offset + chunk.byteLength - 1;
-  if (end >= ticket.size) return json({ error: 'Chunk runs past the declared file size' }, 400, cors);
+  if (offset + chunk.byteLength - 1 >= ticket.size) {
+    return json({ error: 'Chunk runs past the declared file size' }, 400, cors);
+  }
 
   try {
-    const res = await fetch(ticket.uploadUrl, {
-      method: 'PUT',
-      headers: { 'Content-Range': `bytes ${offset}-${end}/${ticket.size}` },
-      body: chunk,
-    });
-    if (res.status === 202) {
-      await res.text().catch(() => '');
-      return json({ done: false, nextOffset: end + 1 }, 200, cors);
-    }
-    if (!res.ok) {
-      throw new Error('SharePoint rejected the chunk (' + res.status + '): ' + (await res.text()).slice(0, 300));
-    }
-    const item = await res.json();
-    const id = `${ticket.client}:${invTs()}-${randomHex(4)}`;
-    const record = {
-      id,
-      client: ticket.client,
-      name: ticket.name,
-      filename: item.name || ticket.filename,
-      // The folder this file went into. Folder names are derived per upload and
-      // nothing renames a folder afterwards, so without this there is no way to
-      // tell where an older file landed — records written before this field
-      // existed have none and predate family folders entirely.
-      folder: ticket.folder || '',
-      webUrl: item.webUrl || '',
-      driveId: ticket.driveId,
-      driveItemId: item.id || '',
-      size: typeof item.size === 'number' ? item.size : ticket.size,
-      uploadedBy: adminEmail,
-      uploadedAt: new Date().toISOString(),
-    };
-    await env.PORTAL_KV.put(`clientdoc:${id}`, await encryptJSON(env, record));
+    const out = await proxyClientDocChunk(env, ticket, offset, chunk);
+    if (!out.done) return json(out, 200, cors);
+    const record = clientDocRecord(ticket, out.item, adminEmail, 'admin');
+    await env.PORTAL_KV.put(`clientdoc:${record.id}`, await encryptJSON(env, record));
     await logAudit(env, adminEmail, 'attach-client-document', {
       client: ticket.client, name: record.name, filename: record.filename,
     });
@@ -4231,6 +4273,250 @@ async function handleAdminDeleteClientDoc(request, env, cors, id) {
     client: existing && existing.client, id, name: existing && existing.name, fileDeleted,
   });
   return json({ ok: true, fileDeleted }, 200, cors);
+}
+
+// ---------- Document requests + client-side uploads ----------
+// A request is the advisor asking for a specific document ("2024 tax return");
+// the client sees it as an outstanding item on their Documents tab and clears it
+// by uploading. Keyed per client with an inverted timestamp so a KV list returns
+// newest-first, same as clientdoc.
+//
+// Client uploads land in the SAME SharePoint library as advisor attachments, in
+// the same family folder, so the firm's existing retention and backup cover them
+// and there is one document store rather than two. What differs is the ceiling:
+// this is the only place a non-admin can write into the firm's tenant, so it is
+// capped far tighter than the advisor path and restricted to document types.
+const CLIENT_UPLOAD_MAX = 25 * 1024 * 1024; // 25 MB — a scanned return, not video
+const CLIENT_UPLOAD_TYPES = ['pdf', 'jpg', 'jpeg', 'png', 'heic', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt'];
+// A ceiling on how much one client can accumulate. Without it a client-facing
+// write endpoint has no upper bound on what it can push into the tenant.
+const CLIENT_UPLOAD_COUNT_MAX = 200;
+const DOC_REQUEST_STATUSES = ['open', 'fulfilled', 'cancelled'];
+
+function docRequestExtension(filename) {
+  const m = String(filename || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m ? m[1] : '';
+}
+
+function sanitizeDocRequest(body) {
+  const label = String((body && body.label) || '').trim().slice(0, 160);
+  if (!label) return { error: 'A document name is required' };
+  return {
+    fields: {
+      label,
+      notes: String((body && body.notes) || '').trim().slice(0, 1000),
+      dueDate: String((body && body.dueDate) || '').trim().slice(0, 10),
+    },
+  };
+}
+
+async function handleAdminListDocRequests(request, env, cors, email) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const addr = String(email || '').trim().toLowerCase();
+  const { items, errors } = await readAllEncrypted(env, `docreq:${addr}:`);
+  items.sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')));
+  return json({ requests: items, decryptErrors: errors }, 200, cors);
+}
+
+async function handleAdminCreateDocRequest(request, env, cors, email) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const addr = String(email || '').trim().toLowerCase();
+  if (!isValidEmail(addr)) return json({ error: 'Invalid email' }, 400, cors);
+  const body = await request.json().catch(() => ({}));
+  const { fields, error } = sanitizeDocRequest(body);
+  if (error) return json({ error }, 400, cors);
+
+  const id = `${addr}:${invTs()}-${randomHex(4)}`;
+  const record = {
+    id, client: addr, ...fields,
+    status: 'open',
+    requestedBy: adminEmail,
+    requestedAt: new Date().toISOString(),
+    fulfilledAt: null,
+    fulfilledDocId: '',
+  };
+  await env.PORTAL_KV.put(`docreq:${id}`, await encryptJSON(env, record));
+  await logAudit(env, adminEmail, 'request-client-document', { client: addr, label: record.label });
+  // Timeline entry so the ask shows in the contact's merged Timeline & Activity
+  // alongside the upload that eventually clears it.
+  await logTimeline(env, addr, 'document-requested', adminEmail, { label: record.label });
+  return json({ request: record }, 200, cors);
+}
+
+// Cancel / reopen. A fulfilled request is not reopened here — the upload that
+// cleared it still exists, so re-asking is a new request rather than an edit.
+async function handleAdminUpdateDocRequest(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`docreq:${id}`);
+  if (!raw) return json({ error: 'Request not found' }, 404, cors);
+  const existing = await decryptToObject(env, raw);
+  const body = await request.json().catch(() => ({}));
+  const next = { ...existing };
+  if (body.status !== undefined) {
+    if (!DOC_REQUEST_STATUSES.includes(body.status)) return json({ error: 'Invalid status' }, 400, cors);
+    if (existing.status === 'fulfilled') {
+      return json({ error: 'That request has already been fulfilled — ask again with a new request' }, 400, cors);
+    }
+    next.status = body.status;
+    next.cancelledAt = body.status === 'cancelled' ? new Date().toISOString() : null;
+  }
+  if (body.label !== undefined || body.notes !== undefined || body.dueDate !== undefined) {
+    const { fields, error } = sanitizeDocRequest({ ...existing, ...body });
+    if (error) return json({ error }, 400, cors);
+    Object.assign(next, fields);
+  }
+  next.updatedAt = new Date().toISOString();
+  await env.PORTAL_KV.put(`docreq:${id}`, await encryptJSON(env, next));
+  return json({ request: next }, 200, cors);
+}
+
+async function handleAdminDeleteDocRequest(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const raw = await env.PORTAL_KV.get(`docreq:${id}`);
+  const existing = raw ? await decryptToObject(env, raw) : null;
+  await env.PORTAL_KV.delete(`docreq:${id}`);
+  await logAudit(env, adminEmail, 'delete-document-request', {
+    client: existing && existing.client, label: existing && existing.label,
+  });
+  return json({ ok: true }, 200, cors);
+}
+
+// ---- Client-facing ----
+
+// Outstanding asks, plus recently cleared ones so the client can see their
+// upload registered rather than the row just vanishing.
+async function handleGetDocRequests(request, env, cors) {
+  const email = await getSessionEmail(request, env);
+  if (!email) return json({ error: 'Not authenticated' }, 401, cors);
+  const { items } = await readAllEncrypted(env, `docreq:${email}:`);
+  const requests = items
+    .filter((r) => r.status !== 'cancelled')
+    .sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')))
+    .map((r) => ({
+      id: r.id, label: r.label, notes: r.notes || '', dueDate: r.dueDate || '',
+      status: r.status, requestedAt: r.requestedAt, fulfilledAt: r.fulfilledAt || null,
+    }));
+  return json({ requests }, 200, cors);
+}
+
+// ONLY the client's own uploads. An advisor's attachment is filed in the same
+// library but was put there with no expectation of being visible to the client —
+// it may be an internal memo, a draft, or a document about someone else in the
+// family. Gating on source === 'client' is what keeps this endpoint from
+// retroactively exposing everything the firm has ever filed. Records written
+// before `source` existed have none, so they are advisor attachments by
+// definition and correctly excluded.
+async function handleGetClientDocuments(request, env, cors) {
+  const email = await getSessionEmail(request, env);
+  if (!email) return json({ error: 'Not authenticated' }, 401, cors);
+  const { items } = await readAllEncrypted(env, `clientdoc:${email}:`);
+  const documents = items
+    .filter((d) => d.source === 'client')
+    .sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')))
+    .map((d) => ({ id: d.id, name: d.name, filename: d.filename, size: d.size, uploadedAt: d.uploadedAt }));
+  return json({ documents }, 200, cors);
+}
+
+async function handleClientDocUploadStart(request, env, cors) {
+  const email = await getSessionEmail(request, env);
+  if (!email) return json({ error: 'Not authenticated' }, 401, cors);
+  if (!env.SHAREPOINT_CLIENT_DOCS_LIST_ID) {
+    return json({ error: 'Document upload is not set up yet — please contact your advisor.' }, 400, cors);
+  }
+  const body = await request.json().catch(() => ({}));
+  const filename = sanitizeDocFilename(body.filename);
+  const size = Number(body.size);
+  const name = String(body.name || '').trim().slice(0, 200);
+  const requestId = String(body.requestId || '').trim().slice(0, 200);
+
+  if (!filename) return json({ error: 'Choose a file to upload.' }, 400, cors);
+  if (!name) return json({ error: 'Give the document a name.' }, 400, cors);
+  if (!Number.isFinite(size) || size <= 0) return json({ error: 'File size is missing.' }, 400, cors);
+  if (size > CLIENT_UPLOAD_MAX) {
+    return json({ error: 'That file is larger than the 25 MB limit.' }, 400, cors);
+  }
+  const ext = docRequestExtension(filename);
+  if (!CLIENT_UPLOAD_TYPES.includes(ext)) {
+    return json({
+      error: `We can't accept ".${ext || 'unknown'}" files. Please upload a PDF, image, or Office document.`,
+    }, 400, cors);
+  }
+  const existing = await listKeys(env, `clientdoc:${email}:`);
+  if (existing.length >= CLIENT_UPLOAD_COUNT_MAX) {
+    return json({ error: 'You have reached the upload limit — please contact your advisor.' }, 400, cors);
+  }
+  // A requestId is only honoured if it actually belongs to this client and is
+  // still open, so a client can't clear someone else's request by guessing an id.
+  let validRequestId = '';
+  if (requestId) {
+    const raw = await env.PORTAL_KV.get(`docreq:${requestId}`);
+    const req = raw ? await decryptToObject(env, raw) : null;
+    if (req && req.client === email && req.status === 'open') validRequestId = requestId;
+  }
+
+  try {
+    const ticket = await createClientDocUploadSession(env, email, filename, name, {
+      size, requestId: validRequestId,
+    });
+    return json({ ticket, chunkSize: CLIENT_DOC_CHUNK }, 200, cors);
+  } catch (err) {
+    console.error('Failed to start client-side document upload:', err);
+    return json({ error: 'Could not start the upload — please try again.' }, 500, cors);
+  }
+}
+
+async function handleClientDocUploadChunk(request, env, cors) {
+  const email = await getSessionEmail(request, env);
+  if (!email) return json({ error: 'Not authenticated' }, 401, cors);
+
+  const { ticket, error } = await readUploadTicket(env, request);
+  if (error) return json({ error }, 400, cors);
+  // The ticket carries the client it was issued for; refusing a mismatch means
+  // one client's ticket can never be used to file a document under another.
+  if (ticket.client !== email) return json({ error: 'Upload ticket does not belong to you' }, 403, cors);
+
+  const offset = Number(request.headers.get('X-Upload-Offset'));
+  if (!Number.isFinite(offset) || offset < 0) return json({ error: 'Bad chunk offset' }, 400, cors);
+  const chunk = await request.arrayBuffer();
+  if (!chunk.byteLength) return json({ error: 'Empty chunk' }, 400, cors);
+  if (offset + chunk.byteLength - 1 >= ticket.size) {
+    return json({ error: 'Chunk runs past the declared file size' }, 400, cors);
+  }
+
+  try {
+    const out = await proxyClientDocChunk(env, ticket, offset, chunk);
+    if (!out.done) return json(out, 200, cors);
+    const record = clientDocRecord(ticket, out.item, email, 'client');
+    await env.PORTAL_KV.put(`clientdoc:${record.id}`, await encryptJSON(env, record));
+
+    // Clear the request this was sent against, if any. Re-read rather than
+    // trusting the ticket's snapshot: the advisor may have cancelled it while
+    // the bytes were in flight.
+    if (ticket.requestId) {
+      const raw = await env.PORTAL_KV.get(`docreq:${ticket.requestId}`);
+      const req = raw ? await decryptToObject(env, raw) : null;
+      if (req && req.client === email && req.status === 'open') {
+        const next = {
+          ...req, status: 'fulfilled',
+          fulfilledAt: new Date().toISOString(), fulfilledDocId: record.id,
+        };
+        await env.PORTAL_KV.put(`docreq:${ticket.requestId}`, await encryptJSON(env, next));
+      }
+    }
+    // Timeline, not audit: logAudit records what an *admin* did, and this is the
+    // client acting. It shows in the contact's merged Timeline & Activity.
+    await logTimeline(env, email, 'document-uploaded', 'client', {
+      name: record.name, filename: record.filename,
+    });
+    return json({ done: true, document: { id: record.id, name: record.name, filename: record.filename, size: record.size, uploadedAt: record.uploadedAt } }, 200, cors);
+  } catch (err) {
+    console.error('Client-side document upload failed:', err);
+    return json({ error: 'Upload failed — please try again.' }, 500, cors);
+  }
 }
 
 // ---------- Advisor CRM: client emails ----------
@@ -5729,6 +6015,18 @@ export default {
       if (url.pathname === '/api/portal-links' && request.method === 'GET') {
         return await handleGetPortalLinks(request, env, cors);
       }
+      if (url.pathname === '/api/document-requests' && request.method === 'GET') {
+        return await handleGetDocRequests(request, env, cors);
+      }
+      if (url.pathname === '/api/documents' && request.method === 'GET') {
+        return await handleGetClientDocuments(request, env, cors);
+      }
+      if (url.pathname === '/api/documents/upload' && request.method === 'POST') {
+        return await handleClientDocUploadStart(request, env, cors);
+      }
+      if (url.pathname === '/api/documents/chunk' && request.method === 'PUT') {
+        return await handleClientDocUploadChunk(request, env, cors);
+      }
       const saveMatch = url.pathname.match(/^\/api\/assessments\/([a-z]+)$/);
       if (saveMatch && request.method === 'POST') {
         return await handleSaveAssessment(request, env, cors, saveMatch[1]);
@@ -5925,6 +6223,23 @@ export default {
       const docListMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/documents$/);
       if (docListMatch && request.method === 'GET') {
         return await handleAdminListClientDocs(request, env, cors, decodeURIComponent(docListMatch[1]));
+      }
+      // Matched BEFORE the bare /contacts/(.+) route below, which would
+      // otherwise swallow ".../document-requests" as a contact email.
+      const docReqListMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/document-requests$/);
+      if (docReqListMatch && request.method === 'GET') {
+        return await handleAdminListDocRequests(request, env, cors, decodeURIComponent(docReqListMatch[1]));
+      }
+      if (docReqListMatch && request.method === 'POST') {
+        return await handleAdminCreateDocRequest(request, env, cors, decodeURIComponent(docReqListMatch[1]));
+      }
+      // Request ids are `<email>:<invTs>-<rand>` — same greedy match as documents.
+      const docReqItemMatch = url.pathname.match(/^\/api\/admin\/document-requests\/(.+)$/);
+      if (docReqItemMatch && request.method === 'POST') {
+        return await handleAdminUpdateDocRequest(request, env, cors, decodeURIComponent(docReqItemMatch[1]));
+      }
+      if (docReqItemMatch && request.method === 'DELETE') {
+        return await handleAdminDeleteDocRequest(request, env, cors, decodeURIComponent(docReqItemMatch[1]));
       }
       // Document ids are `<email>:<invTs>-<rand>`, so the id itself carries a
       // colon — matched greedily and used as-is rather than split apart.

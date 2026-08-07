@@ -151,6 +151,62 @@ body {
    links, so an empty tab doesn't explain how to sign in to nothing. */
 .links-note { margin-top: var(--sp-5); }
 
+/* Documents tab */
+.doc-req {
+  display: grid;
+  /* Two columns on desktop, stacking below; the progress bar and error span
+     both columns so they sit under the row they belong to rather than beside it. */
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-2) var(--sp-4);
+  align-items: center;
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border);
+}
+.doc-req:last-child { border-bottom: none; }
+.doc-req-main { min-width: 0; }
+.doc-req-label { font-weight: var(--fw-semibold); color: var(--text); }
+.doc-req-notes { color: var(--text-muted); font-size: var(--fs-sm); margin-top: 2px; }
+.doc-req-actions { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+/* Span both columns so progress and errors don't squeeze the action buttons. */
+.doc-req .progress-track,
+.doc-req .form-error { grid-column: 1 / -1; }
+.doc-req .form-error:empty { display: none; }
+/* A fulfilled request recedes but stays listed, so an upload visibly lands
+   instead of the row just disappearing. */
+.doc-req-done { opacity: 0.7; }
+
+.doc-upload-row {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+}
+.doc-input {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: var(--fs-base);
+}
+.doc-file { flex: 1 1 200px; min-width: 0; font-family: inherit; font-size: var(--fs-sm); }
+
+.doc-sent { padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); }
+.doc-sent:last-child { border-bottom: none; }
+
+/* Visually-hidden label. Named -client to avoid colliding with the admin
+   shared.css .sr-only, since two admin pages load this stylesheet too. */
+.sr-only-client {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+@media (max-width: 620px) {
+  .doc-req { grid-template-columns: 1fr; }
+}
+
 .footer {
   text-align: center;
   padding: var(--sp-5);

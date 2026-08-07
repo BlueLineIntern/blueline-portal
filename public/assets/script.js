@@ -46,7 +46,7 @@ async function apiRequest(path, { method = "GET", body, auth = false } = {}) {
 
 // FPA module sections are static in index.html; the 12 category module
 // sections are generated at boot (see "Generated category module forms").
-const VIEW_IDS = ["auth", "home", "assignments", "links", "dashboard", "category"]
+const VIEW_IDS = ["auth", "home", "assignments", "documents", "links", "dashboard", "category"]
   .concat(MODULES.map((mod) => mod.key))
   .concat(CATEGORY_MODULES.map((mod) => mod.key));
 
@@ -56,6 +56,7 @@ const VIEW_IDS = ["auth", "home", "assignments", "links", "dashboard", "category
 const CLIENT_TABS = [
   { id: "home", label: "Home", view: "home" },
   { id: "assignments", label: "Assignments", view: "assignments" },
+  { id: "documents", label: "Documents", view: "documents" },
   { id: "links", label: "Links", view: "links" },
 ];
 
@@ -66,7 +67,7 @@ const CLIENT_TABS = [
 let activeTab = "home";
 
 // Every view that lives under a tab, so a drill-down keeps the right tab lit.
-const VIEW_TAB = { home: "home", links: "links" };
+const VIEW_TAB = { home: "home", links: "links", documents: "documents" };
 ["assignments", "dashboard", "category"]
   .concat(MODULES.map((m) => m.key))
   .concat(CATEGORY_MODULES.map((m) => m.key))
@@ -103,6 +104,7 @@ function renderTabs() {
 function openTab(id) {
   if (id === "home") return loadHome();
   if (id === "assignments") return loadAssignments();
+  if (id === "documents") return loadDocuments();
   if (id === "links") return loadLinks();
 }
 
@@ -137,14 +139,16 @@ async function refreshState() {
   // without a second round trip. A links failure must not take down the
   // assessment state the rest of the portal depends on, so it degrades to an
   // empty list rather than rejecting the whole Promise.all.
-  const [assessments, assignments, links] = await Promise.all([
+  const [assessments, assignments, links, reqs] = await Promise.all([
     apiRequest("/api/assessments", { auth: true }),
     apiRequest("/api/assignments", { auth: true }),
     apiRequest("/api/portal-links", { auth: true }).catch(() => ({ links: [] })),
+    apiRequest("/api/document-requests", { auth: true }).catch(() => ({ requests: [] })),
   ]);
   currentModules = assessments.modules || {};
   assignedKeys = assignments.assignments;
   portalLinks = links.links || [];
+  docRequests = reqs.requests || [];
 }
 
 // ---------- Auth ----------
@@ -224,20 +228,31 @@ function renderHomeLanding() {
   document.getElementById("home-welcome").textContent = session ? `Welcome, ${session.name}` : "Welcome";
 
   const outstanding = outstandingCount();
+  const openRequests = docRequests.filter((r) => r.status === "open").length;
   const anyAssigned = MODULES.concat(CATEGORY_MODULES).some((mod) => isAssigned(mod.key))
     || isAssigned("onboardingWizard");
-  document.getElementById("home-status-line").textContent = !anyAssigned
-    ? "Nothing is waiting on you right now. Your advisor will add assessments here when they're ready."
-    : outstanding === 0
-      ? "You're all caught up — every assessment assigned to you has been submitted."
-      : `You have ${outstanding} assessment${outstanding === 1 ? "" : "s"} left to complete.`;
+
+  // One line naming everything outstanding across both kinds of work, so Home
+  // doesn't report "all caught up" while a document request is still sitting
+  // unanswered on the Documents tab.
+  const bits = [];
+  if (anyAssigned && outstanding > 0) bits.push(`${outstanding} assessment${outstanding === 1 ? "" : "s"} to complete`);
+  if (openRequests > 0) bits.push(`${openRequests} document${openRequests === 1 ? "" : "s"} to send`);
+  document.getElementById("home-status-line").textContent = bits.length
+    ? `You have ${bits.join(" and ")}.`
+    : anyAssigned
+      ? "You're all caught up — nothing is waiting on you."
+      : "Nothing is waiting on you right now. Your advisor will add things here when they're ready.";
 
   // Shortcuts rather than a duplicate grid: Home points into the tabs, it
-  // doesn't reimplement them.
+  // doesn't reimplement them. Ordered by urgency, so whatever is actually
+  // outstanding is the first button.
   const shortcuts = [];
+  if (openRequests > 0) shortcuts.push({ tab: "documents", label: `Send ${openRequests} requested document${openRequests === 1 ? "" : "s"}` });
   if (anyAssigned) {
     shortcuts.push({ tab: "assignments", label: outstanding > 0 ? "Continue your assessments" : "Review your assessments" });
   }
+  if (openRequests === 0) shortcuts.push({ tab: "documents", label: "Send a document" });
   if (portalLinks.length) shortcuts.push({ tab: "links", label: "Open your platform links" });
   const wrap = document.getElementById("home-shortcuts");
   wrap.innerHTML = shortcuts
@@ -310,6 +325,203 @@ async function loadLinks() {
   }
   renderLinks();
   showView("links");
+}
+
+// ---------- Documents ----------
+// Mirrors the server's limits (CLIENT_UPLOAD_MAX / CLIENT_UPLOAD_TYPES in
+// worker.js). The server is the real gate — this is here so the client gets told
+// before spending time uploading a file that will be refused.
+const DOC_UPLOAD_MAX = 25 * 1024 * 1024;
+const DOC_UPLOAD_TYPES = ["pdf", "jpg", "jpeg", "png", "heic", "doc", "docx", "xls", "xlsx", "csv", "txt"];
+
+let docRequests = [];
+let sentDocuments = [];
+let docUploading = false;
+
+function fmtBytes(n) {
+  if (!Number.isFinite(n)) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fileExt(name) {
+  const m = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m ? m[1] : "";
+}
+
+// Returns an error string, or "" when the file is acceptable.
+function checkFile(file) {
+  if (!file) return "Choose a file first.";
+  if (file.size > DOC_UPLOAD_MAX) return `That file is ${fmtBytes(file.size)} — the limit is 25 MB.`;
+  const ext = fileExt(file.name);
+  if (!DOC_UPLOAD_TYPES.includes(ext)) {
+    return `We can't accept ".${ext || "unknown"}" files. Please upload a PDF, image, or Office document.`;
+  }
+  return "";
+}
+
+function renderDocuments() {
+  // Requests. Fulfilled ones stay listed so an upload visibly registers rather
+  // than the row silently disappearing.
+  const open = docRequests.filter((r) => r.status === "open");
+  const done = docRequests.filter((r) => r.status === "fulfilled");
+  const list = document.getElementById("doc-requests-list");
+  if (!docRequests.length) {
+    list.innerHTML = `<p class="empty">Your advisor hasn't requested anything right now.</p>`;
+  } else {
+    list.innerHTML =
+      open.map((r) => `
+        <div class="doc-req" data-req="${escapeHtml(r.id)}">
+          <div class="doc-req-main">
+            <div class="doc-req-label">${escapeHtml(r.label)}</div>
+            ${r.notes ? `<div class="doc-req-notes">${escapeHtml(r.notes)}</div>` : ""}
+            ${r.dueDate ? `<div class="doc-req-notes">Needed by ${escapeHtml(r.dueDate)}</div>` : ""}
+          </div>
+          <div class="doc-req-actions">
+            <input type="file" class="doc-file doc-req-file" data-req="${escapeHtml(r.id)}" />
+            <button type="button" class="btn btn-primary doc-req-send" data-req="${escapeHtml(r.id)}">Upload</button>
+          </div>
+          <div class="progress-track hidden doc-req-progress"><div class="progress-fill"></div></div>
+          <p class="form-error doc-req-error"></p>
+        </div>`).join("") +
+      done.map((r) => `
+        <div class="doc-req doc-req-done">
+          <div class="doc-req-main">
+            <div class="doc-req-label">${escapeHtml(r.label)}</div>
+            <div class="doc-req-notes">Received${r.fulfilledAt ? ` ${new Date(r.fulfilledAt).toLocaleDateString()}` : ""} — thank you.</div>
+          </div>
+          <span class="status-badge status-done">Received</span>
+        </div>`).join("");
+  }
+
+  const sent = document.getElementById("doc-sent-list");
+  sent.innerHTML = sentDocuments.length
+    ? sentDocuments.map((d) => `
+        <div class="doc-sent">
+          <div>
+            <div class="doc-req-label">${escapeHtml(d.name)}</div>
+            <div class="doc-req-notes">${escapeHtml(d.filename)} · ${fmtBytes(d.size)} ·
+              ${d.uploadedAt ? escapeHtml(new Date(d.uploadedAt).toLocaleString()) : ""}</div>
+          </div>
+        </div>`).join("")
+    : `<p class="empty">You haven't sent any documents yet.</p>`;
+
+  document.getElementById("doc-free-hint").textContent =
+    `PDF, image (JPG/PNG/HEIC) or Office document, up to 25 MB.`;
+
+  wireDocUploads();
+}
+
+function wireDocUploads() {
+  document.querySelectorAll(".doc-req-send").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const row = btn.closest(".doc-req");
+      const file = row.querySelector(".doc-req-file").files[0];
+      const errEl = row.querySelector(".doc-req-error");
+      const req = docRequests.find((r) => r.id === btn.dataset.req);
+      errEl.textContent = "";
+      const bad = checkFile(file);
+      if (bad) { errEl.textContent = bad; return; }
+      // The request's own label becomes the document name — the advisor already
+      // said what they wanted, so making the client retype it is pure friction.
+      uploadDocument(file, req ? req.label : file.name, btn.dataset.req, {
+        button: btn,
+        errorEl: errEl,
+        track: row.querySelector(".doc-req-progress"),
+        fill: row.querySelector(".doc-req-progress .progress-fill"),
+      });
+    });
+  });
+}
+
+document.getElementById("doc-free-send").addEventListener("click", () => {
+  const errEl = document.getElementById("documents-error");
+  const file = document.getElementById("doc-free-file").files[0];
+  const nameEl = document.getElementById("doc-free-name");
+  errEl.textContent = "";
+  const bad = checkFile(file);
+  if (bad) { errEl.textContent = bad; return; }
+  // Fall back to the filename so a client who just picks a file isn't blocked
+  // by an empty name field.
+  const name = nameEl.value.trim() || file.name.replace(/\.[^.]+$/, "");
+  uploadDocument(file, name, "", {
+    button: document.getElementById("doc-free-send"),
+    errorEl: errEl,
+    track: document.getElementById("doc-free-progress"),
+    fill: document.getElementById("doc-free-fill"),
+    onDone: () => { nameEl.value = ""; document.getElementById("doc-free-file").value = ""; },
+  });
+});
+
+// Chunked through our own Worker rather than straight to SharePoint: the upload
+// URL is a capability, so it never leaves the server. Same shape as the admin
+// path (see handleClientDocUploadChunk).
+async function uploadDocument(file, name, requestId, ui) {
+  if (docUploading) return;
+  docUploading = true;
+  ui.button.disabled = true;
+  const originalLabel = ui.button.textContent;
+  ui.button.textContent = "Sending…";
+  ui.track.classList.remove("hidden");
+  ui.fill.style.width = "0%";
+  try {
+    const start = await apiRequest("/api/documents/upload", {
+      method: "POST",
+      auth: true,
+      body: { filename: file.name, size: file.size, name, requestId: requestId || undefined },
+    });
+    const session = getSession();
+    let offset = 0;
+    let done = false;
+    while (!done) {
+      const slice = file.slice(offset, offset + start.chunkSize);
+      const res = await fetch(`${API_BASE_URL}/api/documents/chunk`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${session.token}`,
+          "X-Upload-Ticket": start.ticket,
+          "X-Upload-Offset": String(offset),
+          "Content-Type": "application/octet-stream",
+        },
+        body: slice,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+      if (data.done) { done = true; break; }
+      offset = data.nextOffset;
+      ui.fill.style.width = `${Math.round((offset / file.size) * 100)}%`;
+    }
+    ui.fill.style.width = "100%";
+    if (ui.onDone) ui.onDone();
+    await loadDocuments();
+  } catch (err) {
+    if (err.message.includes("authenticated")) return bounceToAuth();
+    ui.errorEl.textContent = err.message;
+    ui.track.classList.add("hidden");
+  } finally {
+    docUploading = false;
+    ui.button.disabled = false;
+    ui.button.textContent = originalLabel;
+  }
+}
+
+async function loadDocuments() {
+  const errorEl = document.getElementById("documents-error");
+  errorEl.textContent = "";
+  try {
+    const [reqs, docs] = await Promise.all([
+      apiRequest("/api/document-requests", { auth: true }),
+      apiRequest("/api/documents", { auth: true }),
+    ]);
+    docRequests = reqs.requests || [];
+    sentDocuments = docs.documents || [];
+  } catch (err) {
+    if (err.message.includes("authenticated")) return bounceToAuth();
+    errorEl.textContent = "We couldn't load your documents — refresh to try again.";
+  }
+  renderDocuments();
+  showView("documents");
 }
 
 // ---------- Assignments ----------

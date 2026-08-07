@@ -1559,7 +1559,7 @@
     // Additional Info holds passport/licence numbers, so it is fetched only when
     // actually opened rather than with the profile.
     if (tab === 'additional') loadClientInfo(selectedEmail);
-    if (tab === 'documents') loadClientDocs(selectedEmail);
+    if (tab === 'documents') { loadClientDocs(selectedEmail); loadDocRequests(selectedEmail); }
     // Emails is a live Graph call, not cached data — fetched only on open, same
     // as Additional Info/Documents, and never re-fetched by the background poll.
     if (tab === 'emails') loadClientEmails(selectedEmail);
@@ -1897,9 +1897,13 @@
       </div>`;
     }
     const rows = clientDocs.map((d) => {
+      // A client send-in reads differently from an advisor attachment — "sent by
+      // the client" is the fact worth surfacing, and staffLabel would render
+      // their email as if they were staff.
+      const fromClient = d.source === 'client';
       const meta = [d.filename !== d.name ? d.filename : '', formatBytes(d.size),
-        d.uploadedAt ? `attached ${fmtDate(d.uploadedAt)}` : '',
-        d.uploadedBy ? `by ${staffLabel(d.uploadedBy)}` : '']
+        d.uploadedAt ? `${fromClient ? 'sent' : 'attached'} ${fmtDate(d.uploadedAt)}` : '',
+        d.uploadedBy ? (fromClient ? 'by the client' : `by ${staffLabel(d.uploadedBy)}`) : '']
         .filter(Boolean).map(escapeHtml).join(' · ');
       // The name links to SharePoint's own viewer rather than streaming the file
       // back through the Worker — SharePoint already handles preview, range
@@ -1909,7 +1913,7 @@
         : escapeHtml(d.name);
       return `<div class="row-item doc-row">
         <div class="doc-main">
-          <div class="row-title">${link}</div>
+          <div class="row-title">${link}${fromClient ? ' <span class="badge badge-sky">from client</span>' : ''}</div>
           ${meta ? `<div class="doc-meta">${meta}</div>` : ''}
         </div>
         <div class="doc-actions">
@@ -1926,6 +1930,129 @@
       <div class="row-list">${rows.length ? rows.join('')
         : '<p class="empty">Nothing attached yet — use Attach document for tax returns, statements or forms that arrived outside the portal.</p>'}</div>
     </div>`;
+  }
+
+  // ---------- Requested documents ----------
+  // The advisor's asks. A client clears one by uploading against it from their
+  // portal, which flips it to fulfilled server-side (see
+  // handleClientDocUploadChunk) — nothing here marks it done manually.
+  let docRequests = [];
+  let docRequestsLoadedFor = '';
+
+  const DOC_REQ_BADGE = { open: 'badge-amber', fulfilled: 'badge-green', cancelled: 'badge-gray' };
+
+  function docRequestsHtml() {
+    const rows = docRequests.map((r) => {
+      const meta = [
+        r.notes || '',
+        r.dueDate ? `needed by ${r.dueDate}` : '',
+        r.requestedAt ? `asked ${fmtDate(r.requestedAt)}` : '',
+        r.requestedBy ? `by ${staffLabel(r.requestedBy)}` : '',
+        r.fulfilledAt ? `received ${fmtDate(r.fulfilledAt)}` : '',
+      ].filter(Boolean).map(escapeHtml).join(' · ');
+      // A fulfilled request links to the document that cleared it, so the ask
+      // and the file that answered it aren't two disconnected rows. Rendered as
+      // a short action rather than the document's name: the client's upload is
+      // auto-named after this very label, so repeating it read
+      // "2024 tax return — 2024 tax return".
+      const doc = r.fulfilledDocId ? clientDocs.find((d) => d.id === r.fulfilledDocId) : null;
+      const docLink = doc && doc.webUrl
+        ? ` <a class="name-link" href="${escapeHtml(doc.webUrl)}" target="_blank" rel="noopener noreferrer">view →</a>`
+        : '';
+      const actions = r.status === 'open'
+        ? `<button type="button" class="btn btn-ghost btn-small" data-req-cancel="${escapeHtml(r.id)}">Cancel</button>`
+        : `<button type="button" class="btn btn-ghost btn-small" data-req-delete="${escapeHtml(r.id)}">Remove</button>`;
+      return `<div class="row-item">
+        <div class="row-main">
+          <div class="row-title">${escapeHtml(r.label)}${docLink}</div>
+          ${meta ? `<div class="doc-meta">${meta}</div>` : ''}
+        </div>
+        <div class="row-side">
+          <span class="badge ${DOC_REQ_BADGE[r.status] || 'badge-gray'}">${escapeHtml(r.status)}</span>
+          ${actions}
+        </div>
+      </div>`;
+    });
+    return `<div class="panel">
+      <div class="panel-head"><h2>Requested Documents</h2></div>
+      <p class="hint">Ask this client for a specific document. It shows up on their portal's
+      <strong>Documents</strong> tab as an outstanding item, and clears itself when they upload it.</p>
+      <div class="row-list">${rows.length ? rows.join('')
+        : '<p class="empty">Nothing requested. Ask for a tax return, trust document or estate plan below.</p>'}</div>
+      <div style="display:flex; gap:var(--sp-3); margin-top:var(--sp-4); flex-wrap:wrap; align-items:flex-start;">
+        <input type="text" class="input" id="req-label" placeholder="What do you need? (e.g. 2024 tax return)"
+          maxlength="160" style="flex:2; min-width:200px;" />
+        <input type="text" class="input" id="req-notes" placeholder="Note for the client (optional)"
+          maxlength="1000" style="flex:2; min-width:180px;" />
+        <input type="date" class="input" id="req-due" style="flex:1; min-width:150px;" title="Needed by (optional)" />
+        <button type="button" class="btn btn-primary btn-small" id="req-add-btn">Request</button>
+      </div>
+      <p class="form-error" id="req-error"></p>
+    </div>`;
+  }
+
+  async function loadDocRequests(email, { force = false } = {}) {
+    if (!email) return;
+    if (!force && docRequestsLoadedFor === email) return;
+    try {
+      const data = await api(`/api/admin/contacts/${encodeURIComponent(email)}/document-requests`);
+      docRequests = data.requests || [];
+      docRequestsLoadedFor = email;
+    } catch {
+      docRequests = [];
+      docRequestsLoadedFor = '';
+    }
+    if (selectedEmail === email) {
+      const c = currentContact();
+      if (c) renderDocumentsTab(c);
+    }
+  }
+
+  function wireDocRequestActions() {
+    const add = document.getElementById('req-add-btn');
+    if (add) {
+      add.addEventListener('click', async () => {
+        const errEl = document.getElementById('req-error');
+        const label = document.getElementById('req-label').value.trim();
+        errEl.textContent = '';
+        if (!label) { errEl.textContent = 'Say what you need.'; return; }
+        try {
+          await api(`/api/admin/contacts/${encodeURIComponent(selectedEmail)}/document-requests`, {
+            method: 'POST',
+            body: JSON.stringify({
+              label,
+              notes: document.getElementById('req-notes').value.trim(),
+              dueDate: document.getElementById('req-due').value,
+            }),
+          });
+          await loadDocRequests(selectedEmail, { force: true });
+        } catch (err) {
+          errEl.textContent = err.message;
+        }
+      });
+    }
+    document.querySelectorAll('[data-req-cancel]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        const r = docRequests.find((x) => x.id === b.dataset.reqCancel);
+        if (!r || !confirm(`Cancel the request for "${r.label}"? It disappears from the client's portal.`)) return;
+        try {
+          await api(`/api/admin/document-requests/${encodeURIComponent(r.id)}`, {
+            method: 'POST', body: JSON.stringify({ status: 'cancelled' }),
+          });
+          await loadDocRequests(selectedEmail, { force: true });
+        } catch (err) { alert(`Could not cancel: ${err.message}`); }
+      })
+    );
+    document.querySelectorAll('[data-req-delete]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        const r = docRequests.find((x) => x.id === b.dataset.reqDelete);
+        if (!r || !confirm(`Remove the "${r.label}" request from this list? The document itself is kept.`)) return;
+        try {
+          await api(`/api/admin/document-requests/${encodeURIComponent(r.id)}`, { method: 'DELETE' });
+          await loadDocRequests(selectedEmail, { force: true });
+        } catch (err) { alert(`Could not remove: ${err.message}`); }
+      })
+    );
   }
 
   function wireDocActions() {
@@ -2010,9 +2137,13 @@
           ${sig}
         </div>`;
       });
+    // Requests first: what you're still waiting on matters more than what has
+    // already arrived.
     document.getElementById('tab-documents').innerHTML =
+      docRequestsHtml() +
       attachedDocsHtml() +
       (agreements.length ? agreements.join('') : '<div class="panel"><p class="empty">No signed agreements on file for this contact.</p></div>');
+    wireDocRequestActions();
     wireDocActions();
   }
 
@@ -2968,6 +3099,12 @@
       case 'meeting-held':
         label = `Meeting held: ${d.title || '(untitled)'}`;
         break;
+      case 'document-requested':
+        label = `Document requested: ${d.label || '(unnamed)'}`;
+        break;
+      case 'document-uploaded':
+        label = `Document sent by client: ${d.name || d.filename || '(unnamed)'}`;
+        break;
       default:
         label = TIMELINE_LABELS[e.type] || e.type;
         if (d.module) bits.push(d.module);
@@ -2984,10 +3121,18 @@
   }
 
   // Audit actions that name a client, worth surfacing on their timeline —
-  // everything the old separate Activity Log tab showed. 'set-assignments' is
-  // deliberately absent: handleAdminSetAssignments logs both this and a
-  // timeline 'assignments-changed' entry for the very same change, so
-  // including it here would show the identical event twice.
+  // everything the old separate Activity Log tab showed.
+  //
+  // Some actions write BOTH an audit entry and a timeline entry for the same
+  // change — the audit log is the firm-wide compliance trail, the timeline is
+  // the per-client story, and both are legitimate. In the merged view they
+  // would show the identical event twice, so the audit copy is dropped and the
+  // timeline one wins (it carries the better detail). Anything added to this set
+  // must have a timeline entry covering it, or the event vanishes from the tab.
+  const AUDIT_DUPLICATES_TIMELINE = new Set([
+    'set-assignments',        // ↔ timeline 'assignments-changed'
+    'request-client-document', // ↔ timeline 'document-requested'
+  ]);
   const AUDIT_LABELS = {
     'update-contact': 'Contact details updated',
     'archive-contact': 'Contact archived',
@@ -2996,6 +3141,8 @@
     'attach-client-document': 'Document attached',
     'rename-client-document': 'Document renamed',
     'delete-client-document': 'Document deleted',
+    'request-client-document': 'Document requested from the client',
+    'delete-document-request': 'Document request removed',
     'view-client-emails': "Client's email viewed in the portal",
   };
 
@@ -3041,7 +3188,7 @@
   // otherwise double up with the assignments-changed timeline entry.
   function auditEntriesFor(auditData, email) {
     return (auditData.entries || [])
-      .filter((e) => e.detail && e.detail.client === email && e.action !== 'set-assignments');
+      .filter((e) => e.detail && e.detail.client === email && !AUDIT_DUPLICATES_TIMELINE.has(e.action));
   }
 
   // Timeline (client touchpoints: logins, assessments, notes, tasks, meetings,
@@ -3803,7 +3950,7 @@
       if (selectedGroupId !== hh.id) return;
       const tlEntries = tlResults.flat();
       const auditEntries = (au.entries || [])
-        .filter((e) => e.detail && emails.includes(e.detail.client) && e.action !== 'set-assignments')
+        .filter((e) => e.detail && emails.includes(e.detail.client) && !AUDIT_DUPLICATES_TIMELINE.has(e.action))
         .map((e) => ({ ...e, member: e.detail.client }));
       const rows = [
         ...tlEntries.map((e) => ({ e, html: timelineLine(e) })),

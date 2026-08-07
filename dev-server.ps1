@@ -229,6 +229,12 @@ $clientInfo = @{}        # email -> ordered hashtable of the suitability fields
 $clientDocs = @{}        # doc id -> metadata record
 $clientDocUploads = @{}  # ticket -> in-flight upload
 $script:docCounter = 0
+$docRequests = @{}       # request id -> advisor's ask for a specific document
+$script:docReqCounter = 0
+# Mirrors the worker's client-upload ceiling. Deliberately far tighter than the
+# advisor path: this is the only place a non-admin writes into the firm's tenant.
+$clientUploadMax = 25 * 1024 * 1024
+$clientUploadTypes = @('pdf', 'jpg', 'jpeg', 'png', 'heic', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt')
 
 # Fixed sample data standing in for a live Microsoft Graph mailbox search (see
 # fetchClientEmailHistory in worker.js) - the mock has no Outlook behind it at
@@ -1245,6 +1251,168 @@ while ($listener.IsListening) {
             Write-Audit $adminEmail 'update-portal-links' @{ count = $portalLinks.Count }
             Send-Json $ctx 200 @{ links = @($portalLinks) }
         }
+        # ---- Document requests (mirror of worker.js handleAdminListDocRequests etc.) ----
+        # Matched before the bare /api/admin/contacts/(.+) route further down,
+        # which would otherwise swallow ".../document-requests" as an email.
+        elseif ($path -match '^/api/admin/contacts/(.+)/document-requests$' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            $reqs = @($docRequests.Values | Where-Object { $_.client -eq $target } |
+                Sort-Object -Property @{ Expression = { [string]$_['requestedAt'] } } -Descending)
+            Send-Json $ctx 200 @{ requests = $reqs; decryptErrors = 0 }
+        }
+        elseif ($path -match '^/api/admin/contacts/(.+)/document-requests$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if ($target -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$') { Send-Json $ctx 400 @{ error = 'Invalid email' }; continue }
+            $body = Read-Body $ctx
+            $label = ([string]$body.label).Trim()
+            if (-not $label) { Send-Json $ctx 400 @{ error = 'A document name is required' }; continue }
+            $script:docReqCounter++
+            $id = "${target}:req$($script:docReqCounter)"
+            $rec = [ordered]@{
+                id = $id; client = $target; label = $label
+                notes = ([string]$body.notes).Trim(); dueDate = ([string]$body.dueDate).Trim()
+                status = 'open'; requestedBy = $adminEmail; requestedAt = (Get-Date).ToString('o')
+                fulfilledAt = $null; fulfilledDocId = ''
+            }
+            $docRequests[$id] = $rec
+            Write-Audit $adminEmail 'request-client-document' @{ client = $target; label = $label }
+            Write-Timeline $target 'document-requested' $adminEmail @{ label = $label }
+            Send-Json $ctx 200 @{ request = $rec }
+        }
+        elseif ($path -match '^/api/admin/document-requests/(.+)$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $id = [Uri]::UnescapeDataString($Matches[1])
+            if (-not $docRequests.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Request not found' }; continue }
+            $rec = $docRequests[$id]
+            $body = Read-Body $ctx
+            if ($body.PSObject.Properties['status']) {
+                $s = [string]$body.status
+                if (@('open', 'fulfilled', 'cancelled') -notcontains $s) { Send-Json $ctx 400 @{ error = 'Invalid status' }; continue }
+                if ($rec.status -eq 'fulfilled') {
+                    Send-Json $ctx 400 @{ error = 'That request has already been fulfilled — ask again with a new request' }; continue
+                }
+                $rec.status = $s
+                $rec['cancelledAt'] = if ($s -eq 'cancelled') { (Get-Date).ToString('o') } else { $null }
+            }
+            foreach ($f in @('label', 'notes', 'dueDate')) {
+                if ($body.PSObject.Properties[$f]) { $rec[$f] = ([string]$body.$f).Trim() }
+            }
+            $rec['updatedAt'] = (Get-Date).ToString('o')
+            Send-Json $ctx 200 @{ request = $rec }
+        }
+        elseif ($path -match '^/api/admin/document-requests/(.+)$' -and $method -eq 'DELETE') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $id = [Uri]::UnescapeDataString($Matches[1])
+            $existing = if ($docRequests.ContainsKey($id)) { $docRequests[$id] } else { $null }
+            $docRequests.Remove($id)
+            Write-Audit $adminEmail 'delete-document-request' @{
+                client = if ($existing) { $existing.client } else { $null }
+                label = if ($existing) { $existing.label } else { $null }
+            }
+            Send-Json $ctx 200 @{ ok = $true }
+        }
+        # ---- Client-facing documents ----
+        elseif ($path -eq '/api/document-requests' -and $method -eq 'GET') {
+            $email = Get-SessionEmail $ctx
+            if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
+            $reqs = @($docRequests.Values | Where-Object { $_.client -eq $email -and $_.status -ne 'cancelled' } |
+                Sort-Object -Property @{ Expression = { [string]$_['requestedAt'] } } -Descending |
+                ForEach-Object { [ordered]@{
+                    id = $_.id; label = $_.label; notes = $_.notes; dueDate = $_.dueDate
+                    status = $_.status; requestedAt = $_.requestedAt; fulfilledAt = $_.fulfilledAt } })
+            Send-Json $ctx 200 @{ requests = $reqs }
+        }
+        elseif ($path -eq '/api/documents' -and $method -eq 'GET') {
+            $email = Get-SessionEmail $ctx
+            if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
+            # source -eq 'client' ONLY. An advisor's attachment lives in the same
+            # store but was filed with no expectation of client visibility.
+            $docs = @($clientDocs.Values | Where-Object { $_.client -eq $email -and $_.source -eq 'client' } |
+                Sort-Object -Property @{ Expression = { [string]$_['uploadedAt'] } } -Descending |
+                ForEach-Object { [ordered]@{
+                    id = $_.id; name = $_.name; filename = $_.filename
+                    size = $_.size; uploadedAt = $_.uploadedAt } })
+            Send-Json $ctx 200 @{ documents = $docs }
+        }
+        elseif ($path -eq '/api/documents/upload' -and $method -eq 'POST') {
+            $email = Get-SessionEmail $ctx
+            if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
+            $body = Read-Body $ctx
+            $fname = Format-DocName ([IO.Path]::GetFileName([string]$body.filename))
+            $dname = ([string]$body.name).Trim()
+            $size = [int64]$body.size
+            $reqId = ([string]$body.requestId).Trim()
+            if (-not $fname) { Send-Json $ctx 400 @{ error = 'Choose a file to upload.' }; continue }
+            if (-not $dname) { Send-Json $ctx 400 @{ error = 'Give the document a name.' }; continue }
+            if ($size -le 0) { Send-Json $ctx 400 @{ error = 'File size is missing.' }; continue }
+            if ($size -gt $clientUploadMax) { Send-Json $ctx 400 @{ error = 'That file is larger than the 25 MB limit.' }; continue }
+            $ext = ''
+            if ($fname -match '\.([a-zA-Z0-9]+)$') { $ext = $Matches[1].ToLower() }
+            if ($clientUploadTypes -notcontains $ext) {
+                $shown = if ($ext) { $ext } else { 'unknown' }
+                Send-Json $ctx 400 @{ error = "We can't accept `".$shown`" files. Please upload a PDF, image, or Office document." }; continue
+            }
+            $mine = @($clientDocs.Values | Where-Object { $_.client -eq $email })
+            if ($mine.Count -ge 200) { Send-Json $ctx 400 @{ error = 'You have reached the upload limit — please contact your advisor.' }; continue }
+            # Only honour a request id that really is this client's and still open.
+            $validReq = ''
+            if ($reqId -and $docRequests.ContainsKey($reqId)) {
+                $r = $docRequests[$reqId]
+                if ($r.client -eq $email -and $r.status -eq 'open') { $validReq = $reqId }
+            }
+            $folder = Resolve-ClientDocFolder $email
+            $script:docCounter++
+            $uid = "cdoc$($script:docCounter)"
+            $clientDocUploads[$uid] = @{
+                client = $email; filename = $fname; name = $dname; size = $size
+                received = [int64]0; folder = $folder; requestId = $validReq; source = 'client'
+            }
+            Send-Json $ctx 200 @{ ticket = $uid; chunkSize = (1024 * 1024) }
+        }
+        elseif ($path -eq '/api/documents/chunk' -and $method -eq 'PUT') {
+            $email = Get-SessionEmail $ctx
+            if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
+            $uid = [string]$ctx.Request.Headers['X-Upload-Ticket']
+            $up = if ($uid) { $clientDocUploads[$uid] } else { $null }
+            if (-not $up) { Send-Json $ctx 400 @{ error = 'Missing upload ticket' }; continue }
+            if ($up.client -ne $email) { Send-Json $ctx 403 @{ error = 'Upload ticket does not belong to you' }; continue }
+            $offset = [int64]$ctx.Request.Headers['X-Upload-Offset']
+            $buf = New-Object byte[] 65536
+            $len = [int64]0
+            while (($read = $ctx.Request.InputStream.Read($buf, 0, $buf.Length)) -gt 0) { $len += $read }
+            if ($len -le 0) { Send-Json $ctx 400 @{ error = 'Empty chunk' }; continue }
+            if (($offset + $len) -gt $up.size) { Send-Json $ctx 400 @{ error = 'Chunk runs past the declared file size' }; continue }
+            $up.received = $offset + $len
+            if ($up.received -lt $up.size) { Send-Json $ctx 200 @{ done = $false; nextOffset = $up.received }; continue }
+            $script:docCounter++
+            $id = "$($up.client):$($script:docCounter)"
+            $rec = [ordered]@{
+                id = $id; client = $up.client; name = $up.name; filename = $up.filename
+                folder = $up.folder
+                webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/ClientDocuments/$($up.folder)/$($up.filename)"
+                driveId = 'mock-drive'; driveItemId = "item-$($script:docCounter)"
+                size = $up.size; uploadedBy = $up.client; source = 'client'
+                uploadedAt = (Get-Date).ToString('o')
+            }
+            $clientDocs[$id] = $rec
+            $clientDocUploads.Remove($uid)
+            if ($up.requestId -and $docRequests.ContainsKey($up.requestId)) {
+                $r = $docRequests[$up.requestId]
+                if ($r.client -eq $email -and $r.status -eq 'open') {
+                    $r.status = 'fulfilled'
+                    $r.fulfilledAt = (Get-Date).ToString('o')
+                    $r.fulfilledDocId = $id
+                }
+            }
+            Write-Timeline $email 'document-uploaded' 'client' @{ name = $up.name; filename = $up.filename }
+            Send-Json $ctx 200 @{ done = $true; document = [ordered]@{
+                id = $id; name = $rec.name; filename = $rec.filename; size = $rec.size; uploadedAt = $rec.uploadedAt } }
+        }
         elseif ($path -eq '/api/portal-links' -and $method -eq 'GET') {
             if (-not (Get-SessionEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
             $visible = @($portalLinks | Where-Object {
@@ -1669,7 +1837,9 @@ while ($listener.IsListening) {
                 folder = $up.folder
                 webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/ClientDocuments/$($up.folder)/$($up.filename)"
                 driveId = 'mock-drive'; driveItemId = "item-$($script:docCounter)"
-                size = $up.size; uploadedBy = $adminEmail; uploadedAt = (Get-Date).ToString('o')
+                # source distinguishes an advisor attachment from a client
+                # send-in; /api/documents shows the client only their own.
+                size = $up.size; uploadedBy = $adminEmail; source = 'admin'; uploadedAt = (Get-Date).ToString('o')
             }
             $clientDocs[$id] = $rec
             $clientDocUploads.Remove($uid)
