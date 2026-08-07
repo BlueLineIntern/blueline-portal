@@ -329,12 +329,38 @@ Client portal is untouched and keeps its own look.
   the part that gets added to. Attach with a display name; rename and delete
   from the row.
   - **Bytes and metadata live in different stores.** The file goes to a
-    SharePoint document library ("Client Documents"), one folder per client
-    (named by email), through the same chunked upload-session machinery the
-    Learning tab uses — `POST /api/admin/contacts/:email/documents/upload` then
-    `PUT /api/admin/client-documents/chunk` in 5 MiB slices, capped at 250 MB.
-    The **display name, original filename, size, who attached it and when, and
-    the webUrl** live in KV.
+    SharePoint document library ("Client Documents"), filed under the client's
+    **family folder** (see below), through the same chunked upload-session
+    machinery the Learning tab uses — `POST /api/admin/contacts/:email/documents/upload`
+    then `PUT /api/admin/client-documents/chunk` in 5 MiB slices, capped at
+    250 MB. The **display name, original filename, size, who attached it and
+    when, the folder it went into, and the webUrl** live in KV.
+  - **Folder naming** (`resolveClientDocFolder`) makes the library's Name column
+    read like a filing cabinet instead of a list of mailboxes. First match wins:
+    1. the **family** the contact belongs to → the family's name
+       (`Smith Family`); a *company* grouping deliberately does not count;
+    2. no family → the contact's **own name, surname first** (`Smith, John`),
+       inferred from the single free-text `name` field, since contacts have no
+       surname field. Particle, suffix and title lists keep
+       "Mary Van Der Berg" out of a `Berg` folder and "John Smith Jr." out of a
+       `Jr.` one;
+    3. no name on record → the **email**, which is what every client used to get.
+  - Neither family names nor person names are unique, and a shared folder would
+    **commingle unrelated clients' records** — a compliance problem, not a
+    tidiness one. So when a name has more than one holder, the **oldest holder
+    keeps the clean folder** it has been writing into and later ones get their id
+    appended (`Smith Family (hh-bbb222)`, `Smith, John (jsmith@b.com)`).
+    Resolved per upload rather than stored on the contact: nothing here renames a
+    SharePoint folder, so a stored value would only go stale.
+  - Because of that, **a folder is never renamed after the fact.** Rename a
+    family, move a contact between families, or change their email, and *new*
+    uploads go to the new folder while earlier files stay where they are. The
+    `folder` field on each document record is what makes it possible to tell
+    where an older file actually landed without asking Graph; records written
+    before that field existed have none and predate family folders entirely.
+    **Folders named by email from before this change were left in place** — no
+    migration was run, so the library reads as a mix until they are moved by hand
+    in SharePoint.
   - That split is the point: **no custom SharePoint column has to exist for
     naming to work**, listing a client's documents costs no Graph call at all,
     and a rename is a KV write instead of a PATCH that can fail against a column

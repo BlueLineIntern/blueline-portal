@@ -323,6 +323,84 @@ function Get-GroupKind($rec) {
     return 'family'
 }
 
+# Mirror of the worker's client-document folder naming (see resolveClientDocFolder
+# in worker.js): family folder first, then the person's own name surname-first,
+# then the mailbox. Kept in step so the folder shown in a locally mocked webUrl
+# matches what a real upload would produce.
+function Format-DocName($raw) {
+    $base = ([string]$raw).Split('\/')[-1]
+    $base = $base -replace '["*:<>?|]', '-'
+    $base = $base -replace '^[.\s]+', '' -replace '[.\s]+$', ''
+    if ($base.Length -gt 200) { $base = $base.Substring(0, 200) }
+    return $base
+}
+
+$script:SurnameParticles = @('van','von','der','den','de','del','della','di','da','dos','du','la','le','lo','el','al','bin','ibn','mac','mc','st','st.','saint','ter','ten','op','vander','vande')
+$script:NameSuffixes = @('jr','jr.','sr','sr.','ii','iii','iv','v','md','m.d.','phd','ph.d.','esq','esq.','cpa','cfp','cfa','dds','do','rn','jd','llm','ea')
+$script:NameTitles = @('mr','mr.','mrs','mrs.','ms','ms.','miss','dr','dr.','prof','prof.','rev','rev.','sir','hon','hon.','fr','fr.')
+
+function Get-PersonDocFolder($rawName, $email) {
+    $emailFolder = Format-DocName ([string]$email).ToLower()
+    $cleaned = (([string]$rawName).Trim() -replace '\s+', ' ')
+    if (-not $cleaned) { return $emailFolder }
+    if ($cleaned.Contains(',')) {
+        $c = Format-DocName $cleaned
+        if ($c) { return $c } else { return $emailFolder }
+    }
+    $parts = [System.Collections.ArrayList]@($cleaned.Split(' '))
+    $suffixes = [System.Collections.ArrayList]@()
+    while ($parts.Count -gt 1 -and $script:NameSuffixes -contains ([string]$parts[$parts.Count - 1]).ToLower()) {
+        $suffixes.Insert(0, $parts[$parts.Count - 1]); $parts.RemoveAt($parts.Count - 1)
+    }
+    while ($parts.Count -gt 1 -and $script:NameTitles -contains ([string]$parts[0]).ToLower()) { $parts.RemoveAt(0) }
+    $tail = ''
+    if ($suffixes.Count) { $tail = ' ' + ($suffixes -join ' ') }
+    if ($parts.Count -eq 1) {
+        $one = Format-DocName ([string]$parts[0] + $tail)
+        if ($one) { return $one } else { return $emailFolder }
+    }
+    $cut = $parts.Count - 1
+    while ($cut -gt 1 -and $script:SurnameParticles -contains ([string]$parts[$cut - 1]).ToLower()) { $cut-- }
+    $surname = ($parts[$cut..($parts.Count - 1)] -join ' ')
+    $given = ($parts[0..($cut - 1)] -join ' ')
+    $out = Format-DocName "$surname, $given$tail"
+    if ($out) { return $out } else { return $emailFolder }
+}
+
+# Oldest holder of a name keeps the clean folder; later ones get their id appended.
+function Get-UniqueDocFolder($name, $id, $holders) {
+    $key = ([string]$name).Trim().ToLower()
+    $sharing = @($holders | Where-Object { $_.key -eq $key } | Sort-Object `
+        @{ Expression = { if ([string]$_.createdAt) { [string]$_.createdAt } else { '9999' } } }, `
+        @{ Expression = { [string]$_.id } })
+    if ($sharing.Count -lt 2 -or ([string]$sharing[0].id) -eq ([string]$id)) { return Format-DocName $name }
+    return Format-DocName "$name ($id)"
+}
+
+function Resolve-ClientDocFolder($email) {
+    $addr = ([string]$email).Trim().ToLower()
+    $emailFolder = Format-DocName $addr
+    $families = @($households.Values | Where-Object { $_.id -and $_.name -and (Get-GroupKind $_) -ne 'company' })
+    $mine = @($families | Where-Object {
+        @($_.members | Where-Object { $_ -and ([string]$_.email).ToLower() -eq $addr }).Count -gt 0
+    } | Sort-Object `
+        @{ Expression = { if ([string]$_.createdAt) { [string]$_.createdAt } else { '9999' } } }, `
+        @{ Expression = { [string]$_.id } })
+    if ($mine.Count) {
+        $famHolders = @($families | ForEach-Object {
+            @{ key = ([string]$_.name).Trim().ToLower(); id = [string]$_.id; createdAt = [string]$_.createdAt } })
+        return Get-UniqueDocFolder ([string]$mine[0].name) ([string]$mine[0].id) $famHolders
+    }
+    $me = $contacts[$addr]
+    $myName = ''
+    if ($me) { $myName = [string]$me.name }
+    $folder = Get-PersonDocFolder $myName $addr
+    if ($folder -eq $emailFolder) { return $emailFolder }
+    $peopleHolders = @($contacts.Values | Where-Object { $_.email -and $_.name } | ForEach-Object {
+        @{ key = (Get-PersonDocFolder $_.name $_.email).ToLower(); id = ([string]$_.email).ToLower(); createdAt = [string]$_.createdAt } })
+    return Get-UniqueDocFolder $folder $addr $peopleHolders
+}
+
 # Assignees are admin accounts only (board lists are a separate grouping).
 function Test-AssigneeAllowed($a) {
     $a = ([string]$a).Trim().ToLower()
@@ -1479,7 +1557,8 @@ while ($listener.IsListening) {
             if ($size -gt (250 * 1024 * 1024)) { Send-Json $ctx 400 @{ error = 'File is larger than the 250 MB limit' }; continue }
             $script:docCounter++
             $uid = "doc$($script:docCounter)"
-            $clientDocUploads[$uid] = @{ client = $target; filename = $fname; name = $dname; size = $size; received = [int64]0 }
+            $folder = Resolve-ClientDocFolder $target
+            $clientDocUploads[$uid] = @{ client = $target; filename = $fname; name = $dname; size = $size; received = [int64]0; folder = $folder }
             # 1 MiB here rather than 5, so a small test file still exercises the
             # multi-chunk loop.
             Send-Json $ctx 200 @{ ticket = $uid; chunkSize = (1024 * 1024) }
@@ -1502,7 +1581,8 @@ while ($listener.IsListening) {
             $id = "$($up.client):$($script:docCounter)"
             $rec = [ordered]@{
                 id = $id; client = $up.client; name = $up.name; filename = $up.filename
-                webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/ClientDocuments/$($up.client)/$($up.filename)"
+                folder = $up.folder
+                webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/ClientDocuments/$($up.folder)/$($up.filename)"
                 driveId = 'mock-drive'; driveItemId = "item-$($script:docCounter)"
                 size = $up.size; uploadedBy = $adminEmail; uploadedAt = (Get-Date).ToString('o')
             }

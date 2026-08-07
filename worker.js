@@ -3908,11 +3908,134 @@ function sanitizeDocFilename(raw) {
   return base.replace(/["*:<>?|]/g, '-').replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 200);
 }
 
-// One folder per client, named by email. Emails contain no character SharePoint
-// disallows in a folder name, so the address doubles as a stable folder key that
-// stays readable to anyone browsing the library directly.
-function clientDocFolder(email) {
-  return sanitizeDocFilename(String(email || '').toLowerCase());
+// Documents file under the client's *family*, so the library's Name column
+// reads like a filing cabinet instead of a list of mailboxes. Resolution order,
+// first match wins:
+//
+//   1. The family this contact belongs to -> the family's name ("Smith Family").
+//   2. No family -> the contact's own name, surname first ("Smith, John").
+//   3. No name on record -> the email, which is what this used to do for
+//      everyone and is where their earlier documents already are.
+//
+// A *company* grouping deliberately does not count: only families were asked
+// for, so a contact who is only in a company files under their own name.
+//
+// Neither family names nor person names are unique, and a shared folder would
+// commingle unrelated clients' records — a compliance problem, not a tidiness
+// one. See uniqueFolderName for how that is handled.
+//
+// Resolved per upload rather than stored on the contact: nothing here renames a
+// SharePoint folder, so a stored value would only go stale. The resolved name IS
+// recorded on each document (see the chunk handler) so it is always possible to
+// tell where a given file went without asking Graph.
+
+// Sort helper: oldest record first, id as a stable tie-break for records
+// written before createdAt existed.
+function oldestFirst(a, b) {
+  const at = String(a.createdAt || ''), bt = String(b.createdAt || '');
+  if (at !== bt) {
+    if (!at) return 1;
+    if (!bt) return -1;
+    return at.localeCompare(bt);
+  }
+  return String(a.id || '').localeCompare(String(b.id || ''));
+}
+
+// The plain name when `id` is its only holder, otherwise the name with `id`
+// appended. The oldest holder keeps the clean name, so an existing folder never
+// changes because a same-named record was created later — only the newcomers
+// are suffixed. `holders` is [{ key, id, createdAt }] with key already lowered.
+function uniqueFolderName(name, id, holders) {
+  const key = String(name || '').trim().toLowerCase();
+  const sharing = holders.filter((h) => h.key === key).sort(oldestFirst);
+  if (sharing.length < 2 || sharing[0].id === id) return sanitizeDocFilename(name);
+  return sanitizeDocFilename(`${name} (${id})`);
+}
+
+// Parts of a surname rather than a given name, so "Mary Van Der Berg" files
+// under "Van Der Berg", not "Berg".
+const SURNAME_PARTICLES = new Set(['van', 'von', 'der', 'den', 'de', 'del', 'della',
+  'di', 'da', 'dos', 'du', 'la', 'le', 'lo', 'el', 'al', 'bin', 'ibn', 'mac', 'mc',
+  'st', 'st.', 'saint', 'ter', 'ten', 'op', 'vander', 'vande']);
+// Generational and credential tails that must not be mistaken for a surname, so
+// "John Smith Jr." files under "Smith", not "Jr.".
+const NAME_SUFFIXES = new Set(['jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv', 'v',
+  'md', 'm.d.', 'phd', 'ph.d.', 'esq', 'esq.', 'cpa', 'cfp', 'cfa', 'dds', 'do',
+  'rn', 'jd', 'llm', 'ea']);
+// Titles dropped from the front for the same reason.
+const NAME_TITLES = new Set(['mr', 'mr.', 'mrs', 'mrs.', 'ms', 'ms.', 'miss',
+  'dr', 'dr.', 'prof', 'prof.', 'rev', 'rev.', 'sir', 'hon', 'hon.', 'fr', 'fr.']);
+
+// "John Smith" -> "Smith, John". The contact record holds one free-text `name`
+// and no surname field, so the surname has to be inferred; the particle, suffix
+// and title lists above are what keep that inference from filing someone under
+// "Jr." or "Berg". Falls back to the email when there is nothing to work with.
+function personDocFolder(rawName, email) {
+  const emailFolder = sanitizeDocFilename(String(email || '').toLowerCase());
+  const cleaned = String(rawName || '').trim().replace(/\s+/g, ' ');
+  if (!cleaned) return emailFolder;
+  // Already typed surname-first — however it was entered is how it should file.
+  if (cleaned.includes(',')) return sanitizeDocFilename(cleaned) || emailFolder;
+
+  let parts = cleaned.split(' ');
+  const suffixes = [];
+  while (parts.length > 1 && NAME_SUFFIXES.has(parts[parts.length - 1].toLowerCase())) {
+    suffixes.unshift(parts.pop());
+  }
+  while (parts.length > 1 && NAME_TITLES.has(parts[0].toLowerCase())) parts.shift();
+  const tail = suffixes.length ? ' ' + suffixes.join(' ') : '';
+  // A mononym ("Cher"), or a name stripped down to one token: nothing to invert.
+  if (parts.length === 1) return sanitizeDocFilename(parts[0] + tail) || emailFolder;
+
+  // Walk back over particles so the whole surname travels to the front, while
+  // cut > 1 guarantees at least one token is left as the given name.
+  let cut = parts.length - 1;
+  while (cut > 1 && SURNAME_PARTICLES.has(parts[cut - 1].toLowerCase())) cut--;
+  const surname = parts.slice(cut).join(' ');
+  const given = parts.slice(0, cut).join(' ');
+  return sanitizeDocFilename(`${surname}, ${given}${tail}`) || emailFolder;
+}
+
+async function resolveClientDocFolder(env, email) {
+  const addr = String(email || '').trim().toLowerCase();
+  const emailFolder = sanitizeDocFilename(addr);
+
+  // A folder name is not worth failing an upload over: any read problem falls
+  // back to the mailbox folder, which still lands the file under this client.
+  try {
+    const { items } = await readAllEncrypted(env, 'household:');
+    const families = items.filter((h) => h && h.id && h.name && groupKindOf(h) !== 'company');
+    const mine = families
+      .filter((h) => (h.members || []).some((m) => m && String(m.email || '').toLowerCase() === addr))
+      .sort(oldestFirst);
+    if (mine.length) {
+      // A contact is not stopped from joining two families anywhere in the app,
+      // so the oldest wins rather than whichever happened to be read first.
+      const family = mine[0];
+      return uniqueFolderName(family.name, family.id, families.map((h) => ({
+        key: String(h.name).trim().toLowerCase(), id: h.id, createdAt: h.createdAt,
+      })));
+    }
+
+    // No family: file under the person's own name, surname first.
+    const { items: contacts } = await readAllEncrypted(env, 'contact:');
+    const me = contacts.find((c) => c && String(c.email || '').toLowerCase() === addr);
+    const mine2 = personDocFolder(me && me.name, addr);
+    if (mine2 === emailFolder) return emailFolder; // no name to collide on
+    // Two contacts with the same name would share a folder, so the same
+    // oldest-keeps-it rule applies, with the email standing in as the id.
+    const holders = contacts
+      .filter((c) => c && c.email && c.name)
+      .map((c) => ({
+        key: personDocFolder(c.name, c.email).toLowerCase(),
+        id: String(c.email).toLowerCase(),
+        createdAt: c.createdAt,
+      }));
+    return uniqueFolderName(mine2, addr, holders);
+  } catch (err) {
+    console.error('Could not resolve a document folder, using the mailbox folder:', err);
+    return emailFolder;
+  }
 }
 
 async function getClientDocsDriveId(env, token) {
@@ -3961,7 +4084,8 @@ async function handleAdminClientDocUploadStart(request, env, cors, email) {
   try {
     const token = await getGraphToken(env);
     const driveId = await getClientDocsDriveId(env, token);
-    const path = `${clientDocFolder(addr)}/${filename}`;
+    const folder = await resolveClientDocFolder(env, addr);
+    const path = `${folder}/${filename}`;
     // The folder is created implicitly by uploading into its path, so no
     // separate "does this client have a folder yet" round trip is needed.
     const sessionUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/`
@@ -3975,8 +4099,11 @@ async function handleAdminClientDocUploadStart(request, env, cors, email) {
     const session = await res.json();
     if (!session.uploadUrl) throw new Error('Graph returned no uploadUrl');
 
+    // `folder` rides along so the finished record can name the folder the bytes
+    // actually went into, rather than re-resolving it after the upload and
+    // possibly recording a different answer than the path used above.
     const ticket = await encryptJSON(env, {
-      uploadUrl: session.uploadUrl, driveId, size, filename, name, client: addr,
+      uploadUrl: session.uploadUrl, driveId, size, filename, name, client: addr, folder,
     });
     return json({ ticket, chunkSize: CLIENT_DOC_CHUNK }, 200, cors);
   } catch (err) {
@@ -4033,6 +4160,11 @@ async function handleAdminClientDocUploadChunk(request, env, cors) {
       client: ticket.client,
       name: ticket.name,
       filename: item.name || ticket.filename,
+      // The folder this file went into. Folder names are derived per upload and
+      // nothing renames a folder afterwards, so without this there is no way to
+      // tell where an older file landed — records written before this field
+      // existed have none and predate family folders entirely.
+      folder: ticket.folder || '',
       webUrl: item.webUrl || '',
       driveId: ticket.driveId,
       driveItemId: item.id || '',
