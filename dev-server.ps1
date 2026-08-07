@@ -1642,8 +1642,11 @@ while ($listener.IsListening) {
             $id = [Uri]::UnescapeDataString($Matches[1])
             if (-not $clientDocs.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Document not found' }; continue }
             $client = $clientDocs[$id].client
+            $name = $clientDocs[$id].name
             $clientDocs.Remove($id)
-            Write-Audit $adminEmail 'delete-client-document' @{ client = $client; id = $id; fileDeleted = $true }
+            # name mirrors the worker so the merged contact timeline names the
+            # document instead of just saying "a" document was deleted.
+            Write-Audit $adminEmail 'delete-client-document' @{ client = $client; id = $id; name = $name; fileDeleted = $true }
             Send-Json $ctx 200 @{ ok = $true; fileDeleted = $true }
         }
         elseif ($path -match '^/api/admin/contacts/(.+)$' -and $method -eq 'POST') {

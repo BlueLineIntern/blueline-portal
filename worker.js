@@ -4226,7 +4226,9 @@ async function handleAdminDeleteClientDoc(request, env, cors, id) {
   }
   await env.PORTAL_KV.delete(`clientdoc:${id}`);
   await logAudit(env, adminEmail, 'delete-client-document', {
-    client: existing && existing.client, id, fileDeleted,
+    // name rides along so the merged contact timeline can say which document,
+    // not just that "a" document was deleted.
+    client: existing && existing.client, id, name: existing && existing.name, fileDeleted,
   });
   return json({ ok: true, fileDeleted }, 200, cors);
 }

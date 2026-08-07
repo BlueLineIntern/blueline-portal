@@ -322,7 +322,6 @@
         <button type="button" class="tab" data-tab="emails">Emails</button>
         <button type="button" class="tab" data-tab="meetings">Meetings</button>
         <button type="button" class="tab" data-tab="timeline">Timeline</button>
-        <button type="button" class="tab" data-tab="activity">Activity Log</button>
         <button type="button" class="tab" data-tab="documents">Documents</button>
         <button type="button" class="tab" data-tab="additional">Additional Info</button>
         <span class="tab-divider" aria-hidden="true"></span>
@@ -354,7 +353,6 @@
 
       <div class="hidden" id="tab-documents"></div>
       <div class="hidden" id="tab-additional"></div>
-      <div class="hidden" id="tab-activity"></div>
     </div>
 
     <!-- Family / company profile. A parallel view to #profile-view above, with
@@ -383,7 +381,6 @@
         <button type="button" class="tab" data-gtab="emails">Emails</button>
         <button type="button" class="tab" data-gtab="meetings">Meetings</button>
         <button type="button" class="tab" data-gtab="timeline">Timeline</button>
-        <button type="button" class="tab" data-gtab="activity">Activity Log</button>
         <button type="button" class="tab" data-gtab="documents">Documents</button>
         <button type="button" class="tab" data-gtab="additional">Additional Info</button>
         <span class="tab-divider" aria-hidden="true"></span>
@@ -397,7 +394,6 @@
       <div class="hidden" id="gtab-emails"></div>
       <div class="hidden" id="gtab-meetings"></div>
       <div class="hidden" id="gtab-timeline"></div>
-      <div class="hidden" id="gtab-activity"></div>
       <div class="hidden" id="gtab-documents"></div>
       <div class="hidden" id="gtab-additional"></div>
       <div class="hidden" id="gtab-onboarding"></div>
@@ -618,7 +614,7 @@
   // or accumulated state (paged history, scroll) that a rebuild would destroy.
   // 'additional' is here because its edit mode holds a whole form of unsaved
   // input — a poll-driven rebuild would wipe it mid-typing.
-  const POLL_SKIP_TABS = new Set(['notes', 'tasks', 'meetings', 'timeline', 'activity', 'additional']);
+  const POLL_SKIP_TABS = new Set(['notes', 'tasks', 'meetings', 'timeline', 'additional']);
 
   const ALL_MODULE_KEYS = [...MODULES.map((mod) => mod.key), ...CATEGORY_MODULES.map((mod) => mod.key)];
   const CATEGORY_MODULE_MAP = Object.fromEntries(CATEGORY_MODULES.map((mod) => [mod.key, mod]));
@@ -1552,11 +1548,10 @@
       b.classList.toggle('active', b.dataset.tab === tab)
     );
     // Same order as the tab strip above, so the two can be read together.
-    ['overview', 'notes', 'tasks', 'emails', 'meetings', 'timeline', 'activity', 'documents', 'additional', 'onboarding', 'assessments'].forEach((t) =>
+    ['overview', 'notes', 'tasks', 'emails', 'meetings', 'timeline', 'documents', 'additional', 'onboarding', 'assessments'].forEach((t) =>
       document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab)
     );
     // These fetch on demand so opening a profile stays cheap.
-    if (tab === 'activity') renderActivityTab();
     if (tab === 'tasks') renderTasksTab();
     if (tab === 'meetings') renderMeetingsTab();
     if (tab === 'notes') renderNotesTab();
@@ -2988,53 +2983,117 @@
     </div>`;
   }
 
+  // Audit actions that name a client, worth surfacing on their timeline —
+  // everything the old separate Activity Log tab showed. 'set-assignments' is
+  // deliberately absent: handleAdminSetAssignments logs both this and a
+  // timeline 'assignments-changed' entry for the very same change, so
+  // including it here would show the identical event twice.
+  const AUDIT_LABELS = {
+    'update-contact': 'Contact details updated',
+    'archive-contact': 'Contact archived',
+    'unarchive-contact': 'Contact unarchived',
+    'update-client-info': 'Additional Info updated',
+    'attach-client-document': 'Document attached',
+    'rename-client-document': 'Document renamed',
+    'delete-client-document': 'Document deleted',
+    'view-client-emails': "Client's email viewed in the portal",
+  };
+
+  // Same markup as timelineLine, so a client-facing touchpoint and an admin
+  // action read as one consistent stream once merged, not two visual styles
+  // stitched together. Every audit entry has a real admin actor (it can only
+  // be written by an authenticated admin request), so "by ..." always applies
+  // here, unlike timelineLine where it's conditional.
+  function auditLine(e) {
+    const d = e.detail || {};
+    let label = AUDIT_LABELS[e.action]
+      || e.action.replace(/-/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    if (d.name && (e.action === 'attach-client-document' || e.action === 'rename-client-document' || e.action === 'delete-client-document')) {
+      label += `: ${d.name}`;
+    }
+    if (e.action === 'view-client-emails' && typeof d.count === 'number') label += ` (${d.count})`;
+    return `<div class="tl-item">
+      <div class="tl-rail"><div class="tl-dot"></div><div class="tl-line"></div></div>
+      <div class="tl-body">
+        <div class="tl-what">${escapeHtml(label)}</div>
+        <div class="tl-when">${escapeHtml(fmtDateTime(e.ts))} · by ${escapeHtml(staffLabel(e.email))}</div>
+      </div>
+    </div>`;
+  }
+
+  // Interleaves timeline entries with matching audit entries by timestamp,
+  // newest first, each rendered by its own line function. Takes pre-filtered
+  // audit entries — the caller decides which client(s) they belong to — so
+  // this stays agnostic between the personal and group tabs. `after(e)`, if
+  // given, renders extra markup below a row (the group tab's "who" link); it
+  // receives the original entry, not the rendered html, since that's what
+  // carries `.member`.
+  function mergeActivityHtml(timelineEntries, auditEntries, after) {
+    const rows = [
+      ...timelineEntries.map((e) => ({ e, html: timelineLine(e) })),
+      ...auditEntries.map((e) => ({ e, html: auditLine(e) })),
+    ];
+    rows.sort((a, b) => String(b.e.ts).localeCompare(String(a.e.ts)));
+    return rows.map((r) => r.html + (after ? after(r.e) : '')).join('');
+  }
+
+  // Excludes set-assignments for the reason on AUDIT_LABELS above — it would
+  // otherwise double up with the assignments-changed timeline entry.
+  function auditEntriesFor(auditData, email) {
+    return (auditData.entries || [])
+      .filter((e) => e.detail && e.detail.client === email && e.action !== 'set-assignments');
+  }
+
+  // Timeline (client touchpoints: logins, assessments, notes, tasks, meetings,
+  // onboarding milestones) and the audit log's entries for this contact
+  // (admin actions: edits, archiving, document attach/rename/delete, viewing
+  // their email) were two separate tabs reading two different stores. One
+  // combined, time-ordered feed is what "what has happened with this client"
+  // actually means, so they're now one tab. Each source paginates on its own
+  // real cursor — tl-more/au-more, both optional data attributes on the same
+  // button — so "Load older" keeps walking either or both until each is
+  // genuinely exhausted, not capped at whichever page loaded first.
   async function renderTimelineTab() {
     const wrap = document.getElementById('tab-timeline');
     const email = selectedEmail;
     wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
     try {
-      const data = await api(`/api/admin/timeline/${encodeURIComponent(email)}`);
+      const [tl, au] = await Promise.all([
+        api(`/api/admin/timeline/${encodeURIComponent(email)}`),
+        api('/api/admin/audit'),
+      ]);
       if (selectedEmail !== email) return;
-      const entries = data.entries || [];
+      const merged = mergeActivityHtml(tl.entries || [], auditEntriesFor(au, email));
       wrap.innerHTML = `<div class="panel">
-        <div class="panel-head"><h2>Client Timeline</h2></div>
-        <p class="hint">Every recorded touchpoint: logins, assessments, onboarding milestones, notes, tasks, and meetings. Newest first.</p>
-        ${entries.length ? entries.map(timelineLine).join('') : '<p class="empty">Nothing recorded yet. Events appear here as the client uses the portal and you work with them.</p>'}
-        ${data.hasMore ? `<div style="text-align:center;margin-top:10px;"><button type="button" class="btn btn-ghost btn-small" id="tl-more" data-cursor="${escapeHtml(data.cursor)}">Load older</button></div>` : ''}
+        <div class="panel-head"><h2>Client Timeline &amp; Activity</h2></div>
+        <p class="hint">Every recorded touchpoint — logins, assessments, onboarding milestones, notes, tasks,
+        meetings — plus admin actions taken on this contact, merged newest first.</p>
+        <div id="tl-rows">${merged || '<p class="empty">Nothing recorded yet. Events appear here as the client uses the portal and you work with them.</p>'}</div>
+        ${(tl.hasMore || au.hasMore) ? `<div style="text-align:center;margin-top:10px;">
+          <button type="button" class="btn btn-ghost btn-small" id="tl-more"
+            ${tl.hasMore ? `data-tl-cursor="${escapeHtml(tl.cursor)}"` : ''}
+            ${au.hasMore ? `data-au-cursor="${escapeHtml(au.cursor)}"` : ''}>Load older</button>
+          <p class="cell-missing" style="margin-top:4px;">Admin actions come from the firm-wide audit log, scanned
+          page by page for this contact — an older one may take a few presses to surface.</p>
+        </div>` : ''}
       </div>`;
       const more = document.getElementById('tl-more');
       if (more) {
         more.addEventListener('click', async () => {
-          const next = await api(`/api/admin/timeline/${encodeURIComponent(email)}?cursor=${encodeURIComponent(more.dataset.cursor)}`);
-          more.closest('.panel').insertAdjacentHTML('beforeend', (next.entries || []).map(timelineLine).join(''));
-          if (next.hasMore) more.dataset.cursor = next.cursor; else more.remove();
+          const tlCursor = more.dataset.tlCursor;
+          const auCursor = more.dataset.auCursor;
+          const [nextTl, nextAu] = await Promise.all([
+            tlCursor ? api(`/api/admin/timeline/${encodeURIComponent(email)}?cursor=${encodeURIComponent(tlCursor)}`) : Promise.resolve(null),
+            auCursor ? api(`/api/admin/audit?cursor=${encodeURIComponent(auCursor)}`) : Promise.resolve(null),
+          ]);
+          const newTl = nextTl ? (nextTl.entries || []) : [];
+          const newAu = nextAu ? auditEntriesFor(nextAu, email) : [];
+          document.getElementById('tl-rows').insertAdjacentHTML('beforeend', mergeActivityHtml(newTl, newAu));
+          if (nextTl) { if (nextTl.hasMore) more.dataset.tlCursor = nextTl.cursor; else delete more.dataset.tlCursor; }
+          if (nextAu) { if (nextAu.hasMore) more.dataset.auCursor = nextAu.cursor; else delete more.dataset.auCursor; }
+          if (!more.dataset.tlCursor && !more.dataset.auCursor) more.closest('div').remove();
         });
       }
-    } catch (err) {
-      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
-    }
-  }
-
-  // ---------- Activity tab (admin audit entries touching this contact) ----------
-
-  async function renderActivityTab() {
-    const wrap = document.getElementById('tab-activity');
-    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
-    try {
-      const data = await api('/api/admin/audit');
-      const mine = (data.entries || []).filter((e) => e.detail && e.detail.client === selectedEmail);
-      wrap.innerHTML = `<div class="panel">
-        <div class="panel-head"><h2>Admin Actions on This Contact</h2></div>
-        <p class="hint">From the audit log (newest ${data.entries ? data.entries.length : 0} entries scanned). The full log is under Settings.</p>
-        ${mine.length
-          ? `<div class="row-list">${mine.map((e) => `<div class="row-item">
-              <div class="row-main">
-                <div class="row-title">${escapeHtml(e.action)}</div>
-                <div class="row-sub">by ${escapeHtml(e.email)} · ${escapeHtml(fmtDateTime(e.ts))}</div>
-              </div>
-            </div>`).join('')}</div>`
-          : '<p class="empty">No logged admin actions reference this contact in the recent audit entries.</p>'}
-      </div>`;
     } catch (err) {
       wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
     }
@@ -3144,7 +3203,7 @@
   // per-member API calls (Emails is N members × every staff mailbox on the
   // Graph side) or wipe a half-written note.
   const GROUP_POLL_SKIP_TABS = new Set(
-    ['notes', 'tasks', 'emails', 'meetings', 'timeline', 'activity', 'documents', 'additional']
+    ['notes', 'tasks', 'emails', 'meetings', 'timeline', 'documents', 'additional']
   );
 
   function currentGroup() {
@@ -3213,7 +3272,7 @@
   }
 
   const GROUP_TABS = ['overview', 'notes', 'tasks', 'emails', 'meetings', 'timeline',
-    'activity', 'documents', 'additional', 'onboarding', 'assessments'];
+    'documents', 'additional', 'onboarding', 'assessments'];
 
   function setGroupTab(tab) {
     if (tab === 'onboarding' && !SHOW_ONBOARDING_TAB) tab = 'overview';
@@ -3232,7 +3291,6 @@
       emails: renderGroupEmailsTab,
       meetings: renderGroupMeetingsTab,
       timeline: renderGroupTimelineTab,
-      activity: renderGroupActivityTab,
       documents: renderGroupDocumentsTab,
       additional: renderGroupAdditionalTab,
       onboarding: renderGroupOnboardingTab,
@@ -3720,61 +3778,45 @@
 
   const GROUP_TIMELINE_MAX = 80;
 
+  // Same merge as the personal tab, but no pagination — a group's timeline was
+  // already a fixed-size cap across N members' cursors rather than a paged
+  // list (paging N timelines in step would interleave wrongly), and adding a
+  // second, differently-shaped source doesn't change that trade-off. The audit
+  // fetch is a single global page, same as the old group Activity Log tab, so
+  // this doesn't regress that tab's coverage — it just merges it in-place.
   async function renderGroupTimelineTab() {
     const hh = currentGroup();
     if (!hh) return;
     const wrap = document.getElementById('gtab-timeline');
     const members = groupMemberList(hh);
-    wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
-    try {
-      const results = await Promise.all(members.map((m) =>
-        api(`/api/admin/timeline/${encodeURIComponent(m.email)}`)
-          .then((d) => (d.entries || []).map((e) => ({ ...e, member: m.email })))
-          .catch(() => [])
-      ));
-      if (selectedGroupId !== hh.id) return;
-      const entries = results.flat()
-        .sort((a, b) => String(b.ts).localeCompare(String(a.ts)))
-        .slice(0, GROUP_TIMELINE_MAX);
-      // No "load older" here, unlike a person's timeline: paging N member
-      // cursors in step would interleave wrongly, and saying what this shows is
-      // more honest than a button that pages one member at a time.
-      wrap.innerHTML = `<div class="panel">
-        <div class="panel-head"><h2>Combined Timeline</h2></div>
-        <p class="hint">Every member's touchpoints merged, newest first — up to the most recent
-        ${GROUP_TIMELINE_MAX}. Open a member to page through their full history.</p>
-        ${entries.length
-          ? entries.map((e) => `<div>${timelineLine(e)}<div class="tl-when" style="margin:-8px 0 8px 30px;">${whoLink(e.member)}</div></div>`).join('')
-          : '<p class="empty">Nothing recorded for any member yet.</p>'}
-      </div>`;
-    } catch (err) {
-      wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
-    }
-  }
-
-  // ---------- Group: Activity Log ----------
-
-  async function renderGroupActivityTab() {
-    const hh = currentGroup();
-    if (!hh) return;
-    const wrap = document.getElementById('gtab-activity');
     const emails = groupMemberEmails(hh);
     wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
     try {
-      const data = await api('/api/admin/audit');
+      const [tlResults, au] = await Promise.all([
+        Promise.all(members.map((m) =>
+          api(`/api/admin/timeline/${encodeURIComponent(m.email)}`)
+            .then((d) => (d.entries || []).map((e) => ({ ...e, member: m.email })))
+            .catch(() => [])
+        )),
+        api('/api/admin/audit').catch(() => ({ entries: [] })),
+      ]);
       if (selectedGroupId !== hh.id) return;
-      const mine = (data.entries || []).filter((e) => e.detail && emails.includes(e.detail.client));
+      const tlEntries = tlResults.flat();
+      const auditEntries = (au.entries || [])
+        .filter((e) => e.detail && emails.includes(e.detail.client) && e.action !== 'set-assignments')
+        .map((e) => ({ ...e, member: e.detail.client }));
+      const rows = [
+        ...tlEntries.map((e) => ({ e, html: timelineLine(e) })),
+        ...auditEntries.map((e) => ({ e, html: auditLine(e) })),
+      ].sort((a, b) => String(b.e.ts).localeCompare(String(a.e.ts)))
+        .slice(0, GROUP_TIMELINE_MAX);
       wrap.innerHTML = `<div class="panel">
-        <div class="panel-head"><h2>Admin Actions on These Members</h2></div>
-        <p class="hint">From the audit log (newest ${data.entries ? data.entries.length : 0} entries scanned). The full log is under Settings.</p>
-        ${mine.length
-          ? `<div class="row-list">${mine.map((e) => `<div class="row-item">
-              <div class="row-main">
-                <div class="row-title">${escapeHtml(e.action)}</div>
-                <div class="row-sub">${whoLink(e.detail.client)} · by ${escapeHtml(e.email)} · ${escapeHtml(fmtDateTime(e.ts))}</div>
-              </div>
-            </div>`).join('')}</div>`
-          : '<p class="empty">No logged admin actions reference these members in the recent audit entries.</p>'}
+        <div class="panel-head"><h2>Combined Timeline &amp; Activity</h2></div>
+        <p class="hint">Every member's touchpoints and admin actions merged, newest first — up to the most recent
+        ${GROUP_TIMELINE_MAX}. Open a member to page through their full history.</p>
+        ${rows.length
+          ? rows.map((r) => `<div>${r.html}<div class="tl-when" style="margin:-8px 0 8px 30px;">${whoLink(r.e.member)}</div></div>`).join('')
+          : '<p class="empty">Nothing recorded for any member yet.</p>'}
       </div>`;
     } catch (err) {
       wrap.innerHTML = `<div class="panel"><p class="empty">Failed to load: ${escapeHtml(err.message)}</p></div>`;
