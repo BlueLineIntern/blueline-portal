@@ -1912,6 +1912,8 @@
       // their email as if they were staff.
       const fromClient = d.source === 'client';
       const meta = [d.filename !== d.name ? d.filename : '', formatBytes(d.size),
+        // Only client send-ins carry a section; an advisor attachment has none.
+        fromClient ? docCategoryLabel(d.category) : '',
         d.uploadedAt ? `${fromClient ? 'sent' : 'attached'} ${fmtDate(d.uploadedAt)}` : '',
         d.uploadedBy ? (fromClient ? 'by the client' : `by ${staffLabel(d.uploadedBy)}`) : '']
         .filter(Boolean).map(escapeHtml).join(' · ');
@@ -1951,9 +1953,22 @@
 
   const DOC_REQ_BADGE = { open: 'badge-amber', fulfilled: 'badge-green', cancelled: 'badge-gray' };
 
+  // Mirrors DOC_CATEGORIES in worker.js — the section the client's Documents tab
+  // files the answer under, so a requested tax return lands in Tax Returns
+  // without the client having to categorise it themselves.
+  const DOC_CATEGORIES = [
+    { id: 'tax', label: 'Tax Returns' },
+    { id: 'trust', label: 'Trust Documents' },
+    { id: 'estate', label: 'Estate Documents' },
+    { id: 'other', label: 'Miscellaneous' },
+  ];
+  const docCategoryLabel = (id) =>
+    (DOC_CATEGORIES.find((c) => c.id === (id || 'other')) || { label: 'Miscellaneous' }).label;
+
   function docRequestsHtml() {
     const rows = docRequests.map((r) => {
       const meta = [
+        `files under ${docCategoryLabel(r.category)}`,
         r.notes || '',
         r.dueDate ? `needed by ${r.dueDate}` : '',
         r.requestedAt ? `asked ${fmtDate(r.requestedAt)}` : '',
@@ -1994,6 +2009,9 @@
           maxlength="160" style="flex:2; min-width:200px;" />
         <input type="text" class="input" id="req-notes" placeholder="Note for the client (optional)"
           maxlength="1000" style="flex:2; min-width:180px;" />
+        <select class="input" id="req-category" style="flex:1; min-width:160px;" title="Which section it files under on the client's portal">
+          ${DOC_CATEGORIES.map((c) => `<option value="${c.id}"${c.id === 'other' ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
+        </select>
         <input type="date" class="input" id="req-due" style="flex:1; min-width:150px;" title="Needed by (optional)" />
         <button type="button" class="btn btn-primary btn-small" id="req-add-btn">Request</button>
       </div>
@@ -2032,6 +2050,7 @@
             body: JSON.stringify({
               label,
               notes: document.getElementById('req-notes').value.trim(),
+              category: document.getElementById('req-category').value,
               dueDate: document.getElementById('req-due').value,
             }),
           });
@@ -2150,7 +2169,7 @@
     // The new-request fields are the only unsaved state on this tab, and the
     // 20s poll rebuilds it (see loadData) — so carry them across the rebuild.
     // Without this, typing a request slowly meant losing it mid-sentence.
-    const keep = ['req-label', 'req-notes', 'req-due'].map((id) => {
+    const keep = ['req-label', 'req-notes', 'req-category', 'req-due'].map((id) => {
       const el = document.getElementById(id);
       return { id, value: el ? el.value : '' };
     });

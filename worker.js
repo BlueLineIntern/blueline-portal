@@ -4160,6 +4160,9 @@ function clientDocRecord(ticket, item, uploadedBy, source) {
     size: typeof item.size === 'number' ? item.size : ticket.size,
     uploadedBy,
     source,
+    // Only the client path sets one; an advisor attachment has no section to
+    // file under, and defaults to Miscellaneous if anything ever reads it.
+    category: sanitizeDocCategory(ticket.category),
     uploadedAt: new Date().toISOString(),
   };
 }
@@ -4293,6 +4296,28 @@ const CLIENT_UPLOAD_TYPES = ['pdf', 'jpg', 'jpeg', 'png', 'heic', 'doc', 'docx',
 const CLIENT_UPLOAD_COUNT_MAX = 200;
 const DOC_REQUEST_STATUSES = ['open', 'fulfilled', 'cancelled'];
 
+// The sections a client files a document under on their Documents tab. Kept
+// deliberately short: this is a filing hint from someone who is not a filing
+// clerk, so four buckets they can pick without thinking beats a taxonomy they
+// get wrong. 'other' is the catch-all and the default for anything that
+// arrives without one — including every record written before this existed.
+//
+// Metadata only: the SharePoint path is still <family folder>/<file>, unchanged
+// by this. Filing into per-category subfolders would reorganise a library the
+// firm already has open in Explorer, which is not a side effect worth causing
+// for a labelling feature.
+const DOC_CATEGORIES = [
+  { id: 'tax', label: 'Tax Returns' },
+  { id: 'trust', label: 'Trust Documents' },
+  { id: 'estate', label: 'Estate Documents' },
+  { id: 'other', label: 'Miscellaneous' },
+];
+const DOC_CATEGORY_IDS = DOC_CATEGORIES.map((c) => c.id);
+function sanitizeDocCategory(raw) {
+  const c = String(raw || '').trim().toLowerCase();
+  return DOC_CATEGORY_IDS.includes(c) ? c : 'other';
+}
+
 function docRequestExtension(filename) {
   const m = String(filename || '').toLowerCase().match(/\.([a-z0-9]+)$/);
   return m ? m[1] : '';
@@ -4306,6 +4331,10 @@ function sanitizeDocRequest(body) {
       label,
       notes: String((body && body.notes) || '').trim().slice(0, 1000),
       dueDate: String((body && body.dueDate) || '').trim().slice(0, 10),
+      // The section the fulfilling upload files itself under, so a document the
+      // advisor asked for lands in the right place without the client having to
+      // categorise it — they are answering a specific request, not filing.
+      category: sanitizeDocCategory(body && body.category),
     },
   };
 }
@@ -4398,9 +4427,10 @@ async function handleGetDocRequests(request, env, cors) {
     .sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')))
     .map((r) => ({
       id: r.id, label: r.label, notes: r.notes || '', dueDate: r.dueDate || '',
+      category: sanitizeDocCategory(r.category),
       status: r.status, requestedAt: r.requestedAt, fulfilledAt: r.fulfilledAt || null,
     }));
-  return json({ requests }, 200, cors);
+  return json({ requests, categories: DOC_CATEGORIES }, 200, cors);
 }
 
 // ONLY the client's own uploads. An advisor's attachment is filed in the same
@@ -4417,8 +4447,15 @@ async function handleGetClientDocuments(request, env, cors) {
   const documents = items
     .filter((d) => d.source === 'client')
     .sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')))
-    .map((d) => ({ id: d.id, name: d.name, filename: d.filename, size: d.size, uploadedAt: d.uploadedAt }));
-  return json({ documents }, 200, cors);
+    .map((d) => ({
+      id: d.id, name: d.name, filename: d.filename, size: d.size, uploadedAt: d.uploadedAt,
+      // Anything filed before categories existed reads as Miscellaneous rather
+      // than vanishing from a tab that now only renders known sections.
+      category: sanitizeDocCategory(d.category),
+    }));
+  // Sections travel with the data so the portal renders whatever the server
+  // knows about, rather than keeping its own copy of the list to drift.
+  return json({ documents, categories: DOC_CATEGORIES }, 200, cors);
 }
 
 async function handleClientDocUploadStart(request, env, cors) {
@@ -4451,16 +4488,22 @@ async function handleClientDocUploadStart(request, env, cors) {
   }
   // A requestId is only honoured if it actually belongs to this client and is
   // still open, so a client can't clear someone else's request by guessing an id.
+  // The request's own category wins over anything the client sent: the advisor
+  // said what they were asking for, so the answer files where they filed the ask.
   let validRequestId = '';
+  let category = sanitizeDocCategory(body.category);
   if (requestId) {
     const raw = await env.PORTAL_KV.get(`docreq:${requestId}`);
     const req = raw ? await decryptToObject(env, raw) : null;
-    if (req && req.client === email && req.status === 'open') validRequestId = requestId;
+    if (req && req.client === email && req.status === 'open') {
+      validRequestId = requestId;
+      category = sanitizeDocCategory(req.category);
+    }
   }
 
   try {
     const ticket = await createClientDocUploadSession(env, email, filename, name, {
-      size, requestId: validRequestId,
+      size, requestId: validRequestId, category,
     });
     return json({ ticket, chunkSize: CLIENT_DOC_CHUNK }, 200, cors);
   } catch (err) {
@@ -4512,7 +4555,10 @@ async function handleClientDocUploadChunk(request, env, cors) {
     await logTimeline(env, email, 'document-uploaded', 'client', {
       name: record.name, filename: record.filename,
     });
-    return json({ done: true, document: { id: record.id, name: record.name, filename: record.filename, size: record.size, uploadedAt: record.uploadedAt } }, 200, cors);
+    return json({ done: true, document: {
+      id: record.id, name: record.name, filename: record.filename,
+      size: record.size, category: record.category, uploadedAt: record.uploadedAt,
+    } }, 200, cors);
   } catch (err) {
     console.error('Client-side document upload failed:', err);
     return json({ error: 'Upload failed — please try again.' }, 500, cors);

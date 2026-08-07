@@ -230,6 +230,15 @@ body {
 .doc-sent { padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); }
 .doc-sent:last-child { border-bottom: none; }
 
+/* Documents already filed in a section, above that section's upload row. The
+   rule separates the list from the controls; with nothing filed the .empty line
+   carries it instead, so the border never floats above an empty gap. */
+.doc-cat-list {
+  margin-bottom: var(--sp-3);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+}
+
 /* Visually-hidden label. Named -client to avoid colliding with the admin
    shared.css .sr-only, since two admin pages load this stylesheet too. */
 .sr-only-client {

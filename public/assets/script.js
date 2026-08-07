@@ -382,6 +382,26 @@ let docRequests = [];
 let sentDocuments = [];
 let docUploading = false;
 
+// Sections come from the server (DOC_CATEGORIES in worker.js) so the two can't
+// drift. Seeded with the same four so the tab still renders if that field is
+// missing — an older worker, or a failed request that degraded to an empty list.
+let docCategories = [
+  { id: "tax", label: "Tax Returns" },
+  { id: "trust", label: "Trust Documents" },
+  { id: "estate", label: "Estate Documents" },
+  { id: "other", label: "Miscellaneous" },
+];
+
+// Placeholder copy lives here, not on the server: it is presentation, and
+// shipping it in the API payload would mean a deploy to reword a hint.
+const DOC_PLACEHOLDERS = {
+  tax: "e.g. 2024 federal return",
+  trust: "e.g. Revocable trust agreement",
+  estate: "e.g. Will, power of attorney",
+  other: "What is it?",
+};
+const docPlaceholder = (id) => DOC_PLACEHOLDERS[id] || "What is it?";
+
 function fmtBytes(n) {
   if (!Number.isFinite(n)) return "";
   if (n < 1024) return `${n} B`;
@@ -439,20 +459,37 @@ function renderDocuments() {
         </div>`).join("");
   }
 
-  const sent = document.getElementById("doc-sent-list");
-  sent.innerHTML = sentDocuments.length
-    ? sentDocuments.map((d) => `
-        <div class="doc-sent">
-          <div>
-            <div class="doc-req-label">${escapeHtml(d.name)}</div>
-            <div class="doc-req-notes">${escapeHtml(d.filename)} · ${fmtBytes(d.size)} ·
-              ${d.uploadedAt ? escapeHtml(new Date(d.uploadedAt).toLocaleString()) : ""}</div>
-          </div>
-        </div>`).join("")
-    : `<p class="empty">You haven't sent any documents yet.</p>`;
-
-  document.getElementById("doc-free-hint").textContent =
-    `PDF, image (JPG/PNG/HEIC) or Office document, up to 25 MB.`;
+  // One card per section, each showing what's been filed there and its own
+  // upload control. A client uploading a tax return picks the Tax Returns
+  // section rather than choosing a category from a dropdown — the section IS
+  // the category, so there is nothing extra to get wrong.
+  document.getElementById("doc-sections").innerHTML = docCategories.map((cat) => {
+    const mine = sentDocuments.filter((d) => (d.category || "other") === cat.id);
+    return `
+      <div class="card">
+        <h2>${escapeHtml(cat.label)}</h2>
+        <div class="doc-cat-list">
+          ${mine.length
+            ? mine.map((d) => `
+              <div class="doc-sent">
+                <div class="doc-req-label">${escapeHtml(d.name)}</div>
+                <div class="doc-req-notes">${escapeHtml(d.filename)} · ${fmtBytes(d.size)} ·
+                  ${d.uploadedAt ? escapeHtml(new Date(d.uploadedAt).toLocaleString()) : ""}</div>
+              </div>`).join("")
+            : `<p class="empty">Nothing here yet.</p>`}
+        </div>
+        <div class="doc-upload-row">
+          <label class="sr-only-client" for="doc-name-${cat.id}">Document name</label>
+          <input type="text" class="doc-input" id="doc-name-${cat.id}"
+            placeholder="${escapeHtml(docPlaceholder(cat.id))}" maxlength="200" />
+          <input type="file" class="doc-file doc-cat-file" id="doc-file-${cat.id}" data-cat="${cat.id}" />
+          <button type="button" class="btn btn-primary doc-cat-send" data-cat="${cat.id}">Send</button>
+        </div>
+        <p class="hint">PDF, image (JPG/PNG/HEIC) or Office document, up to 25 MB.</p>
+        <div class="progress-track hidden" id="doc-progress-${cat.id}"><div class="progress-fill" id="doc-fill-${cat.id}"></div></div>
+        <p class="form-error" id="doc-error-${cat.id}"></p>
+      </div>`;
+  }).join("");
 
   wireDocUploads();
 }
@@ -469,7 +506,10 @@ function wireDocUploads() {
       if (bad) { errEl.textContent = bad; return; }
       // The request's own label becomes the document name — the advisor already
       // said what they wanted, so making the client retype it is pure friction.
-      uploadDocument(file, req ? req.label : file.name, btn.dataset.req, {
+      // The request's own label becomes the document name, and the request's
+      // category decides where it files (enforced server-side) — the advisor
+      // already said both, so making the client restate them is pure friction.
+      uploadDocument(file, req ? req.label : file.name, btn.dataset.req, "", {
         button: btn,
         errorEl: errEl,
         track: row.querySelector(".doc-req-progress"),
@@ -477,31 +517,37 @@ function wireDocUploads() {
       });
     });
   });
-}
 
-document.getElementById("doc-free-send").addEventListener("click", () => {
-  const errEl = document.getElementById("documents-error");
-  const file = document.getElementById("doc-free-file").files[0];
-  const nameEl = document.getElementById("doc-free-name");
-  errEl.textContent = "";
-  const bad = checkFile(file);
-  if (bad) { errEl.textContent = bad; return; }
-  // Fall back to the filename so a client who just picks a file isn't blocked
-  // by an empty name field.
-  const name = nameEl.value.trim() || file.name.replace(/\.[^.]+$/, "");
-  uploadDocument(file, name, "", {
-    button: document.getElementById("doc-free-send"),
-    errorEl: errEl,
-    track: document.getElementById("doc-free-progress"),
-    fill: document.getElementById("doc-free-fill"),
-    onDone: () => { nameEl.value = ""; document.getElementById("doc-free-file").value = ""; },
+  // One Send per section. The section the button sits in IS the category, so
+  // nothing extra has to be chosen.
+  document.querySelectorAll(".doc-cat-send").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const cat = btn.dataset.cat;
+      const nameEl = document.getElementById(`doc-name-${cat}`);
+      const fileEl = document.getElementById(`doc-file-${cat}`);
+      const errEl = document.getElementById(`doc-error-${cat}`);
+      const file = fileEl.files[0];
+      errEl.textContent = "";
+      const bad = checkFile(file);
+      if (bad) { errEl.textContent = bad; return; }
+      // Fall back to the filename so a client who just picks a file isn't
+      // blocked by an empty name field.
+      const name = nameEl.value.trim() || file.name.replace(/\.[^.]+$/, "");
+      uploadDocument(file, name, "", cat, {
+        button: btn,
+        errorEl: errEl,
+        track: document.getElementById(`doc-progress-${cat}`),
+        fill: document.getElementById(`doc-fill-${cat}`),
+        onDone: () => { nameEl.value = ""; fileEl.value = ""; },
+      });
+    });
   });
-});
+}
 
 // Chunked through our own Worker rather than straight to SharePoint: the upload
 // URL is a capability, so it never leaves the server. Same shape as the admin
 // path (see handleClientDocUploadChunk).
-async function uploadDocument(file, name, requestId, ui) {
+async function uploadDocument(file, name, requestId, category, ui) {
   if (docUploading) return;
   docUploading = true;
   ui.button.disabled = true;
@@ -513,7 +559,11 @@ async function uploadDocument(file, name, requestId, ui) {
     const start = await apiRequest("/api/documents/upload", {
       method: "POST",
       auth: true,
-      body: { filename: file.name, size: file.size, name, requestId: requestId || undefined },
+      body: {
+        filename: file.name, size: file.size, name,
+        requestId: requestId || undefined,
+        category: category || undefined,
+      },
     });
     const session = getSession();
     let offset = 0;
@@ -560,6 +610,9 @@ async function loadDocuments() {
     ]);
     docRequests = reqs.requests || [];
     sentDocuments = docs.documents || [];
+    // Server-supplied section list wins; the seeded default only covers an
+    // older worker that doesn't send one.
+    if (Array.isArray(docs.categories) && docs.categories.length) docCategories = docs.categories;
   } catch (err) {
     if (err.message.includes("authenticated")) return bounceToAuth();
     errorEl.textContent = "We couldn't load your documents — refresh to try again.";

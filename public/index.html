@@ -192,24 +192,12 @@
         <div id="doc-requests-list"></div>
       </div>
 
-      <div class="card">
-        <h2>Send another document</h2>
-        <p class="hub-card-desc">Something your advisor hasn't asked for yet — a trust document, an estate
-        plan, a statement.</p>
-        <div class="doc-upload-row">
-          <label class="sr-only-client" for="doc-free-name">Document name</label>
-          <input type="text" class="doc-input" id="doc-free-name" placeholder="What is it? (e.g. 2024 tax return)" maxlength="200" />
-          <input type="file" id="doc-free-file" class="doc-file" />
-          <button type="button" class="btn btn-primary" id="doc-free-send">Send</button>
-        </div>
-        <p class="hint" id="doc-free-hint"></p>
-        <div class="progress-track hidden" id="doc-free-progress"><div class="progress-fill" id="doc-free-fill"></div></div>
-      </div>
-
-      <div class="card">
-        <h2>What you've sent</h2>
-        <div id="doc-sent-list"></div>
-      </div>
+      <!-- One card per section (Tax Returns / Trust Documents / Estate
+           Documents / Miscellaneous), each listing what's been sent to it and
+           carrying its own upload control. Built by renderDocuments() from the
+           category list the server returns, so adding a section is a server-side
+           change and this markup stays put. -->
+      <div id="doc-sections"></div>
     </section>
 
     <!-- CATEGORY VIEW (reusable — header and grid re-rendered per category) -->

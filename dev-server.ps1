@@ -235,6 +235,20 @@ $script:docReqCounter = 0
 # advisor path: this is the only place a non-admin writes into the firm's tenant.
 $clientUploadMax = 25 * 1024 * 1024
 $clientUploadTypes = @('pdf', 'jpg', 'jpeg', 'png', 'heic', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt')
+# Mirror of DOC_CATEGORIES in worker.js — the sections on the client's
+# Documents tab. Order is display order; 'other' is the default for anything
+# arriving without a category, including pre-existing records.
+$docCategories = @(
+    [ordered]@{ id = 'tax'; label = 'Tax Returns' }
+    [ordered]@{ id = 'trust'; label = 'Trust Documents' }
+    [ordered]@{ id = 'estate'; label = 'Estate Documents' }
+    [ordered]@{ id = 'other'; label = 'Miscellaneous' }
+)
+function Get-DocCategory($raw) {
+    $c = ([string]$raw).Trim().ToLower()
+    if (@('tax', 'trust', 'estate', 'other') -contains $c) { return $c }
+    return 'other'
+}
 
 # Fixed sample data standing in for a live Microsoft Graph mailbox search (see
 # fetchClientEmailHistory in worker.js) - the mock has no Outlook behind it at
@@ -1274,6 +1288,7 @@ while ($listener.IsListening) {
             $rec = [ordered]@{
                 id = $id; client = $target; label = $label
                 notes = ([string]$body.notes).Trim(); dueDate = ([string]$body.dueDate).Trim()
+                category = (Get-DocCategory $body.category)
                 status = 'open'; requestedBy = $adminEmail; requestedAt = (Get-Date).ToString('o')
                 fulfilledAt = $null; fulfilledDocId = ''
             }
@@ -1298,6 +1313,7 @@ while ($listener.IsListening) {
                 $rec.status = $s
                 $rec['cancelledAt'] = if ($s -eq 'cancelled') { (Get-Date).ToString('o') } else { $null }
             }
+            if ($body.PSObject.Properties['category']) { $rec['category'] = Get-DocCategory $body.category }
             foreach ($f in @('label', 'notes', 'dueDate')) {
                 if ($body.PSObject.Properties[$f]) { $rec[$f] = ([string]$body.$f).Trim() }
             }
@@ -1324,8 +1340,9 @@ while ($listener.IsListening) {
                 Sort-Object -Property @{ Expression = { [string]$_['requestedAt'] } } -Descending |
                 ForEach-Object { [ordered]@{
                     id = $_.id; label = $_.label; notes = $_.notes; dueDate = $_.dueDate
+                    category = (Get-DocCategory $_.category)
                     status = $_.status; requestedAt = $_.requestedAt; fulfilledAt = $_.fulfilledAt } })
-            Send-Json $ctx 200 @{ requests = $reqs }
+            Send-Json $ctx 200 @{ requests = $reqs; categories = $docCategories }
         }
         elseif ($path -eq '/api/documents' -and $method -eq 'GET') {
             $email = Get-SessionEmail $ctx
@@ -1336,8 +1353,8 @@ while ($listener.IsListening) {
                 Sort-Object -Property @{ Expression = { [string]$_['uploadedAt'] } } -Descending |
                 ForEach-Object { [ordered]@{
                     id = $_.id; name = $_.name; filename = $_.filename
-                    size = $_.size; uploadedAt = $_.uploadedAt } })
-            Send-Json $ctx 200 @{ documents = $docs }
+                    size = $_.size; category = (Get-DocCategory $_.category); uploadedAt = $_.uploadedAt } })
+            Send-Json $ctx 200 @{ documents = $docs; categories = $docCategories }
         }
         elseif ($path -eq '/api/documents/upload' -and $method -eq 'POST') {
             $email = Get-SessionEmail $ctx
@@ -1360,17 +1377,24 @@ while ($listener.IsListening) {
             $mine = @($clientDocs.Values | Where-Object { $_.client -eq $email })
             if ($mine.Count -ge 200) { Send-Json $ctx 400 @{ error = 'You have reached the upload limit — please contact your advisor.' }; continue }
             # Only honour a request id that really is this client's and still open.
+            # The request's category wins: the advisor said what they were asking
+            # for, so the answer files where they filed the ask.
             $validReq = ''
+            $category = Get-DocCategory $body.category
             if ($reqId -and $docRequests.ContainsKey($reqId)) {
                 $r = $docRequests[$reqId]
-                if ($r.client -eq $email -and $r.status -eq 'open') { $validReq = $reqId }
+                if ($r.client -eq $email -and $r.status -eq 'open') {
+                    $validReq = $reqId
+                    $category = Get-DocCategory $r.category
+                }
             }
             $folder = Resolve-ClientDocFolder $email
             $script:docCounter++
             $uid = "cdoc$($script:docCounter)"
             $clientDocUploads[$uid] = @{
                 client = $email; filename = $fname; name = $dname; size = $size
-                received = [int64]0; folder = $folder; requestId = $validReq; source = 'client'
+                received = [int64]0; folder = $folder; requestId = $validReq
+                category = $category; source = 'client'
             }
             Send-Json $ctx 200 @{ ticket = $uid; chunkSize = (1024 * 1024) }
         }
@@ -1397,6 +1421,7 @@ while ($listener.IsListening) {
                 webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/ClientDocuments/$($up.folder)/$($up.filename)"
                 driveId = 'mock-drive'; driveItemId = "item-$($script:docCounter)"
                 size = $up.size; uploadedBy = $up.client; source = 'client'
+                category = $up.category
                 uploadedAt = (Get-Date).ToString('o')
             }
             $clientDocs[$id] = $rec
@@ -1411,7 +1436,8 @@ while ($listener.IsListening) {
             }
             Write-Timeline $email 'document-uploaded' 'client' @{ name = $up.name; filename = $up.filename }
             Send-Json $ctx 200 @{ done = $true; document = [ordered]@{
-                id = $id; name = $rec.name; filename = $rec.filename; size = $rec.size; uploadedAt = $rec.uploadedAt } }
+                id = $id; name = $rec.name; filename = $rec.filename; size = $rec.size
+                category = $rec.category; uploadedAt = $rec.uploadedAt } }
         }
         elseif ($path -eq '/api/portal-links' -and $method -eq 'GET') {
             if (-not (Get-SessionEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
