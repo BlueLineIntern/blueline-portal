@@ -55,7 +55,11 @@ const VIEW_IDS = ["auth", "home", "assignments", "documents", "links", "dashboar
 // else in the nav needs to change.
 const CLIENT_TABS = [
   { id: "home", label: "Home", view: "home" },
-  { id: "assignments", label: "Assignments", view: "assignments" },
+  // id/view stay "assignments" (internal — matches the tab section, the
+  // isAssigned()/assignedKeys plumbing, and /api/assignments); only the
+  // displayed label changed, at the user's request, to match how every other
+  // client-facing string already says "assessments".
+  { id: "assignments", label: "Assessments", view: "assignments" },
   { id: "documents", label: "Documents", view: "documents" },
   { id: "links", label: "Links", view: "links" },
 ];
