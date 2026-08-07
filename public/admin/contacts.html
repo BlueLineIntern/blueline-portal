@@ -2533,7 +2533,7 @@
           <div class="row-title">${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
           <div class="row-sub">
             ${duePill(t)}
-            <span class="prio-label">${escapeHtml(t.priority || 'low')}</span>
+            <span class="${prioLabelClass(t.priority)}">${escapeHtml(t.priority || 'low')}</span>
             ${t.repeat ? `<span>↻ ${escapeHtml(REPEAT_LABELS[t.repeat] || t.repeat)}</span>` : ''}
           </div>
           ${t.description ? `<div class="row-sub">${escapeHtml(t.description)}</div>` : ''}
@@ -3514,7 +3514,7 @@
         <div class="row-main">
           <div class="row-title">${escapeHtml(t.title)}${t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : ''}</div>
           <div class="row-sub">${whoLink(t.client)} · ${duePill(t)}
-            <span class="prio-label">${escapeHtml(t.priority || 'low')}</span>
+            <span class="${prioLabelClass(t.priority)}">${escapeHtml(t.priority || 'low')}</span>
             ${t.assignee ? ` · ${escapeHtml(staffLabel(t.assignee))}` : ''}</div>
           ${t.description ? `<div class="row-sub">${escapeHtml(t.description)}</div>` : ''}
         </div>

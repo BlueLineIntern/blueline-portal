@@ -326,9 +326,32 @@ a.stat-tile:hover {
 
 /* Text label that accompanies the rail. Neutral by design — the rail carries
    the colour, so a second coloured element here would be noise. */
+/* A colored pill, not bare text, so priority reads at a glance in a dense row —
+   same request as the assignee bubble below. Same three tokens as the rail
+   (--prio-high/medium/low), just as a background tint instead of an edge, so a
+   card and a row agree on what "high" looks like without a second palette. */
 .prio-label {
-  font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--muted);
+  display: inline-block; font-size: var(--fs-2xs); font-weight: var(--fw-semibold);
   text-transform: uppercase; letter-spacing: var(--ls-caps);
+  border-radius: var(--radius-pill); padding: 0 var(--sp-2); white-space: nowrap;
+}
+.prio-label-high { background: rgba(220, 38, 38, 0.12); color: var(--prio-high); }
+.prio-label-medium { background: rgba(224, 154, 62, 0.16); color: var(--prio-medium); }
+.prio-label-low { background: var(--gray-bg); color: var(--prio-low); }
+
+/* Who a task belongs to. Neutral by design, like the freq/source chips — this
+   names a person, it doesn't grade the task, so it stays out of every colored
+   vocabulary (urgency, priority, category) already in play on the same row.
+   Unassigned gets its own dashed, fill-less variant so an empty assignment
+   reads as "nobody", not as a real (if oddly-named) assignee. */
+.assignee-badge {
+  display: inline-block; font-size: var(--fs-2xs); font-weight: var(--fw-semibold);
+  background: var(--gray-bg); color: var(--text);
+  border-radius: var(--radius-pill); padding: 0 var(--sp-2); white-space: nowrap;
+}
+.assignee-badge.unassigned {
+  background: transparent; color: var(--muted); font-weight: var(--fw-medium);
+  border: 1px dashed var(--border-strong);
 }
 
 /* ---------- Quick-add form (contact Tasks tab, and anywhere inline-creating) ----------

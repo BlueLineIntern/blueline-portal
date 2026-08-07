@@ -190,12 +190,28 @@ function priorityOptions(current) {
       .join('');
 }
 
-// Priority. The rail carries the colour; the text label stays neutral so the
-// row has one coloured priority element, not two. Low is slate rather than
-// green — green on work you still owe someone reads as "done".
+// Priority. The rail is the edge-of-row signal for scanning a whole list at a
+// glance; the label is now a coloured pill too, at the user's request, so
+// priority is legible without reading the edge. That does mean a row now
+// carries the colour twice (rail + pill) — a prior version of this file kept
+// the label neutral specifically to avoid that. Low is slate rather than
+// green either way — green on work you still owe someone reads as "done".
 const PRIORITY_RAIL = { high: 'prio-rail-high', medium: 'prio-rail-medium', low: 'prio-rail-low' };
 function prioRailClass(priority) {
   return `prio-rail ${PRIORITY_RAIL[priority] || 'prio-rail-low'}`;
+}
+const PRIORITY_LABEL_CLASS = { high: 'prio-label-high', medium: 'prio-label-medium', low: 'prio-label-low' };
+function prioLabelClass(priority) {
+  return `prio-label ${PRIORITY_LABEL_CLASS[priority] || 'prio-label-low'}`;
+}
+
+// Who a task belongs to, as a pill rather than bare text. Unassigned gets its
+// own dashed/fill-less variant (see .assignee-badge.unassigned in shared.css)
+// so an empty assignment reads as "nobody", not as a literal person named
+// "Unassigned".
+function assigneeBadge(email) {
+  if (!email) return '<span class="assignee-badge unassigned" title="No one assigned yet">Unassigned</span>';
+  return `<span class="assignee-badge" title="Assigned to ${escapeHtml(staffLabel(email))}">${escapeHtml(staffLabel(email))}</span>`;
 }
 
 function isSameLocalDay(a, b) {

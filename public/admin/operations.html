@@ -38,12 +38,6 @@
   .kanban-card.dragging { opacity: 0.45; }
   .kanban-card.card-done .kc-title { text-decoration: line-through; color: var(--muted); }
   .kc-top { display: flex; align-items: flex-start; gap: 8px; }
-  .kc-prio { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
-  /* Priority on a kanban card is a dot rather than the list view's edge rail —
-     a card is too small for a rail — but it reads the same three tokens. */
-  .kc-prio.high { background: var(--prio-high); }
-  .kc-prio.medium { background: var(--prio-medium); }
-  .kc-prio.low { background: var(--prio-low); }
   .kc-title { font-weight: var(--fw-semibold); font-size: var(--fs-sm); word-break: break-word; flex: 1; }
   .kc-meta { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; margin-top: 8px; font-size: var(--fs-xs); color: var(--muted); }
   /* Urgency colours come from shared.css's .due-text-* classes; the card only
@@ -528,7 +522,13 @@
     const d = dueMeta(t);
     const cp = checklistProgress(t);
     const metaBits = [];
+    metaBits.push(`<span class="${prioLabelClass(t.priority)}">${escapeHtml(t.priority || 'low')}</span>`);
     if (d.text) metaBits.push(`<span class="kc-due ${d.textClass}">${escapeHtml(d.text)}</span>`);
+    // Shown even inside a person column, where it repeats the column heading —
+    // a custom-list or Unassigned column has no heading to imply it, and a
+    // card dragged between boards should never depend on which column it's
+    // currently sitting in to say who owns it.
+    metaBits.push(assigneeBadge(t.assignee));
     if (t.client) metaBits.push(`<span class="kc-client">◗ ${escapeHtml(contactName(t.client))}</span>`);
     if (cp) metaBits.push(`<span class="kc-check" title="${cp.done}/${cp.total} checklist items">
       <span class="kc-bar"><span style="width:${cp.pct}%"></span></span>${cp.done}/${cp.total}</span>`);
@@ -548,7 +548,6 @@
     return `<div class="kanban-card ${t.status === 'done' ? 'card-done' : ''} ${ready ? 'card-ready' : ''}" draggable="true" data-id="${escapeHtml(t.id)}">
       <div class="kc-top">
         ${tickButton(t)}
-        <span class="kc-prio ${escapeHtml(t.priority || 'medium')}" title="${escapeHtml(t.priority || 'medium')} priority"></span>
         <span class="kc-title">${escapeHtml(t.title)}</span>
       </div>
       ${metaBits.length ? `<div class="kc-meta">${metaBits.join('')}</div>` : ''}
@@ -1232,7 +1231,7 @@
           const clientBit = t.client
             ? `<a href="/admin/contacts.html?c=${encodeURIComponent(t.client)}">${escapeHtml(contactName(t.client))}</a>`
             : '';
-          const assigneeBit = t.assignee ? escapeHtml(staffLabel(t.assignee)) : 'unassigned';
+          const assigneeBit = assigneeBadge(t.assignee);
           const autoBit = t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : '';
           const cp = checklistProgress(t);
           const checkBit = cp ? `<span>✓ ${cp.done}/${cp.total}</span>` : '';
@@ -1247,8 +1246,8 @@
               <div class="row-title">${escapeHtml(t.title)}${autoBit}</div>
               <div class="row-sub">
                 ${duePill(t)}
-                <span class="prio-label">${escapeHtml(t.priority || 'low')}</span>
-                ${clientBit}${clientBit ? '<span>·</span>' : ''}<span>${assigneeBit}</span>${checkBit}${repeatBit}
+                <span class="${prioLabelClass(t.priority)}">${escapeHtml(t.priority || 'low')}</span>
+                ${clientBit}${clientBit ? '<span>·</span>' : ''}${assigneeBit}${checkBit}${repeatBit}
               </div>
               ${t.description ? `<div class="row-sub">${escapeHtml(t.description)}</div>` : ''}
             </div>
