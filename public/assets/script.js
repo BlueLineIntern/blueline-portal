@@ -129,7 +129,15 @@ function updateNav() {
 let assignedKeys = null;
 
 function isAssigned(key) {
-  return assignedKeys === null || assignedKeys.includes(key);
+  // Anything that isn't an array is treated as "no assignment record", i.e.
+  // everything visible — the same meaning as null. Previously this called
+  // .includes() on whatever arrived, so a response of the wrong shape threw
+  // mid-render and left the client staring at a half-drawn page (with the
+  // PREVIOUS client's rows still on it, after a logout/login). Failing open to
+  // "show everything" matches the documented default and degrades to a visible,
+  // usable portal rather than a broken one.
+  if (!Array.isArray(assignedKeys)) return true;
+  return assignedKeys.includes(key);
 }
 
 // Fetch assessment progress and assignments together. Both require a valid
@@ -227,41 +235,73 @@ function renderHomeLanding() {
   const session = getSession();
   document.getElementById("home-welcome").textContent = session ? `Welcome, ${session.name}` : "Welcome";
 
+  const assignedMods = MODULES.concat(CATEGORY_MODULES).filter((mod) => isAssigned(mod.key));
   const outstanding = outstandingCount();
-  const openRequests = docRequests.filter((r) => r.status === "open").length;
-  const anyAssigned = MODULES.concat(CATEGORY_MODULES).some((mod) => isAssigned(mod.key))
-    || isAssigned("onboardingWizard");
+  const openRequests = docRequests.filter((r) => r.status === "open");
+  const anyAssigned = assignedMods.length > 0 || isAssigned("onboardingWizard");
 
-  // One line naming everything outstanding across both kinds of work, so Home
-  // doesn't report "all caught up" while a document request is still sitting
-  // unanswered on the Documents tab.
-  const bits = [];
-  if (anyAssigned && outstanding > 0) bits.push(`${outstanding} assessment${outstanding === 1 ? "" : "s"} to complete`);
-  if (openRequests > 0) bits.push(`${openRequests} document${openRequests === 1 ? "" : "s"} to send`);
-  document.getElementById("home-status-line").textContent = bits.length
-    ? `You have ${bits.join(" and ")}.`
-    : anyAssigned
+  // ---- What needs attention: the actual items, each with its own way in ----
+  const rows = openRequests.map((r) => `
+    <div class="home-todo">
+      <div class="home-todo-main">
+        <div class="home-todo-label">${escapeHtml(r.label)}</div>
+        <div class="home-todo-sub">Requested by your advisor${r.dueDate ? ` · needed by ${escapeHtml(r.dueDate)}` : ""}</div>
+      </div>
+      <button type="button" class="btn btn-primary home-goto" data-goto="documents">Send</button>
+    </div>`);
+  if (anyAssigned && outstanding > 0) {
+    rows.push(`
+      <div class="home-todo">
+        <div class="home-todo-main">
+          <div class="home-todo-label">${outstanding} assessment${outstanding === 1 ? "" : "s"} to complete</div>
+          <div class="home-todo-sub">So your advisor has the full picture</div>
+        </div>
+        <button type="button" class="btn btn-primary home-goto" data-goto="assignments">Continue</button>
+      </div>`);
+  }
+  const card = document.getElementById("home-attention-card");
+  const allClear = document.getElementById("home-allclear");
+  card.classList.toggle("hidden", rows.length === 0);
+  allClear.classList.toggle("hidden", rows.length > 0);
+  if (rows.length) {
+    document.getElementById("home-attention-list").innerHTML = rows.join("");
+  } else {
+    allClear.textContent = anyAssigned
       ? "You're all caught up — nothing is waiting on you."
       : "Nothing is waiting on you right now. Your advisor will add things here when they're ready.";
-
-  // Shortcuts rather than a duplicate grid: Home points into the tabs, it
-  // doesn't reimplement them. Ordered by urgency, so whatever is actually
-  // outstanding is the first button.
-  const shortcuts = [];
-  if (openRequests > 0) shortcuts.push({ tab: "documents", label: `Send ${openRequests} requested document${openRequests === 1 ? "" : "s"}` });
-  if (anyAssigned) {
-    shortcuts.push({ tab: "assignments", label: outstanding > 0 ? "Continue your assessments" : "Review your assessments" });
   }
-  if (openRequests === 0) shortcuts.push({ tab: "documents", label: "Send a document" });
-  if (portalLinks.length) shortcuts.push({ tab: "links", label: "Open your platform links" });
-  const wrap = document.getElementById("home-shortcuts");
-  wrap.innerHTML = shortcuts
-    .map((s) => `<button type="button" class="btn btn-primary home-shortcut-btn" data-goto="${s.tab}">${escapeHtml(s.label)}</button>`)
+
+  // ---- Quick links: open the platform directly from Home ----
+  // Same https guard as the Links tab (see renderLinks) — this value becomes an
+  // href, so it is re-checked at every point of use, not just on write.
+  const safeLinks = portalLinks.filter((l) => isHttpsUrl(l.url));
+  document.getElementById("home-links-card").classList.toggle("hidden", !safeLinks.length);
+  document.getElementById("home-links").innerHTML = safeLinks
+    .map((l) => `<a class="btn btn-primary home-link-btn" href="${escapeHtml(l.url)}"
+      target="_blank" rel="noopener noreferrer">${escapeHtml(l.label)} ↗</a>`)
     .join("");
-  wrap.querySelectorAll(".home-shortcut-btn").forEach((b) =>
-    b.addEventListener("click", () => openTab(b.dataset.goto))
-  );
+
+  // ---- Progress ----
+  const progressCard = document.getElementById("home-progress-card");
+  progressCard.classList.toggle("hidden", !assignedMods.length);
+  if (assignedMods.length) {
+    const done = assignedMods.length - outstanding;
+    document.getElementById("home-progress-line").textContent =
+      `${done} of ${assignedMods.length} assessment${assignedMods.length === 1 ? "" : "s"} complete`;
+    document.getElementById("home-progress-fill").style.width =
+      `${Math.round((done / assignedMods.length) * 100)}%`;
+  }
+
 }
+
+// Delegated and bound ONCE, not per render: the attention rows are rebuilt on
+// every load but the progress-card buttons are static markup, so re-binding
+// inside renderHomeLanding would stack a fresh listener on them each time and
+// fire openTab twice on the second visit.
+document.getElementById("view-home").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-goto]");
+  if (btn) openTab(btn.dataset.goto);
+});
 
 async function loadHome() {
   const errorEl = document.getElementById("home-error");

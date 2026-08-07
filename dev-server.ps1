@@ -1964,7 +1964,13 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/assignments' -and $method -eq 'GET') {
             $email = Get-SessionEmail $ctx
             if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
-            $asg = if ($assignments.ContainsKey($email)) { @($assignments[$email]) } else { $null }
+            # `, @(...)` — the comma is load-bearing. PowerShell unrolls an empty
+            # array returned from an `if` expression into $null, which collapsed
+            # "nothing assigned" ([]) into "no record, show everything" (null) —
+            # the exact opposite meaning. Same reason ConvertTo-CalendarOwners
+            # returns `, @(...)`. The real worker returns a JS array and was
+            # never affected; this only ever misled local testing.
+            $asg = if ($assignments.ContainsKey($email)) { , @($assignments[$email]) } else { $null }
             Send-Json $ctx 200 @{ assignments = $asg }
         }
         elseif ($path -match '^/api/admin/assignments/(.+)$' -and $method -eq 'POST') {

@@ -133,18 +133,52 @@ body {
 }
 
 /* Home landing */
-.home-status-card h2 { margin-bottom: var(--sp-2); }
-
-.home-status-line {
-  color: var(--text);
-  font-size: var(--fs-lg);
-  margin-bottom: var(--sp-5);
-}
+.home-status-card h2 { margin-bottom: var(--sp-3); }
 
 .home-shortcuts {
   display: flex;
   gap: var(--sp-3);
   flex-wrap: wrap;
+  margin-top: var(--sp-4);
+}
+
+/* One outstanding item per row: what it is on the left, the way to deal with
+   it on the right. */
+.home-todo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+.home-todo:last-child { border-bottom: none; }
+.home-todo-main { min-width: 0; }
+.home-todo-label { font-weight: var(--fw-semibold); color: var(--text); }
+.home-todo-sub { color: var(--text-muted); font-size: var(--fs-sm); margin-top: 2px; }
+
+/* Shown in place of the attention card when there is nothing outstanding —
+   a plain line rather than an empty box headed "what needs your attention". */
+.home-allclear {
+  color: var(--text-muted);
+  font-size: var(--fs-lg);
+  margin-bottom: var(--sp-5);
+}
+
+.home-links {
+  display: flex;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+}
+/* Anchors styled as buttons need the line-height and decoration reset that
+   .btn assumes on a real <button>. */
+.home-link-btn { text-decoration: none; display: inline-flex; align-items: center; }
+
+.home-progress-line { color: var(--text-muted); margin-bottom: var(--sp-2); }
+
+@media (max-width: 620px) {
+  .home-todo { flex-direction: column; align-items: stretch; }
 }
 
 /* Trailing note under the Links grid. Hidden by renderLinks when there are no

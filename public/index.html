@@ -77,10 +77,32 @@
         </div>
       </div>
 
-      <div class="card home-status-card">
+      <!-- Outstanding work, named rather than counted — "2024 tax return" with a
+           button beside it beats "2 documents to send". Hidden entirely when
+           there is nothing, so an all-caught-up client isn't shown an empty
+           worry box. -->
+      <div class="card home-status-card hidden" id="home-attention-card">
         <h2>What needs your attention</h2>
-        <p class="home-status-line" id="home-status-line"></p>
-        <div class="home-shortcuts" id="home-shortcuts"></div>
+        <div id="home-attention-list"></div>
+      </div>
+      <p class="home-allclear hidden" id="home-allclear"></p>
+
+      <!-- Quick links: the actual outbound buttons, not a pointer to the Links
+           tab. Checking a portfolio is the most common reason to visit, so it
+           shouldn't cost a tab hop. -->
+      <div class="card hidden" id="home-links-card">
+        <h2>Quick links</h2>
+        <div class="home-links" id="home-links"></div>
+      </div>
+
+      <div class="card hidden" id="home-progress-card">
+        <h2>Your progress</h2>
+        <p class="home-progress-line" id="home-progress-line"></p>
+        <div class="progress-track"><div class="progress-fill" id="home-progress-fill"></div></div>
+        <div class="home-shortcuts">
+          <button type="button" class="btn btn-secondary home-shortcut-btn" data-goto="assignments">Open assignments</button>
+          <button type="button" class="btn btn-secondary home-shortcut-btn" data-goto="documents">Send a document</button>
+        </div>
       </div>
     </section>
 
