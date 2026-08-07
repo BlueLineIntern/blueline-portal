@@ -1935,7 +1935,12 @@
 
   function wireDocActions() {
     const add = document.getElementById('doc-add-btn');
-    if (add) add.addEventListener('click', openDocModal);
+    // Wrapped, NOT passed bare: openDocModal takes the member to attach for, and
+    // a bare listener hands it the click event instead. The event is truthy, so
+    // it survives the `|| selectedEmail` fallback and the upload posts to
+    // /contacts/[object PointerEvent]/documents, which fails "Invalid email".
+    // On this tab the target is always the open contact.
+    if (add) add.addEventListener('click', () => openDocModal(selectedEmail));
     document.querySelectorAll('[data-doc-rename]').forEach((b) => {
       b.addEventListener('click', async () => {
         const doc = clientDocs.find((d) => d.id === b.dataset.docRename);
@@ -2129,7 +2134,10 @@
   let docTargetEmail = '';
 
   function openDocModal(email) {
-    docTargetEmail = email || selectedEmail;
+    // typeof-checked rather than a bare `||`: a listener wired as
+    // addEventListener('click', openDocModal) passes a truthy click event here,
+    // which would otherwise sail past the fallback and be sent as the address.
+    docTargetEmail = (typeof email === 'string' && email) ? email : selectedEmail;
     const who = allContacts.find((c) => c.email === docTargetEmail);
     document.querySelector('#doc-modal-backdrop .modal h2').textContent =
       selectedGroupId && who ? `Attach document for ${who.name || who.email}` : 'Attach document';
