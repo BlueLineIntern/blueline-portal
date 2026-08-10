@@ -577,7 +577,7 @@ function initShell(activePage) {
     <div class="sidebar-brand">
       <a href="/admin/"><img src="/assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" /></a>
     </div>
-    <div class="sidebar-workspace" id="sidebar-workspace">
+    <div class="sidebar-workspace hidden" id="sidebar-workspace">
       <label for="workspace-select">Admin display</label>
       <select id="workspace-select" aria-label="Admin display"></select>
     </div>
@@ -636,11 +636,20 @@ async function loadWorkspaceSwitcher() {
       location.reload();
       return;
     }
+    // Employees are intentionally assigned to exactly one display server-side,
+    // so showing them a one-option selector is misleading. Frank alone gets the
+    // navigation control because he is the only account allowed to oversee and
+    // move between every employee's personal display.
+    if (!data.boss) {
+      wrap.remove();
+      return;
+    }
+    wrap.classList.remove('hidden');
     select.innerHTML = workspaces.map((w) =>
       `<option value="${escapeHtml(w.owner)}">${escapeHtml(w.name)}${w.own ? ' (mine)' : ''}</option>`
     ).join('');
     select.value = ACTIVE_ADMIN_WORKSPACE;
-    wrap.classList.toggle('workspace-boss', !!data.boss);
+    wrap.classList.add('workspace-boss');
     select.addEventListener('change', () => {
       ACTIVE_ADMIN_WORKSPACE = select.value;
       localStorage.setItem(ADMIN_WORKSPACE_KEY, ACTIVE_ADMIN_WORKSPACE);
