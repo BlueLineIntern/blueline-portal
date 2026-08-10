@@ -41,6 +41,7 @@ $adminPasswords = @{
 }
 $frankAdminEmail = 'fsabin@blueline-advisors.com'
 $jennAdminEmail = 'jyoung@blueline-advisors.com'
+$internAdminEmail = 'intern@blueline-advisors.com'
 $adminWorkspaceAccess = @{
     $frankAdminEmail = @('jyoung@blueline-advisors.com', 'intern@blueline-advisors.com')
 }
@@ -860,7 +861,7 @@ function Get-RecordWorkspace($rec) {
 }
 
 function Test-SupervisorAdmin($adminEmail) {
-    return $adminEmail -eq $frankAdminEmail -or $adminEmail -eq $jennAdminEmail
+    return $adminEmail -eq $frankAdminEmail -or $adminEmail -eq $jennAdminEmail -or $adminEmail -eq $internAdminEmail
 }
 
 function Get-AccessibleWorkspaces($adminEmail) {
@@ -1264,11 +1265,11 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/workspaces/access' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only Frank or Jenn can manage workspace access' }; continue }
+            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can manage workspace access' }; continue }
             $body = Read-Body $ctx
             $owner = ([string]$body.owner).Trim().ToLower()
             if ($owner -ne $frankAdminEmail) { Send-Json $ctx 400 @{ error = "Employees can only be assigned to Frank's display" }; continue }
-            $members = @(@($jennAdminEmail) + @($body.members | ForEach-Object { ([string]$_).Trim().ToLower() }) |
+            $members = @(@($jennAdminEmail, $internAdminEmail) + @($body.members | ForEach-Object { ([string]$_).Trim().ToLower() }) |
                 Where-Object { $_ -and $_ -ne $owner -and $adminPasswords.ContainsKey($_) } | Select-Object -Unique)
             $adminWorkspaceAccess[$owner] = $members
             Write-Audit $adminEmail 'workspace-access-changed' @{ owner = $owner; members = $members }
@@ -1435,7 +1436,7 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/portal-links' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only Frank or Jenn can change firm-wide portal links' }; continue }
+            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can change firm-wide portal links' }; continue }
             $body = Read-Body $ctx
             if (-not $body -or $null -eq $body.links) { Send-Json $ctx 400 @{ error = 'links must be a list' }; continue }
             if (@($body.links).Count -gt 12) { Send-Json $ctx 400 @{ error = 'No more than 12 links' }; continue }
@@ -2192,7 +2193,7 @@ while ($listener.IsListening) {
         elseif ($path -match '^/api/admin/mfa/reset/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only Frank or Jenn can reset admin MFA' }; continue }
+            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can reset admin MFA' }; continue }
             $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
             if (-not $adminPasswords.ContainsKey($target)) { Send-Json $ctx 404 @{ error = 'Not an admin account' }; continue }
             $adminMfa.Remove($target)
@@ -2421,7 +2422,7 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/audit' -and $method -eq 'GET') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only Frank or Jenn can view the firm audit log' }; continue }
+            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can view the firm audit log' }; continue }
             $all = @($auditLog.ToArray())
             [array]::Reverse($all)  # newest first, mirroring the worker
             $limit = 10

@@ -44,7 +44,7 @@
 
     <div class="panel hidden" id="workspace-access-card">
       <div class="panel-head"><h2>Admin Display Access</h2></div>
-      <p class="hint">Frank and Jenn manage the shared firm view. Selected employees work in that shared view and retain Compliance access. Anyone not selected works in a personal view; Frank and Jenn can review it with the Employee filters on Contacts, Tasks, and Calendar.</p>
+      <p class="hint">Frank, Jenn, and Intern manage the shared firm view. Selected employees work in that shared view and retain Compliance access. Anyone not selected works in a personal view; the supervisors can review it with the Employee filters on Contacts, Tasks, and Calendar.</p>
       <div class="field">
         <label>Employees using Frank's display</label>
         <div id="workspace-member-checks" style="display:flex; gap:var(--sp-3); flex-wrap:wrap; min-height:40px; align-items:center;"></div>
@@ -278,7 +278,7 @@
     }
   });
 
-  // ---------- Admin display access (Frank and Jenn) ----------
+  // ---------- Admin display access (firm supervisors) ----------
   let workspaceAccessData = null;
 
   function renderWorkspaceMembers() {

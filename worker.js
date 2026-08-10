@@ -72,11 +72,12 @@ const ADMIN_ACCOUNTS = [
 ];
 const FRANK_ADMIN_EMAIL = 'fsabin@blueline-advisors.com';
 const JENN_ADMIN_EMAIL = 'jyoung@blueline-advisors.com';
-const SUPERVISOR_ADMIN_EMAILS = new Set([FRANK_ADMIN_EMAIL, JENN_ADMIN_EMAIL]);
+const INTERN_ADMIN_EMAIL = 'intern@blueline-advisors.com';
+const SUPERVISOR_ADMIN_EMAILS = new Set([FRANK_ADMIN_EMAIL, JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL]);
 const isSupervisorAdmin = (email) => SUPERVISOR_ADMIN_EMAILS.has(String(email || '').trim().toLowerCase());
 const DEFAULT_FRANK_WORKSPACE_MEMBERS = [
-  'jyoung@blueline-advisors.com',
-  'intern@blueline-advisors.com',
+  JENN_ADMIN_EMAIL,
+  INTERN_ADMIN_EMAIL,
 ];
 const LEGACY_ADMIN_NAMES = {
   'fsabin@blueline-advisors.com': 'Frank',
@@ -129,7 +130,7 @@ async function isAdminAccount(env, email) {
 async function handleAdminCreateAdmin(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only Frank or Jenn can add admin accounts' }, 403, cors);
+  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can add admin accounts' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const email = String(body.email || '').trim().toLowerCase();
@@ -172,7 +173,7 @@ async function addedAdminNames(env) {
 }
 
 // ---------- Admin workspaces ----------
-// Every admin has a private data workspace and Frank or Jenn can oversee them.
+// Every admin has a private data workspace and the firm supervisors can oversee them.
 // For employees the choice is exclusive: someone assigned to Frank works only
 // in Frank's workspace; everyone else works only in their own workspace.
 // Records written before workspaces existed belong to Frank, preserving the
@@ -190,8 +191,12 @@ async function workspaceMembers(env, owner) {
     const members = Array.isArray(parsed.members)
       ? [...new Set(parsed.members.map((e) => String(e || '').trim().toLowerCase()).filter(Boolean))]
       : [];
-    // Jenn is a permanent co-supervisor of the shared firm view.
-    if (owner === FRANK_ADMIN_EMAIL && !members.includes(JENN_ADMIN_EMAIL)) members.push(JENN_ADMIN_EMAIL);
+    // Co-supervisors are permanent members of the shared firm view.
+    if (owner === FRANK_ADMIN_EMAIL) {
+      for (const supervisor of [JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL]) {
+        if (!members.includes(supervisor)) members.push(supervisor);
+      }
+    }
     return members;
   } catch {
     return [];
@@ -249,7 +254,7 @@ async function handleAdminWorkspaces(request, env, cors) {
 async function handleAdminSaveWorkspaceAccess(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only Frank or Jenn can manage workspace access' }, 403, cors);
+  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can manage workspace access' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body || !isValidEmail(body.owner) || !Array.isArray(body.members)) {
     return json({ error: 'owner and members are required' }, 400, cors);
@@ -257,7 +262,7 @@ async function handleAdminSaveWorkspaceAccess(request, env, cors) {
   const owner = String(body.owner).trim().toLowerCase();
   if (owner !== FRANK_ADMIN_EMAIL) return json({ error: "Employees can only be assigned to Frank's display" }, 400, cors);
   const admins = new Set(await allAdminEmails(env));
-  const members = [...new Set([JENN_ADMIN_EMAIL, ...body.members.map((e) => String(e || '').trim().toLowerCase())])]
+  const members = [...new Set([JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL, ...body.members.map((e) => String(e || '').trim().toLowerCase())])]
     .filter((e) => e && e !== owner && admins.has(e));
   await env.PORTAL_KV.put(workspaceAccessKey(owner), JSON.stringify({ members, updatedAt: new Date().toISOString(), updatedBy: adminEmail }));
   await logAudit(env, adminEmail, 'workspace-access-changed', { owner, members });
@@ -787,7 +792,7 @@ async function handleAdminListAdmins(request, env, cors) {
 async function handleAdminResetMfa(request, env, cors, targetEmail) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only Frank or Jenn can reset admin MFA' }, 403, cors);
+  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can reset admin MFA' }, 403, cors);
   const normalized = String(targetEmail).trim().toLowerCase();
   if (!(await isAdminAccount(env, normalized))) {
     return json({ error: 'Not an admin account' }, 404, cors);
@@ -2191,7 +2196,7 @@ async function handleAdminAudit(request, env, cors) {
   // Audit entries predate workspace ownership and can contain client names and
   // emails from anywhere in the firm. Until every entry carries a workspace,
   // the safe view is the boss-only firm log.
-  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only Frank or Jenn can view the firm audit log' }, 403, cors);
+  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can view the firm audit log' }, 403, cors);
 
   const AUDIT_PAGE_SIZE = 10;
   const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
@@ -4130,7 +4135,7 @@ async function handleAdminUpsertContact(request, env, cors, targetEmail) {
   // employee who guessed the email could silently take ownership of the client.
   if (!stored && workspace !== FRANK_ADMIN_EMAIL && !isSupervisorAdmin(adminEmail)
       && await env.PORTAL_KV.get(`user:${email}`)) {
-    return json({ error: 'Only Frank or Jenn can assign an existing portal client to this admin display' }, 403, cors);
+    return json({ error: 'Only firm supervisors can assign an existing portal client to this admin display' }, 403, cors);
   }
   const existing = stored || {
     email,
@@ -6334,7 +6339,7 @@ async function handleAdminGetPortalLinks(request, env, cors) {
 async function handleAdminSavePortalLinks(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only Frank or Jenn can change firm-wide portal links' }, 403, cors);
+  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can change firm-wide portal links' }, 403, cors);
   const body = await request.json().catch(() => null);
   const { links, error } = sanitizePortalLinks(body);
   if (error) return json({ error }, 400, cors);
@@ -6748,7 +6753,7 @@ export default {
       if (url.pathname === '/api/admin/contacts/sync' && request.method === 'POST') {
         const adminEmail = await getAdminEmail(request, env);
         if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-        if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only Frank or Jenn can run firm-wide SharePoint sync' }, 403, cors);
+        if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can run firm-wide SharePoint sync' }, 403, cors);
         try {
           const result = await syncSharePointContacts(env);
           await logAudit(env, adminEmail, 'sync-sharepoint-contacts', result);
@@ -6761,7 +6766,7 @@ export default {
       if (url.pathname === '/api/admin/households/sync' && request.method === 'POST') {
         const adminEmail = await getAdminEmail(request, env);
         if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-        if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only Frank or Jenn can run firm-wide SharePoint sync' }, 403, cors);
+        if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can run firm-wide SharePoint sync' }, 403, cors);
         try {
           const result = await syncSharePointHouseholds(env);
           await logAudit(env, adminEmail, 'sync-sharepoint-households', result);
@@ -6778,7 +6783,7 @@ export default {
       if (url.pathname === '/api/admin/sharepoint/site' && request.method === 'GET') {
         const adminEmail = await getAdminEmail(request, env);
         if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-        if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only Frank or Jenn can inspect SharePoint configuration' }, 403, cors);
+        if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can inspect SharePoint configuration' }, 403, cors);
         const raw = url.searchParams.get('url');
         if (!raw) return json({ error: 'Pass ?url=<the site address>' }, 400, cors);
         let host;
@@ -6818,7 +6823,7 @@ export default {
       if (url.pathname === '/api/admin/sharepoint/lists' && request.method === 'GET') {
         const adminEmail = await getAdminEmail(request, env);
         if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-        if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only Frank or Jenn can inspect SharePoint configuration' }, 403, cors);
+        if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can inspect SharePoint configuration' }, 403, cors);
         const siteId = url.searchParams.get('site') || env.SHAREPOINT_SITE_ID;
         try {
           const token = await getGraphToken(env);
