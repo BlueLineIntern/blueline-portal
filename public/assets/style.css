@@ -177,6 +177,24 @@ body {
 
 .home-progress-line { color: var(--text-muted); margin-bottom: var(--sp-2); }
 
+/* Per-member progress on a shared household portal, so you can see who still
+   owes work rather than only the blended total. Hidden for a single client. */
+.home-progress-members {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+}
+.home-progress-member {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  background: var(--gray-bg);
+  color: var(--muted);
+  border-radius: var(--radius-pill);
+  padding: 1px var(--sp-2);
+  white-space: nowrap;
+}
+
 @media (max-width: 620px) {
   .home-todo { flex-direction: column; align-items: stretch; }
 }
@@ -814,6 +832,11 @@ h2 {
 
 .progress-fill {
   height: 100%;
+  /* Explicit 0 default. Without it an unset or INVALID inline width (a negative
+     percentage, say) leaves this block div filling its track — so a bad number
+     renders as 100% complete, the most misleading possible failure. A real bug
+     shipped exactly that: "-1 of 17 complete" above a completely full bar. */
+  width: 0;
   background: linear-gradient(90deg, var(--sky), var(--sky-dark));
   border-radius: var(--radius-pill);
   transition: width 0.4s ease;

@@ -275,38 +275,67 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
 
 // ---------- Home (landing) ----------
 
-// Counts what the client still owes across everything assigned to them, so Home
-// can lead with a number instead of restating the module grid that Assignments
-// already shows.
-// Counted across the WHOLE household, not just the member on screen: Home must
-// not say "all caught up" while a spouse still has three assessments open in the
-// portal they share.
-function outstandingCount() {
+// done / total / outstanding for the whole household, computed in ONE place.
+//
+// This used to be two functions: an outstanding count summed over every member,
+// and a total taken from just the member on screen. Home then did
+// `total - outstanding`, mixing the two scopes, and a two-person household
+// rendered "-1 of 17 assessments complete" with the progress bar showing FULL
+// (a negative width is invalid CSS, so the browser dropped it and the fill
+// stretched to its container). Returning every number from one walk is what
+// stops those drifting apart again — don't reintroduce a separate total.
+//
+// Household-wide on purpose: Home must not report "all caught up" while a spouse
+// still has three assessments open in the portal they share.
+function assessmentTotals() {
   const all = MODULES.concat(CATEGORY_MODULES);
   const members = (household.members || []).map((m) => m.email);
-  if (!members.length) {
-    return all.filter((mod) => isAssigned(mod.key) && !currentModules[mod.key]).length;
-  }
-  let n = 0;
-  for (const m of members) {
-    const asg = Object.prototype.hasOwnProperty.call(assignmentsByMember, m) ? assignmentsByMember[m] : null;
-    const done = modulesByMember[m] || {};
+  // No household data yet (first paint, or a failed /api/household): fall back
+  // to the member on screen so Home renders something truthful rather than zero.
+  const scope = members.length ? members : [viewingMember || household.you || ""];
+  let done = 0;
+  let total = 0;
+  const perMember = [];
+  for (const m of scope) {
+    const asg = Object.prototype.hasOwnProperty.call(assignmentsByMember, m)
+      ? assignmentsByMember[m]
+      : (m === viewingMember ? assignedKeys : null);
+    const answered = modulesByMember[m] || (m === viewingMember ? currentModules : {}) || {};
+    let mDone = 0;
+    let mTotal = 0;
     for (const mod of all) {
-      const assigned = !Array.isArray(asg) || asg.includes(mod.key);
-      if (assigned && !done[mod.key]) n += 1;
+      // A non-array assignment record means "no record" = everything visible,
+      // the same rule isAssigned uses.
+      if (Array.isArray(asg) && !asg.includes(mod.key)) continue;
+      mTotal += 1;
+      if (answered[mod.key]) mDone += 1;
     }
+    done += mDone;
+    total += mTotal;
+    perMember.push({ email: m, done: mDone, total: mTotal });
   }
-  return n;
+  return { done, total, outstanding: Math.max(0, total - done), perMember };
+}
+
+// Percent for a progress bar, clamped to 0-100. A width outside that range is
+// invalid CSS, which the browser silently drops — and an unset width on
+// .progress-fill makes it fill its track, so a bad number renders as COMPLETE.
+// Failing to 0 is the only safe direction here.
+function progressPct(done, total) {
+  if (!total || !Number.isFinite(done)) return 0;
+  return Math.min(100, Math.max(0, Math.round((done / total) * 100)));
 }
 
 function renderHomeLanding() {
   const session = getSession();
   document.getElementById("home-welcome").textContent = session ? `Welcome, ${session.name}` : "Welcome";
 
-  const assignedMods = MODULES.concat(CATEGORY_MODULES).filter((mod) => isAssigned(mod.key));
-  const outstanding = outstandingCount();
+  // One walk, one set of numbers — the attention count and the progress bar both
+  // read from this so they can't disagree (see assessmentTotals).
+  const totals = assessmentTotals();
+  const outstanding = totals.outstanding;
   const openRequests = docRequests.filter((r) => r.status === "open");
-  const anyAssigned = assignedMods.length > 0 || isAssigned("onboardingWizard");
+  const anyAssigned = totals.total > 0 || isAssigned("onboardingWizard");
 
   // ---- What needs attention: the actual items, each with its own way in ----
   const rows = openRequests.map((r) => `
@@ -351,13 +380,28 @@ function renderHomeLanding() {
 
   // ---- Progress ----
   const progressCard = document.getElementById("home-progress-card");
-  progressCard.classList.toggle("hidden", !assignedMods.length);
-  if (assignedMods.length) {
-    const done = assignedMods.length - outstanding;
+  progressCard.classList.toggle("hidden", !totals.total);
+  if (totals.total) {
+    // Says whose numbers these are. A shared household total is meaningless
+    // without that — 16 of 34 looks like a broken count if you think it's yours.
+    const scopeNote = household.shared ? " across your household" : "";
     document.getElementById("home-progress-line").textContent =
-      `${done} of ${assignedMods.length} assessment${assignedMods.length === 1 ? "" : "s"} complete`;
+      `${totals.done} of ${totals.total} assessment${totals.total === 1 ? "" : "s"} complete${scopeNote}`;
     document.getElementById("home-progress-fill").style.width =
-      `${Math.round((done / assignedMods.length) * 100)}%`;
+      `${progressPct(totals.done, totals.total)}%`;
+
+    // Per-member breakdown, so a shared household can see who still owes work
+    // rather than only a blended figure.
+    const breakdown = document.getElementById("home-progress-members");
+    if (breakdown) {
+      breakdown.innerHTML = household.shared
+        ? totals.perMember
+            .map((p) => `<span class="home-progress-member">${escapeHtml(shortMemberName(p.email))}
+              ${p.done}/${p.total}</span>`)
+            .join("")
+        : "";
+      breakdown.classList.toggle("hidden", !household.shared);
+    }
   }
 
 }
