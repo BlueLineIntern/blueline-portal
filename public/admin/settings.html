@@ -44,7 +44,7 @@
 
     <div class="panel hidden" id="workspace-access-card">
       <div class="panel-head"><h2>Admin Display Access</h2></div>
-      <p class="hint">Select employees who should work only inside Frank's display. Anyone not selected works only inside their own personal display. Frank can still oversee every display.</p>
+      <p class="hint">Select employees who should work only inside Frank's display. They will not have a separate display in Frank's dropdown. Anyone not selected works inside their own personal display, which Frank can open from his dropdown.</p>
       <div class="field">
         <label>Employees using Frank's display</label>
         <div id="workspace-member-checks" style="display:flex; gap:var(--sp-3); flex-wrap:wrap; min-height:40px; align-items:center;"></div>
@@ -321,6 +321,15 @@
       });
       workspaceAccessData.grants[owner] = saved.members;
       status.textContent = `Saved ${new Date().toLocaleTimeString()}`;
+      // The set of displays in Frank's dropdown changed. Reloading also moves
+      // Frank safely back to his own display if the one he was viewing was just
+      // assigned to him and therefore ceased to be separately selectable.
+      if (saved.members.includes(ACTIVE_ADMIN_WORKSPACE)) {
+        ACTIVE_ADMIN_WORKSPACE = owner;
+        localStorage.setItem(ADMIN_WORKSPACE_KEY, owner);
+        localStorage.removeItem('blueline_recent_contacts');
+      }
+      location.reload();
     } catch (err) {
       status.textContent = `Save failed: ${err.message}`;
     }

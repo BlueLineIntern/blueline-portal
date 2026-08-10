@@ -859,8 +859,11 @@ function Get-RecordWorkspace($rec) {
 }
 
 function Get-AccessibleWorkspaces($adminEmail) {
-    if ($adminEmail -eq $frankAdminEmail) { return , @($adminPasswords.Keys) }
-    if (@($adminWorkspaceAccess[$frankAdminEmail]) -contains $adminEmail) { return , @($frankAdminEmail) }
+    $frankMembers = @($adminWorkspaceAccess[$frankAdminEmail])
+    if ($adminEmail -eq $frankAdminEmail) {
+        return , @($adminPasswords.Keys | Where-Object { $_ -eq $frankAdminEmail -or $frankMembers -notcontains $_ })
+    }
+    if ($frankMembers -contains $adminEmail) { return , @($frankAdminEmail) }
     return , @($adminEmail)
 }
 

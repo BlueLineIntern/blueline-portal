@@ -194,8 +194,14 @@ async function workspaceMembers(env, owner) {
 
 async function accessibleWorkspaceOwners(env, adminEmail) {
   const admins = await allAdminEmails(env);
-  if (adminEmail === FRANK_ADMIN_EMAIL) return admins;
-  return (await workspaceMembers(env, FRANK_ADMIN_EMAIL)).includes(adminEmail)
+  const frankMembers = await workspaceMembers(env, FRANK_ADMIN_EMAIL);
+  // An employee assigned to Frank shares Frank's workspace and does not have a
+  // separate selectable display. Their dormant personal data is preserved, but
+  // the display becomes visible again only when Frank returns them to personal.
+  if (adminEmail === FRANK_ADMIN_EMAIL) {
+    return admins.filter((owner) => owner === FRANK_ADMIN_EMAIL || !frankMembers.includes(owner));
+  }
+  return frankMembers.includes(adminEmail)
     ? [FRANK_ADMIN_EMAIL]
     : [adminEmail];
 }
