@@ -131,10 +131,6 @@ function updateNav() {
 // client, or null when there is no assignment record (= everything visible).
 
 let assignedKeys = null;
-// Union supplied by the server. Shared assessments use this list because there
-// is one household copy whenever ANY registered member is assigned the work.
-// Personal assessments continue to use assignedKeys for the selected member.
-let householdAssignedKeys = null;
 
 // Household sharing. Everyone in a family sees one portal: the same documents
 // and requests, and each other's assessments. `viewingMember` is whose
@@ -166,11 +162,8 @@ function isAssigned(key) {
   // PREVIOUS client's rows still on it, after a logout/login). Failing open to
   // "show everything" matches the documented default and degrades to a visible,
   // usable portal rather than a broken one.
-  const list = household.shared && key !== "onboardingWizard" && !isPersonalModule(key)
-    ? householdAssignedKeys
-    : assignedKeys;
-  if (!Array.isArray(list)) return true;
-  return list.includes(key);
+  if (!Array.isArray(assignedKeys)) return true;
+  return assignedKeys.includes(key);
 }
 
 // Fetch assessment progress and assignments together. Both require a valid
@@ -216,7 +209,6 @@ async function refreshState() {
     personalByMember = { [you]: mine };
   }
   assignmentsByMember = assignments.byMember || { [you]: assignments.assignments };
-  householdAssignedKeys = assignments.assignments;
 
   // Keep looking at whoever was selected, unless they've left the household.
   const stillThere = household.members.some((m) => m.email === viewingMember);
@@ -877,19 +869,21 @@ function renderMemberSwitch() {
   const wrap = document.getElementById("member-switch");
   if (!household.shared) { wrap.classList.add("hidden"); return; }
   wrap.classList.remove("hidden");
-  // The count is that member's outstanding PERSONAL assessments only. The
-  // switcher has no effect on shared work, and completed answers are not work
-  // that the member still needs to get done.
+  // The count is all unfinished assessments assigned to that member. Answers
+  // for non-personal modules still come from the one shared household copy,
+  // but assignment visibility and the remaining count stay per person.
   document.getElementById("member-switch-btns").innerHTML = household.members
     .map((m) => {
       const memberAssignments = Object.prototype.hasOwnProperty.call(assignmentsByMember, m.email)
         ? assignmentsByMember[m.email]
         : null;
-      const assignedPersonal = MODULES.concat(CATEGORY_MODULES)
-        .filter((mod) => isPersonalModule(mod.key))
+      const assignedAssessments = MODULES.concat(CATEGORY_MODULES)
         .filter((mod) => !Array.isArray(memberAssignments) || memberAssignments.includes(mod.key));
-      const answered = personalByMember[m.email] || {};
-      const remaining = assignedPersonal.filter((mod) => !answered[mod.key]).length;
+      const personalAnswers = personalByMember[m.email] || {};
+      const remaining = assignedAssessments.filter((mod) => {
+        const answers = isPersonalModule(mod.key) ? personalAnswers : sharedModules;
+        return !answers[mod.key];
+      }).length;
       return `<button type="button" class="member-btn${m.email === viewingMember ? " active" : ""}"
         data-member="${escapeHtml(m.email)}">${escapeHtml(isYou(m.email) ? "You" : m.name)}
         <span class="member-btn-count" title="${remaining} remaining">${remaining}</span></button>`;
