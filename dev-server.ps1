@@ -860,18 +860,15 @@ function Get-RecordWorkspace($rec) {
 
 function Get-AccessibleWorkspaces($adminEmail) {
     if ($adminEmail -eq $frankAdminEmail) { return , @($adminPasswords.Keys) }
-    $out = [System.Collections.ArrayList]@($adminEmail)
-    foreach ($owner in $adminPasswords.Keys) {
-        if ($owner -eq $adminEmail) { continue }
-        if (@($adminWorkspaceAccess[$owner]) -contains $adminEmail) { $null = $out.Add($owner) }
-    }
-    return , @($out.ToArray())
+    if (@($adminWorkspaceAccess[$frankAdminEmail]) -contains $adminEmail) { return , @($frankAdminEmail) }
+    return , @($adminEmail)
 }
 
 function Get-AdminWorkspace($ctx, $adminEmail) {
+    $allowed = @(Get-AccessibleWorkspaces $adminEmail)
     $requested = ([string]$ctx.Request.Headers['X-Admin-Workspace']).Trim().ToLower()
-    if (-not $requested) { $requested = $adminEmail }
-    if (@(Get-AccessibleWorkspaces $adminEmail) -contains $requested) { return $requested }
+    if (-not $requested) { $requested = $allowed[0] }
+    if ($allowed -contains $requested) { return $requested }
     return $null
 }
 
@@ -1243,9 +1240,9 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/workspaces' -and $method -eq 'GET') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $active = Get-AdminWorkspace $ctx $adminEmail
-            if (-not $active) { $active = $adminEmail }
             $allowed = Get-AccessibleWorkspaces $adminEmail
+            $active = Get-AdminWorkspace $ctx $adminEmail
+            if (-not $active) { $active = $allowed[0] }
             $workspaces = @($allowed | ForEach-Object {
                 @{ owner = $_; name = $adminNames[$_]; own = ($_ -eq $adminEmail) }
             })
@@ -1262,7 +1259,7 @@ while ($listener.IsListening) {
             if ($adminEmail -ne $frankAdminEmail) { Send-Json $ctx 403 @{ error = 'Only Frank can manage workspace access' }; continue }
             $body = Read-Body $ctx
             $owner = ([string]$body.owner).Trim().ToLower()
-            if (-not $adminPasswords.ContainsKey($owner)) { Send-Json $ctx 404 @{ error = 'Unknown workspace owner' }; continue }
+            if ($owner -ne $frankAdminEmail) { Send-Json $ctx 400 @{ error = "Employees can only be assigned to Frank's display" }; continue }
             $members = @($body.members | ForEach-Object { ([string]$_).Trim().ToLower() } |
                 Where-Object { $_ -and $_ -ne $owner -and $adminPasswords.ContainsKey($_) } | Select-Object -Unique)
             $adminWorkspaceAccess[$owner] = $members

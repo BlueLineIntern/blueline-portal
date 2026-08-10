@@ -169,8 +169,9 @@ async function addedAdminNames(env) {
 }
 
 // ---------- Admin workspaces ----------
-// Every admin owns a private data workspace. Frank can oversee every workspace;
-// everyone else sees their own plus workspaces explicitly shared with them.
+// Every admin has a private data workspace and Frank can oversee all of them.
+// For employees the choice is exclusive: someone assigned to Frank works only
+// in Frank's workspace; everyone else works only in their own workspace.
 // Records written before workspaces existed belong to Frank, preserving the
 // current firm's data while preventing it from appearing in new employees'
 // private displays.
@@ -194,17 +195,14 @@ async function workspaceMembers(env, owner) {
 async function accessibleWorkspaceOwners(env, adminEmail) {
   const admins = await allAdminEmails(env);
   if (adminEmail === FRANK_ADMIN_EMAIL) return admins;
-  const allowed = [adminEmail];
-  for (const owner of admins) {
-    if (owner === adminEmail) continue;
-    if ((await workspaceMembers(env, owner)).includes(adminEmail)) allowed.push(owner);
-  }
-  return [...new Set(allowed)];
+  return (await workspaceMembers(env, FRANK_ADMIN_EMAIL)).includes(adminEmail)
+    ? [FRANK_ADMIN_EMAIL]
+    : [adminEmail];
 }
 
 async function requestedAdminWorkspace(request, env, adminEmail) {
-  const requested = String(request.headers.get('X-Admin-Workspace') || adminEmail).trim().toLowerCase();
   const allowed = await accessibleWorkspaceOwners(env, adminEmail);
+  const requested = String(request.headers.get('X-Admin-Workspace') || allowed[0]).trim().toLowerCase();
   return allowed.includes(requested) ? requested : null;
 }
 
@@ -228,7 +226,7 @@ async function handleAdminWorkspaces(request, env, cors) {
   return json({
     you: adminEmail,
     boss: adminEmail === FRANK_ADMIN_EMAIL,
-    active: requested || adminEmail,
+    active: requested || allowed[0],
     workspaces,
     admins: admins.map((email) => ({ email, name: names[email] || email.split('@')[0] })),
     grants,
@@ -244,7 +242,7 @@ async function handleAdminSaveWorkspaceAccess(request, env, cors) {
     return json({ error: 'owner and members are required' }, 400, cors);
   }
   const owner = String(body.owner).trim().toLowerCase();
-  if (!(await isAdminAccount(env, owner))) return json({ error: 'Unknown workspace owner' }, 404, cors);
+  if (owner !== FRANK_ADMIN_EMAIL) return json({ error: "Employees can only be assigned to Frank's display" }, 400, cors);
   const admins = new Set(await allAdminEmails(env));
   const members = [...new Set(body.members.map((e) => String(e || '').trim().toLowerCase()))]
     .filter((e) => e && e !== owner && admins.has(e));
