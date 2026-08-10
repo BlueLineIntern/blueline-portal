@@ -69,19 +69,6 @@ a:hover { text-decoration: underline; }
 }
 .sidebar-brand { padding: var(--sp-5) var(--sp-4) var(--sp-4); border-bottom: 1px solid rgba(255,255,255,0.09); }
 .sidebar-brand img { width: 100%; max-width: 160px; height: auto; display: block; }
-.sidebar-workspace { padding: var(--sp-3) var(--sp-3) var(--sp-2); }
-.sidebar-workspace label {
-  display: block; margin-bottom: var(--sp-1); color: rgba(255,255,255,0.58);
-  font-size: var(--fs-2xs); font-weight: var(--fw-semibold); text-transform: uppercase; letter-spacing: 0.06em;
-}
-.sidebar-workspace select {
-  width: 100%; padding: var(--sp-2); border: 1px solid rgba(255,255,255,0.22);
-  border-radius: var(--radius-sm); background: rgba(255,255,255,0.09); color: #fff;
-  font: inherit; font-size: var(--fs-sm);
-}
-.sidebar-workspace select option { color: var(--ink); background: #fff; }
-.sidebar-workspace.workspace-boss select { border-color: rgba(107,196,255,0.62); }
-.workspace-error { color: #fecaca; font-size: var(--fs-xs); }
 .sidebar-nav { padding: var(--sp-3) var(--sp-2); display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .sidebar-nav a {
   display: flex; align-items: center; gap: var(--sp-3);
@@ -203,6 +190,15 @@ a:hover { text-decoration: underline; }
 .page-head h1 { font-size: var(--fs-2xl); font-weight: var(--fw-semibold); }
 .page-head .sub { color: var(--muted); margin: var(--sp-1) 0 0; font-size: var(--fs-base); }
 .page-actions { display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap; }
+.admin-employee-filter {
+  display: flex; align-items: center; gap: var(--sp-2); color: var(--muted);
+  font-size: var(--fs-sm); font-weight: var(--fw-medium);
+}
+.admin-employee-filter select {
+  min-width: 180px; padding: 9px 34px 9px 11px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--panel); color: var(--ink);
+  font: inherit; cursor: pointer;
+}
 
 /* ---------- Panels / cards ---------- */
 .panel {
@@ -834,9 +830,6 @@ body .topbar, body .footer { display: none; }
   }
   .sidebar-brand { border-bottom: none; padding: 0; flex: 0 0 auto; }
   .sidebar-brand img { max-width: 116px; }
-  .sidebar-workspace { padding: 0; flex: 1 1 155px; }
-  .sidebar-workspace label { display: none; }
-
   /* The desktop column layout gives .sidebar-nav `flex: 1` so .sidebar-foot is
      pushed to the bottom of the rail. Left unreset, that same `flex-basis: 0`
      starves the nav in this wrapping row — it collapsed to ~175px, so every

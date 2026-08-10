@@ -44,7 +44,7 @@
 
     <div class="panel hidden" id="workspace-access-card">
       <div class="panel-head"><h2>Admin Display Access</h2></div>
-      <p class="hint">Select employees who should work only inside Frank's display. They will not have a separate display in Frank's dropdown. Anyone not selected works inside their own personal display, which Frank can open from his dropdown.</p>
+      <p class="hint">Frank and Jenn manage the shared firm view. Selected employees work in that shared view and retain Compliance access. Anyone not selected works in a personal view; Frank and Jenn can review it with the Employee filters on Contacts, Tasks, and Calendar.</p>
       <div class="field">
         <label>Employees using Frank's display</label>
         <div id="workspace-member-checks" style="display:flex; gap:var(--sp-3); flex-wrap:wrap; min-height:40px; align-items:center;"></div>
@@ -278,15 +278,15 @@
     }
   });
 
-  // ---------- Admin display access (Frank only) ----------
+  // ---------- Admin display access (Frank and Jenn) ----------
   let workspaceAccessData = null;
 
   function renderWorkspaceMembers() {
     if (!workspaceAccessData) return;
-    const owner = workspaceAccessData.you;
+    const owner = workspaceAccessData.sharedOwner;
     const selected = new Set((workspaceAccessData.grants && workspaceAccessData.grants[owner]) || []);
     document.getElementById('workspace-member-checks').innerHTML = (workspaceAccessData.admins || [])
-      .filter((a) => a.email !== owner)
+      .filter((a) => !a.supervisor)
       .map((a) => `<label class="hint" style="display:inline-flex; align-items:center; gap:6px;">
         <input type="checkbox" class="workspace-member-check" value="${escapeHtml(a.email)}"${selected.has(a.email) ? ' checked' : ''} />
         ${escapeHtml(a.name || staffLabel(a.email))}
@@ -311,7 +311,7 @@
   }
 
   document.getElementById('workspace-access-save').addEventListener('click', async () => {
-    const owner = workspaceAccessData.you;
+    const owner = workspaceAccessData.sharedOwner;
     const members = Array.from(document.querySelectorAll('.workspace-member-check:checked')).map((el) => el.value);
     const status = document.getElementById('workspace-access-status');
     status.textContent = 'Saving…';

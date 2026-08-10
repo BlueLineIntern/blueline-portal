@@ -22,6 +22,7 @@ if (!SESSION) {
 }
 
 const ADMIN_WORKSPACE_KEY = `blueline_admin_workspace:${(SESSION && SESSION.email) || ''}`;
+const EMPLOYEE_FILTER_PAGES = new Set(['contacts', 'operations', 'calendar']);
 let ACTIVE_ADMIN_WORKSPACE = (() => {
   try { return localStorage.getItem(ADMIN_WORKSPACE_KEY) || (SESSION && SESSION.email) || ''; }
   catch { return (SESSION && SESSION.email) || ''; }
@@ -573,20 +574,22 @@ function recentSidebarHtml() {
 function initShell(activePage) {
   const root = document.getElementById('sidebar-root');
   if (!root || !SESSION) return;
+  if (EMPLOYEE_FILTER_PAGES.has(activePage)) {
+    try {
+      const savedFilter = localStorage.getItem(`${ADMIN_WORKSPACE_KEY}:${activePage}`);
+      if (savedFilter) ACTIVE_ADMIN_WORKSPACE = savedFilter;
+    } catch { /* use the base workspace */ }
+  }
   root.innerHTML = `
     <div class="sidebar-brand">
       <a href="/admin/"><img src="/assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" /></a>
-    </div>
-    <div class="sidebar-workspace hidden" id="sidebar-workspace">
-      <label for="workspace-select">Admin display</label>
-      <select id="workspace-select" aria-label="Admin display"></select>
     </div>
     <div class="sidebar-search">
       <button type="button" id="shell-search-btn"><span class="nav-icon">${icon('search')}</span>Search<span class="kbd">Ctrl K</span></button>
     </div>
     <nav class="sidebar-nav">
       ${NAV_ITEMS.map((n) =>
-        `<a href="${n.href}" class="${n.id === activePage ? 'active' : ''}"><span class="nav-icon">${icon(n.icon)}</span>${n.label}</a>`
+        `<a href="${n.href}" data-nav-id="${n.id}" class="${n.id === activePage ? 'active' : ''}${n.id === 'compliance' ? ' hidden' : ''}"><span class="nav-icon">${icon(n.icon)}</span>${n.label}</a>`
       ).join('')}
     </nav>
     ${recentSidebarHtml()}
@@ -618,48 +621,78 @@ function initShell(activePage) {
     }
   });
   document.getElementById('shell-notif-btn').addEventListener('click', toggleNotifPanel);
-  loadWorkspaceSwitcher();
+  loadWorkspaceContext(activePage);
   refreshNotifications(); // badge appears once loaded; fire-and-forget
 }
 
-async function loadWorkspaceSwitcher() {
-  const wrap = document.getElementById('sidebar-workspace');
-  const select = document.getElementById('workspace-select');
-  if (!wrap || !select) return;
+async function loadWorkspaceContext(activePage) {
   try {
     const data = await api('/api/admin/workspaces');
     const workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
     const allowed = workspaces.map((w) => w.owner);
-    if (!allowed.includes(ACTIVE_ADMIN_WORKSPACE)) {
-      ACTIVE_ADMIN_WORKSPACE = data.active || SESSION.email;
+    const sharedOwner = data.sharedOwner || 'fsabin@blueline-advisors.com';
+    const filterPage = EMPLOYEE_FILTER_PAGES.has(activePage);
+    let desired = allowed.includes(ACTIVE_ADMIN_WORKSPACE) ? ACTIVE_ADMIN_WORKSPACE : (data.active || allowed[0]);
+
+    // Supervisors use employee filters only on the three operational pages.
+    // Every other page stays in the shared firm view. Regular employees always
+    // use their single server-assigned workspace.
+    if (data.boss && filterPage) {
+      let savedFilter = '';
+      try { savedFilter = localStorage.getItem(`${ADMIN_WORKSPACE_KEY}:${activePage}`) || ''; } catch {}
+      desired = allowed.includes(savedFilter) ? savedFilter : sharedOwner;
+    }
+    if (data.boss && !filterPage) desired = sharedOwner;
+    if (!data.boss) desired = allowed[0];
+
+    if (ACTIVE_ADMIN_WORKSPACE !== desired) {
+      ACTIVE_ADMIN_WORKSPACE = desired;
       localStorage.setItem(ADMIN_WORKSPACE_KEY, ACTIVE_ADMIN_WORKSPACE);
       location.reload();
       return;
     }
-    // Employees are intentionally assigned to exactly one display server-side,
-    // so showing them a one-option selector is misleading. Frank alone gets the
-    // navigation control because he is the only account allowed to oversee and
-    // move between every employee's personal display.
-    if (!data.boss) {
-      wrap.remove();
+
+    localStorage.setItem(ADMIN_WORKSPACE_KEY, desired);
+    const complianceLink = document.querySelector('[data-nav-id="compliance"]');
+    const hasSharedCompliance = data.boss || desired === sharedOwner;
+    if (complianceLink && hasSharedCompliance) complianceLink.classList.remove('hidden');
+    if (complianceLink && !hasSharedCompliance) complianceLink.remove();
+    if (data.boss) {
+      // Leaving a filtered operational page for Home, Compliance, Learning, or
+      // Settings returns supervisors to the shared firm context immediately,
+      // avoiding a transient forbidden request before the destination reloads.
+      document.querySelectorAll('[data-nav-id]').forEach((link) => {
+        if (EMPLOYEE_FILTER_PAGES.has(link.dataset.navId)) return;
+        link.addEventListener('click', () => localStorage.setItem(ADMIN_WORKSPACE_KEY, sharedOwner));
+      });
+    }
+    if (activePage === 'compliance' && !hasSharedCompliance) {
+      location.replace('/admin/');
       return;
     }
-    wrap.classList.remove('hidden');
-    select.innerHTML = workspaces.map((w) =>
-      `<option value="${escapeHtml(w.owner)}">${escapeHtml(w.name)}${w.own ? ' (mine)' : ''}</option>`
-    ).join('');
-    select.value = ACTIVE_ADMIN_WORKSPACE;
-    wrap.classList.add('workspace-boss');
-    select.addEventListener('change', () => {
-      ACTIVE_ADMIN_WORKSPACE = select.value;
-      localStorage.setItem(ADMIN_WORKSPACE_KEY, ACTIVE_ADMIN_WORKSPACE);
-      // Recently viewed contains client names, so it cannot cross workspace
-      // boundaries on the same browser.
-      localStorage.removeItem('blueline_recent_contacts');
-      location.reload();
-    });
+
+    if (data.boss && filterPage) {
+      const pageHead = document.querySelector('.page-head');
+      if (!pageHead) return;
+      const filter = document.createElement('label');
+      filter.className = 'admin-employee-filter';
+      filter.innerHTML = `<span>Employee</span><select aria-label="Filter by employee">${workspaces.map((w) =>
+        `<option value="${escapeHtml(w.owner)}">${escapeHtml(w.name)}${w.owner === sharedOwner ? ' (shared)' : ''}</option>`
+      ).join('')}</select>`;
+      const select = filter.querySelector('select');
+      select.value = desired;
+      select.addEventListener('change', () => {
+        ACTIVE_ADMIN_WORKSPACE = select.value;
+        localStorage.setItem(`${ADMIN_WORKSPACE_KEY}:${activePage}`, ACTIVE_ADMIN_WORKSPACE);
+        localStorage.setItem(ADMIN_WORKSPACE_KEY, ACTIVE_ADMIN_WORKSPACE);
+        localStorage.removeItem('blueline_recent_contacts');
+        location.reload();
+      });
+      const actions = pageHead.querySelector('.page-actions');
+      (actions || pageHead).prepend(filter);
+    }
   } catch (err) {
-    wrap.innerHTML = '<span class="workspace-error">Workspace unavailable</span>';
+    console.error('Could not load admin workspace context:', err);
   }
 }
 
