@@ -1549,29 +1549,105 @@ async function handleGetHousehold(request, env, cors) {
   }, 200, cors);
 }
 
-// Every member's assessments, keyed by member email, so the portal can show a
-// spouse's completed work rather than only the caller's. `you` names which set
-// belongs to the caller.
+// ---------- Shared vs personal assessments ----------
+// A household shares ONE copy of most assessments: a couple has one budget, one
+// net worth, one estate checklist, and making each spouse retype them was the
+// whole complaint. Those live in a single household record.
 //
-// NOT merged into one shared set on purpose: two people cannot both answer "my
-// risk tolerance" in a single record — the second save would overwrite the
-// first, losing that answer outright — and one blended risk profile per
-// household leaves no per-client suitability record. Sharing here means "see and
-// edit each other's", not "overwrite each other's".
+// These four do NOT share, because they describe a person rather than a
+// household — and because a shared copy means whoever saves second erases the
+// other's answers outright. Each member keeps their own, which is also what
+// leaves a per-client suitability record rather than one blended profile:
+const PERSONAL_ASSESSMENTS = new Set([
+  'risk',         // Risk Tolerance & Investor Profile
+  'riskcapacity', // Risk Capacity Analysis
+  'behavior',     // Investor Behavior Profile
+  'knowledge',    // Investment Knowledge & Experience
+]);
+const isPersonalAssessment = (key) => PERSONAL_ASSESSMENTS.has(key);
+const hhResponsesKey = (id) => `hhresponses:${id}`;
+
+// Splits a stored module map into the shared and personal halves.
+function splitModules(all) {
+  const shared = {};
+  const personal = {};
+  for (const k of Object.keys(all || {})) {
+    if (isPersonalAssessment(k)) personal[k] = all[k];
+    else shared[k] = all[k];
+  }
+  return { shared, personal };
+}
+
+// The shared half for a household, with a migration fallback.
+//
+// Shared answers used to live in each member's own responses:<email> record.
+// Reading only the household blob would make every one of them look unanswered
+// the moment this shipped, so anything missing from the blob is recovered from
+// the members' own records, newest wins. The next save of that module writes it
+// to the household blob and the fallback stops mattering for it.
+async function loadSharedModules(env, household, members) {
+  const shared = await loadModules(env, await env.PORTAL_KV.get(hhResponsesKey(household.id)));
+  for (const m of members) {
+    let mine;
+    try {
+      mine = await loadModules(env, await env.PORTAL_KV.get(`responses:${m}`));
+    } catch {
+      continue; // one unreadable member record must not sink the whole read
+    }
+    for (const [k, v] of Object.entries(mine)) {
+      if (isPersonalAssessment(k)) continue;
+      const have = shared[k];
+      if (!have) { shared[k] = v; continue; }
+      // Both exist — keep whichever was updated last.
+      if (String(v && v.updatedAt || '') > String(have.updatedAt || '')) shared[k] = v;
+    }
+  }
+  return shared;
+}
+
+// { shared, personal, members, household } for one client. Personal is only ever
+// that client's own; shared is the household's (or their own, when they are in
+// no household and there is nothing to share with).
+async function loadAssessmentsFor(env, email) {
+  const { members, household } = await householdPortalMembers(env, email);
+  const own = await loadModules(env, await env.PORTAL_KV.get(`responses:${email}`));
+  const { shared: ownShared, personal } = splitModules(own);
+  if (!household) return { shared: ownShared, personal, members, household: null };
+  return { shared: await loadSharedModules(env, household, members), personal, members, household };
+}
+
+// One flat map, the shape every existing consumer expects (the client's form
+// populators, the advisor's result renderers). Personal wins on key collision,
+// though the two sets are disjoint by construction.
+async function effectiveModulesFor(env, email) {
+  const { shared, personal } = await loadAssessmentsFor(env, email);
+  return { ...shared, ...personal };
+}
+
+// The household's shared assessments plus every member's personal ones, so the
+// portal can show a spouse's risk profile alongside the shared work.
 async function handleGetAssessments(request, env, cors) {
   const email = await getSessionEmail(request, env);
   if (!email) return json({ error: 'Not authenticated' }, 401, cors);
 
-  const { members } = await householdPortalMembers(env, email);
-  const byMember = {};
+  const { shared, members, household } = await loadAssessmentsFor(env, email);
+  const personalByMember = {};
   for (const m of members) {
-    byMember[m] = await loadModules(env, await env.PORTAL_KV.get(`responses:${m}`));
+    try {
+      personalByMember[m] = splitModules(await loadModules(env, await env.PORTAL_KV.get(`responses:${m}`))).personal;
+    } catch {
+      personalByMember[m] = {};
+    }
   }
   return json({
-    // `modules` stays the caller's own set so anything reading the old shape
-    // keeps working; `byMember` is what the shared portal renders from.
-    modules: byMember[email] || {},
-    byMember,
+    // `modules` keeps the old flat shape (this caller's effective set) so
+    // anything still reading it behaves; shared/personalByMember are what the
+    // portal renders from.
+    modules: { ...shared, ...(personalByMember[email] || {}) },
+    shared,
+    personalByMember,
+    personalKeys: [...PERSONAL_ASSESSMENTS],
+    householdId: (household && household.id) || '',
     you: email,
   }, 200, cors);
 }
@@ -1594,15 +1670,15 @@ async function handleSaveAssessment(request, env, cors, moduleName) {
   const result = validator(body);
   if (result.error) return json({ error: result.error }, 400, cors);
 
-  // Which member's assessment this is. A shared household portal lets one member
-  // open another's, so the save has to land on the ORIGINAL owner's record —
-  // writing it to the caller instead would fork a second copy and leave the
-  // spouse's own answers untouched and stale.
+  // Which member's assessment this is, for the PERSONAL ones only. A shared
+  // household portal lets one member open another's risk profile, so that save
+  // has to land on the ORIGINAL owner's record — writing it to the caller
+  // instead would fork a second copy and leave the spouse's own answers stale.
   //
   // Validated against the caller's household, NOT taken on trust: without this
   // check `owner` would let any authenticated client write assessment answers
   // into any other client's record by naming their address.
-  const { members } = await householdPortalMembers(env, email);
+  const { members, household } = await householdPortalMembers(env, email);
   const requested = String((body && body.owner) || '').trim().toLowerCase();
   let owner = email;
   if (requested && requested !== email) {
@@ -1612,36 +1688,65 @@ async function handleSaveAssessment(request, env, cors, moduleName) {
     owner = requested;
   }
 
-  const raw = await env.PORTAL_KV.get(`responses:${owner}`);
-  const modules = await loadModules(env, raw);
+  // Where this module lives. A shared module goes to the ONE household record —
+  // `owner` is meaningless for it, since there is only one copy and every member
+  // edits that. A personal module goes to its owner's own record. A client in no
+  // household keeps everything in their own record, exactly as before.
+  const shared = !isPersonalAssessment(moduleName) && !!household;
+  const storeKey = shared ? hhResponsesKey(household.id) : `responses:${owner}`;
+  // For a shared module the pre-change answer may still be sitting in a member's
+  // own record, so read through the same fallback the GET uses. Otherwise the
+  // first save after this shipped would report firstCompletion and re-open a
+  // review task for something the client already finished.
+  const modules = shared
+    ? await loadSharedModules(env, household, members)
+    : await loadModules(env, await env.PORTAL_KV.get(storeKey));
   const firstCompletion = !modules[moduleName];
   modules[moduleName] = { ...result.data, updatedAt: new Date().toISOString() };
 
-  await env.PORTAL_KV.put(`responses:${owner}`, await encryptJSON(env, { modules }));
+  if (shared) {
+    // Only the shared half belongs in the household record; a member's personal
+    // answers recovered by the fallback must not be copied into it.
+    await env.PORTAL_KV.put(storeKey, await encryptJSON(env, { modules: splitModules(modules).shared }));
+  } else {
+    await env.PORTAL_KV.put(storeKey, await encryptJSON(env, { modules }));
+  }
 
   // CRM history + automation: record the event, and the FIRST completion of a
   // module opens a review task for the advisor (deduped by marker, so
   // re-saves/edits never pile up duplicates). Logged against the OWNER, so the
   // advisor's timeline shows whose assessment changed, with `by` naming who
   // actually filled it in when that was a different member.
-  await logTimeline(env, owner, firstCompletion ? 'assessment-completed' : 'assessment-updated', 'client', {
+  // A shared module has no owner, so it is attributed to whoever actually filled
+  // it in. A personal one is attributed to its owner, with filledInBy naming the
+  // member who typed it when that was someone else.
+  const attributedTo = shared ? email : owner;
+  await logTimeline(env, attributedTo, firstCompletion ? 'assessment-completed' : 'assessment-updated', 'client', {
     module: moduleName,
-    ...(owner !== email ? { filledInBy: email } : {}),
+    ...(shared ? { household: true } : {}),
+    ...(!shared && owner !== email ? { filledInBy: email } : {}),
   });
   if (firstCompletion) {
-    // Keyed to the OWNER, not the caller: the advisor is reviewing that member's
-    // assessment, and using the caller here would open the task against the
-    // wrong client whenever one member completed another's.
-    await maybeAutoTask(env, `review-assessment-${moduleName}`, owner, {
-      title: `Review ${moduleName} assessment - ${owner}`,
-      description: `The ${moduleName} assessment was completed for this client`
-        + `${owner !== email ? ` by ${email}` : ''}. Review their responses.`,
+    // Keyed to whoever it is attributed to, not blindly to the caller: for a
+    // personal module the advisor is reviewing THAT member's assessment, and
+    // using the caller would open the task against the wrong client whenever one
+    // member completed another's.
+    await maybeAutoTask(env, `review-assessment-${moduleName}`, attributedTo, {
+      title: `Review ${moduleName} assessment - ${attributedTo}`,
+      description: `The ${moduleName} assessment was completed`
+        + `${shared ? ' for this household' : ' for this client'}`
+        + `${!shared && owner !== email ? ` by ${email}` : ''}. Review their responses.`,
       category: 'review',
     });
   }
-  // `owner` comes back so a shared portal knows which member's set to patch
-  // rather than assuming it was the caller's.
-  return json({ module: modules[moduleName], modules, owner }, 200, cors);
+  // `owner`/`shared` come back so the portal knows whether to patch the household
+  // copy or one member's, instead of assuming it was the caller's.
+  return json({
+    module: modules[moduleName],
+    modules: await effectiveModulesFor(env, email),
+    owner: shared ? '' : owner,
+    shared,
+  }, 200, cors);
 }
 
 // ---------- Module assignments ----------
@@ -3805,7 +3910,11 @@ async function buildContactList(env) {
     entry.hasAccount = true;
     if (!entry.name) entry.name = user.name || '';
     try {
-      entry.modules = await loadModules(env, await env.PORTAL_KV.get(`responses:${email}`));
+      // Through effectiveModulesFor, NOT responses:<email> directly: most
+      // assessments now live in a shared household record, and reading the
+      // client's own key alone would show every one of them as "Not started" to
+      // the advisor for anyone in a household.
+      entry.modules = await effectiveModulesFor(env, email);
     } catch {
       entry.modulesError = true;
     }
@@ -6172,7 +6281,6 @@ async function handleAdminClients(request, env, cors) {
     for (const key of page.keys) {
       const email = key.name.slice('user:'.length);
       const userRaw = await env.PORTAL_KV.get(key.name);
-      const responsesRaw = await env.PORTAL_KV.get(`responses:${email}`);
       const assignmentsRaw = await env.PORTAL_KV.get(`assignments:${email}`);
       if (!userRaw) continue;
       const user = JSON.parse(userRaw);
@@ -6181,7 +6289,10 @@ async function handleAdminClients(request, env, cors) {
       let modules = {};
       let modulesError = false;
       try {
-        modules = await loadModules(env, responsesRaw);
+        // Same reason as buildContactList: shared assessments live in the
+        // household record, so reading responses:<email> alone would report them
+        // as never started for every client in a household.
+        modules = await effectiveModulesFor(env, email);
       } catch {
         modulesError = true;
       }

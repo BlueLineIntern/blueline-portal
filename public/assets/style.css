@@ -258,6 +258,23 @@ body {
   margin-bottom: var(--sp-5);
 }
 .member-switch-label { font-size: var(--fs-sm); color: var(--text-muted); }
+.member-switch-note { font-size: var(--fs-xs); color: var(--text-muted); }
+
+/* Whether a module is the household's shared copy or this member's own. Neutral
+   by default; the "yours only" variant gets a tint so the exception stands out
+   from the twelve shared ones rather than blending in. */
+.module-scope {
+  display: inline-block;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  background: var(--gray-bg);
+  color: var(--muted);
+  border-radius: var(--radius-pill);
+  padding: 1px var(--sp-2);
+  margin-bottom: var(--sp-2);
+  white-space: nowrap;
+}
+.module-scope-own { background: var(--sky-bg); color: var(--sky-dark); }
 .member-switch-btns { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
 .member-btn {
   display: inline-flex;

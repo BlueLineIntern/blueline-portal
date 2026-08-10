@@ -140,9 +140,19 @@ let assignedKeys = null;
 // Assessments are per-member rather than merged: two people can't both answer
 // "my risk tolerance" in one record without the second save wiping the first.
 let household = { shared: false, householdName: "", you: "", members: [] };
-let modulesByMember = {};
 let assignmentsByMember = {};
 let viewingMember = "";
+
+// Most assessments are ONE household copy (a couple has one budget, one net
+// worth). These four stay per-person, because they describe a person and because
+// a shared copy would mean whoever saves second erases the other's answers.
+// Server-authoritative — PERSONAL_ASSESSMENTS in worker.js decides, this is the
+// fallback for an older worker that doesn't send the list.
+let personalKeys = new Set(["risk", "riskcapacity", "behavior", "knowledge"]);
+const isPersonalModule = (key) => personalKeys.has(key);
+
+let sharedModules = {};      // the household's one copy
+let personalByMember = {};   // per member, personal modules only
 
 function isAssigned(key) {
   // Anything that isn't an array is treated as "no assignment record", i.e.
@@ -180,9 +190,24 @@ async function refreshState() {
     ? hh
     : { shared: false, householdName: "", you, members: [{ email: you, name: "You", role: "" }] };
 
-  // Per-member maps, with the caller's own set as the fallback so an older
-  // worker that returns only `modules`/`assignments` still works.
-  modulesByMember = assessments.byMember || { [you]: assessments.modules || {} };
+  // Shared household copy + per-member personal sets. Falls back to treating the
+  // caller's flat `modules` as shared, so an older worker still renders.
+  if (Array.isArray(assessments.personalKeys) && assessments.personalKeys.length) {
+    personalKeys = new Set(assessments.personalKeys);
+  }
+  if (assessments.shared || assessments.personalByMember) {
+    sharedModules = assessments.shared || {};
+    personalByMember = assessments.personalByMember || {};
+  } else {
+    const flat = assessments.modules || {};
+    sharedModules = {};
+    const mine = {};
+    for (const k of Object.keys(flat)) {
+      if (isPersonalModule(k)) mine[k] = flat[k];
+      else sharedModules[k] = flat[k];
+    }
+    personalByMember = { [you]: mine };
+  }
   assignmentsByMember = assignments.byMember || { [you]: assignments.assignments };
 
   // Keep looking at whoever was selected, unless they've left the household.
@@ -195,7 +220,11 @@ async function refreshState() {
 // populators) works unchanged — switching member just repoints them.
 function setViewingMember(email) {
   viewingMember = email;
-  currentModules = modulesByMember[email] || {};
+  // The household's shared copy plus THIS member's personal answers, flattened.
+  // Every existing consumer (the FPA grid, the category grids, the form
+  // populators, moduleCardHtml) reads currentModules and needs no idea that the
+  // two halves come from different records.
+  currentModules = { ...sharedModules, ...(personalByMember[email] || {}) };
   assignedKeys = Object.prototype.hasOwnProperty.call(assignmentsByMember, email)
     ? assignmentsByMember[email]
     : null;
@@ -293,20 +322,39 @@ function assessmentTotals() {
   // No household data yet (first paint, or a failed /api/household): fall back
   // to the member on screen so Home renders something truthful rather than zero.
   const scope = members.length ? members : [viewingMember || household.you || ""];
+  const assignedTo = (m) => (Object.prototype.hasOwnProperty.call(assignmentsByMember, m)
+    ? assignmentsByMember[m]
+    : (m === viewingMember ? assignedKeys : null));
+  // A non-array assignment record means "no record" = everything visible, the
+  // same rule isAssigned uses.
+  const isAssignedTo = (m, key) => {
+    const asg = assignedTo(m);
+    return !Array.isArray(asg) || asg.includes(key);
+  };
+
   let done = 0;
   let total = 0;
+
+  // Shared modules are ONE household copy, so they count once — counting them
+  // per member would have made a two-person household read "2 of 34" when there
+  // are really 13 shared slots plus 4 personal each. Available if ANY member is
+  // assigned it, matching the union the server returns.
+  for (const mod of all) {
+    if (isPersonalModule(mod.key)) continue;
+    if (!scope.some((m) => isAssignedTo(m, mod.key))) continue;
+    total += 1;
+    if (sharedModules[mod.key]) done += 1;
+  }
+
+  // Personal modules count once per member, since each has their own.
   const perMember = [];
   for (const m of scope) {
-    const asg = Object.prototype.hasOwnProperty.call(assignmentsByMember, m)
-      ? assignmentsByMember[m]
-      : (m === viewingMember ? assignedKeys : null);
-    const answered = modulesByMember[m] || (m === viewingMember ? currentModules : {}) || {};
+    const answered = personalByMember[m] || {};
     let mDone = 0;
     let mTotal = 0;
     for (const mod of all) {
-      // A non-array assignment record means "no record" = everything visible,
-      // the same rule isAssigned uses.
-      if (Array.isArray(asg) && !asg.includes(mod.key)) continue;
+      if (!isPersonalModule(mod.key)) continue;
+      if (!isAssignedTo(m, mod.key)) continue;
       mTotal += 1;
       if (answered[mod.key]) mDone += 1;
     }
@@ -821,9 +869,12 @@ function renderMemberSwitch() {
   const wrap = document.getElementById("member-switch");
   if (!household.shared) { wrap.classList.add("hidden"); return; }
   wrap.classList.remove("hidden");
+  // The count is that member's PERSONAL assessments only — the switcher has no
+  // effect on the shared ones, so including those would make every member show
+  // the same number and imply the switch did nothing.
   document.getElementById("member-switch-btns").innerHTML = household.members
     .map((m) => {
-      const done = Object.keys(modulesByMember[m.email] || {}).length;
+      const done = Object.keys(personalByMember[m.email] || {}).length;
       return `<button type="button" class="member-btn${m.email === viewingMember ? " active" : ""}"
         data-member="${escapeHtml(m.email)}">${escapeHtml(isYou(m.email) ? "You" : m.name)}
         <span class="member-btn-count">${done}</span></button>`;
@@ -848,11 +899,15 @@ function renderMemberSwitch() {
 // can see that's what they're doing.
 function renderAssignmentsHeader() {
   const own = !household.shared || viewingMember === household.you;
-  document.getElementById("assignments-title").textContent =
-    own ? "Your Assessments" : `${memberName(viewingMember)}'s Assessments`;
-  document.getElementById("assignments-subtitle").textContent = own
+  document.getElementById("assignments-title").textContent = "Your Assessments";
+  // Only the four risk/investor-profile assessments follow the switcher, so the
+  // old "you're viewing X's assessments" wording overstated it — most of this
+  // page is the household's shared copy regardless of who is selected.
+  document.getElementById("assignments-subtitle").textContent = !household.shared
     ? "The assessments and workflows your advisor has assigned to you."
-    : `You're viewing ${memberName(viewingMember)}'s assessments. Anything you submit is saved as theirs.`;
+    : own
+      ? "Most assessments are shared with your household. The risk assessments below are yours alone."
+      : `Most assessments are shared with your household. The risk assessments below are ${memberName(viewingMember)}'s — anything you submit there saves as theirs.`;
 }
 
 document.getElementById("home-open-fpa").addEventListener("click", () => loadDashboard());
@@ -867,6 +922,14 @@ let currentModules = {};
 // Results and charts are intentionally not shown to clients — the advisor
 // walks through them in person (printable from the admin detail view).
 function moduleCardHtml(mod, index, data) {
+  // Says out loud that a household member can see and edit this one. Without it
+  // a client has no way to tell the shared copy from their own — which matters
+  // most for the ones they'd assume were private.
+  const scopeTag = household.shared
+    ? (isPersonalModule(mod.key)
+        ? '<span class="module-scope module-scope-own">Yours only</span>'
+        : '<span class="module-scope">Shared with household</span>')
+    : "";
   if (!data) {
     return `
       <div class="card module-card module-card-empty">
@@ -875,6 +938,7 @@ function moduleCardHtml(mod, index, data) {
           <h2>${escapeHtml(mod.title)}</h2>
           <span class="status-badge status-pending">Not started</span>
         </div>
+        ${scopeTag}
         <p class="module-description">${escapeHtml(mod.description)}</p>
         <button class="btn btn-primary module-start-btn" data-module="${mod.key}">Start Assessment</button>
       </div>`;
@@ -886,6 +950,7 @@ function moduleCardHtml(mod, index, data) {
         <h2>${escapeHtml(mod.title)}</h2>
         <span class="status-badge status-done">Completed</span>
       </div>
+      ${scopeTag}
       <p class="module-description">Thank you — your responses have been submitted. Your advisor will review your results with you.</p>
       <div class="module-card-footer">
         <span class="updated-at-inline">Submitted ${data.updatedAt ? new Date(data.updatedAt).toLocaleDateString() : ""}</span>
@@ -1132,11 +1197,18 @@ async function saveModule(key, payload, errorElId) {
       body: { ...payload, owner: viewingMember || undefined },
       auth: true,
     });
-    // Patch the map for whoever the server says it saved, then repoint the
-    // derived view — otherwise the switcher's counts and the grid would keep
-    // showing pre-save state until the next full refresh.
-    const savedFor = data.owner || viewingMember;
-    if (savedFor) modulesByMember[savedFor] = data.modules || modulesByMember[savedFor] || {};
+    // Patch the half the server actually wrote, then repoint the derived view —
+    // otherwise the switcher's counts and the grid keep showing pre-save state
+    // until the next full refresh. `data.shared` is authoritative: the server
+    // decides which store a module belongs in, not the client.
+    if (data.shared) {
+      sharedModules[key] = data.module;
+    } else {
+      const savedFor = data.owner || viewingMember;
+      if (savedFor) {
+        personalByMember[savedFor] = { ...(personalByMember[savedFor] || {}), [key]: data.module };
+      }
+    }
     setViewingMember(viewingMember);
     if (household.shared) renderMemberSwitch();
     const catMod = CATEGORY_MODULES.find((mod) => mod.key === key);

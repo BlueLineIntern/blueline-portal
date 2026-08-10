@@ -10,6 +10,10 @@ $port = 8787
 $users = @{}
 $sessions = @{}
 $responses = @{}
+# Shared household assessments, keyed by household id. The worker stores these
+# encrypted under hhresponses:<id>; only the four personal ones stay in
+# $responses per member. See $personalAssessments.
+$hhResponses = @{}
 $assignments = @{}  # email -> array of assigned module keys ($null / absent = all visible)
 $onboardings = @{}
 $onbSecrets = @{}
@@ -290,6 +294,60 @@ function Get-HouseholdRecord($email) {
         @{ Expression = { [string]$_.id } })
     if ($fam.Count) { return $fam[0] }
     return $null
+}
+
+# Mirror of PERSONAL_ASSESSMENTS in worker.js. A household shares ONE copy of
+# every other assessment (one budget, one net worth); these four describe a
+# person, and a shared copy would mean whoever saves second erases the other's.
+$personalAssessments = @('risk', 'riskcapacity', 'behavior', 'knowledge')
+function Test-PersonalAssessment($key) { return $personalAssessments -contains ([string]$key) }
+
+# Shared half of a household's assessments, with the same migration fallback the
+# worker uses: anything not yet in the household record is recovered from the
+# members' own records (newest wins), so answers saved before the split don't
+# look unanswered.
+function Get-SharedModules($email) {
+    $hh = Get-HouseholdRecord $email
+    $out = @{}
+    if (-not $hh) { return $out }
+    if ($hhResponses.ContainsKey($hh.id)) {
+        foreach ($k in $hhResponses[$hh.id].Keys) { $out[$k] = $hhResponses[$hh.id][$k] }
+    }
+    foreach ($m in (Get-HouseholdMembers $email)) {
+        if (-not $responses.ContainsKey($m)) { continue }
+        foreach ($k in @($responses[$m].Keys)) {
+            if (Test-PersonalAssessment $k) { continue }
+            $cand = $responses[$m][$k]
+            if (-not $out.ContainsKey($k)) { $out[$k] = $cand; continue }
+            if ([string]$cand.updatedAt -gt [string]$out[$k].updatedAt) { $out[$k] = $cand }
+        }
+    }
+    return $out
+}
+
+# This member's personal assessments only.
+function Get-PersonalModules($email) {
+    $out = @{}
+    if ($responses.ContainsKey($email)) {
+        foreach ($k in @($responses[$email].Keys)) {
+            if (Test-PersonalAssessment $k) { $out[$k] = $responses[$email][$k] }
+        }
+    }
+    return $out
+}
+
+# One flat map, the shape the advisor views expect: shared + this client's own.
+function Get-EffectiveModules($email) {
+    $out = @{}
+    $hh = Get-HouseholdRecord $email
+    if ($hh) {
+        foreach ($kv in (Get-SharedModules $email).GetEnumerator()) { $out[$kv.Key] = $kv.Value }
+    } elseif ($responses.ContainsKey($email)) {
+        # No household: everything lives in their own record, as before.
+        foreach ($k in @($responses[$email].Keys)) { $out[$k] = $responses[$email][$k] }
+    }
+    foreach ($kv in (Get-PersonalModules $email).GetEnumerator()) { $out[$kv.Key] = $kv.Value }
+    return $out
 }
 
 function Get-MemberName($email) {
@@ -1769,7 +1827,10 @@ while ($listener.IsListening) {
                 }
                 $entry.hasAccount = $true
                 if (-not $entry.name) { $entry.name = $u.name }
-                $entry.modules = if ($responses.ContainsKey($u.email)) { $responses[$u.email] } else { @{} }
+                # Effective (shared + personal), not the raw per-member record:
+                # most assessments live in the household copy now, and reading
+                # only $responses would show them as never started to the advisor.
+                $entry.modules = Get-EffectiveModules $u.email
                 $entry.assignments = if ($assignments.ContainsKey($u.email)) { @($assignments[$u.email]) } else { $null }
                 $merged[$u.email] = $entry
             }
@@ -2035,14 +2096,21 @@ while ($listener.IsListening) {
             $email = Get-SessionEmail $ctx
             if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
             if (-not $responses.ContainsKey($email)) { $responses[$email] = @{} }
-            # Every household member's set, keyed by member — NOT merged. Two
-            # people can't both answer "my risk tolerance" in one record.
-            $byMember = [ordered]@{}
+            # The household's ONE shared copy, plus each member's personal four.
+            $sharedMods = Get-SharedModules $email
+            $personalBy = [ordered]@{}
             foreach ($m in (Get-HouseholdMembers $email)) {
-                if (-not $responses.ContainsKey($m)) { $responses[$m] = @{} }
-                $byMember[$m] = $responses[$m]
+                $personalBy[$m] = Get-PersonalModules $m
             }
-            Send-Json $ctx 200 @{ modules = $responses[$email]; byMember = $byMember; you = $email }
+            $hhRec = Get-HouseholdRecord $email
+            Send-Json $ctx 200 @{
+                modules = (Get-EffectiveModules $email)
+                shared = $sharedMods
+                personalByMember = $personalBy
+                personalKeys = $personalAssessments
+                householdId = if ($hhRec) { [string]$hhRec.id } else { '' }
+                you = $email
+            }
         }
         elseif ($path -eq '/api/household' -and $method -eq 'GET') {
             $email = Get-SessionEmail $ctx
@@ -2083,21 +2151,46 @@ while ($listener.IsListening) {
                 $owner = $wanted
             }
             $module['updatedAt'] = (Get-Date).ToString('o')
-            if (-not $responses.ContainsKey($owner)) { $responses[$owner] = @{} }
-            $firstCompletion = -not $responses[$owner].ContainsKey($moduleName)
-            $responses[$owner][$moduleName] = $module
+            # Where it lives: a shared module goes to the ONE household record
+            # (owner is meaningless there - every member edits that same copy);
+            # a personal module goes to its owner's own record. No household
+            # means everything stays in their own record, as before.
+            $hhRec = Get-HouseholdRecord $email
+            $isShared = (-not (Test-PersonalAssessment $moduleName)) -and $null -ne $hhRec
+            if ($isShared) {
+                # Read through the fallback so a pre-split answer already sitting
+                # in a member's own record isn't treated as a first completion
+                # (which would re-open a review task for finished work).
+                $existing = Get-SharedModules $email
+                $firstCompletion = -not $existing.ContainsKey($moduleName)
+                if (-not $hhResponses.ContainsKey($hhRec.id)) { $hhResponses[$hhRec.id] = @{} }
+                $hhResponses[$hhRec.id][$moduleName] = $module
+            } else {
+                if (-not $responses.ContainsKey($owner)) { $responses[$owner] = @{} }
+                $firstCompletion = -not $responses[$owner].ContainsKey($moduleName)
+                $responses[$owner][$moduleName] = $module
+            }
+            # A shared module is attributed to whoever filled it in; a personal
+            # one to its owner.
+            $attributedTo = if ($isShared) { $email } else { $owner }
             $evt = if ($firstCompletion) { 'assessment-completed' } else { 'assessment-updated' }
             $detail = @{ module = $moduleName }
-            if ($owner -ne $email) { $detail['filledInBy'] = $email }
-            Write-Timeline $owner $evt 'client' $detail
+            if ($isShared) { $detail['household'] = $true }
+            elseif ($owner -ne $email) { $detail['filledInBy'] = $email }
+            Write-Timeline $attributedTo $evt 'client' $detail
             if ($firstCompletion) {
-                Invoke-AutoTask "review-assessment-$moduleName" $owner @{
-                    title = "Review $moduleName assessment - $owner"
-                    description = "The $moduleName assessment was completed for this client. Review their responses."
+                Invoke-AutoTask "review-assessment-$moduleName" $attributedTo @{
+                    title = "Review $moduleName assessment - $attributedTo"
+                    description = "The $moduleName assessment was completed. Review their responses."
                     category = 'review'
                 }
             }
-            Send-Json $ctx 200 @{ module = $module; modules = $responses[$owner]; owner = $owner }
+            Send-Json $ctx 200 @{
+                module = $module
+                modules = (Get-EffectiveModules $email)
+                owner = if ($isShared) { '' } else { $owner }
+                shared = $isShared
+            }
         }
         elseif ($path -eq '/api/assignments' -and $method -eq 'GET') {
             $email = Get-SessionEmail $ctx
@@ -2252,7 +2345,9 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/clients' -and $method -eq 'GET') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $clients = @($users.Values | ForEach-Object {
-                $mods = if ($responses.ContainsKey($_.email)) { $responses[$_.email] } else { @{} }
+                # Same reason as the contact list: shared assessments live in the
+                # household record, so the raw per-member map is incomplete.
+                $mods = Get-EffectiveModules $_.email
                 $asg = if ($assignments.ContainsKey($_.email)) { @($assignments[$_.email]) } else { $null }
                 @{ name = $_.name; email = $_.email; modules = $mods; assignments = $asg }
             })
