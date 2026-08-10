@@ -316,44 +316,36 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
 //
 // Household-wide on purpose: Home must not report "all caught up" while a spouse
 // still has three assessments open in the portal they share.
+function assessmentProgressForMember(email) {
+  const assignmentList = Object.prototype.hasOwnProperty.call(assignmentsByMember, email)
+    ? assignmentsByMember[email]
+    : (email === viewingMember ? assignedKeys : null);
+  const assigned = (key) => !Array.isArray(assignmentList) || assignmentList.includes(key);
+  const answered = (mod) => {
+    const answers = isPersonalModule(mod.key) ? (personalByMember[email] || {}) : sharedModules;
+    return !!answers[mod.key];
+  };
+
+  // The advisor assignment editor presents Financial Picture Analysis as ONE
+  // assessment even though it stores five module keys. Count it the same way on
+  // Home: one assigned item, complete only when every assigned FPA module is
+  // complete. Category assessments remain one item per key.
+  const assignedFpa = MODULES.filter((mod) => assigned(mod.key));
+  const assignedCategories = CATEGORY_MODULES.filter((mod) => assigned(mod.key));
+  const total = (assignedFpa.length ? 1 : 0) + assignedCategories.length;
+  const done = (assignedFpa.length && assignedFpa.every(answered) ? 1 : 0)
+    + assignedCategories.filter(answered).length;
+  return { email, done, total, outstanding: Math.max(0, total - done) };
+}
+
 function assessmentTotals() {
-  const all = MODULES.concat(CATEGORY_MODULES);
   const members = (household.members || []).map((m) => m.email);
   // No household data yet (first paint, or a failed /api/household): fall back
   // to the member on screen so Home renders something truthful rather than zero.
   const scope = members.length ? members : [viewingMember || household.you || ""];
-  const assignedTo = (m) => (Object.prototype.hasOwnProperty.call(assignmentsByMember, m)
-    ? assignmentsByMember[m]
-    : (m === viewingMember ? assignedKeys : null));
-  // A non-array assignment record means "no record" = everything visible, the
-  // same rule isAssigned uses.
-  const isAssignedTo = (m, key) => {
-    const asg = assignedTo(m);
-    return !Array.isArray(asg) || asg.includes(key);
-  };
-
-  let done = 0;
-  let total = 0;
-
-  // Count each member's assigned work using the same rules as the Assessments
-  // tab. Non-personal answers still come from the household's shared copy, but
-  // the assignment belongs to a person. This keeps the household total equal to
-  // the member rows instead of showing 3 outstanding beside "You 4/4".
-  const perMember = [];
-  for (const m of scope) {
-    const personalAnswers = personalByMember[m] || {};
-    let mDone = 0;
-    let mTotal = 0;
-    for (const mod of all) {
-      if (!isAssignedTo(m, mod.key)) continue;
-      mTotal += 1;
-      const answers = isPersonalModule(mod.key) ? personalAnswers : sharedModules;
-      if (answers[mod.key]) mDone += 1;
-    }
-    done += mDone;
-    total += mTotal;
-    perMember.push({ email: m, done: mDone, total: mTotal });
-  }
+  const perMember = scope.map(assessmentProgressForMember);
+  const done = perMember.reduce((sum, p) => sum + p.done, 0);
+  const total = perMember.reduce((sum, p) => sum + p.total, 0);
   return { done, total, outstanding: Math.max(0, total - done), perMember };
 }
 
@@ -867,16 +859,7 @@ function renderMemberSwitch() {
   // but assignment visibility and the remaining count stay per person.
   document.getElementById("member-switch-btns").innerHTML = household.members
     .map((m) => {
-      const memberAssignments = Object.prototype.hasOwnProperty.call(assignmentsByMember, m.email)
-        ? assignmentsByMember[m.email]
-        : null;
-      const assignedAssessments = MODULES.concat(CATEGORY_MODULES)
-        .filter((mod) => !Array.isArray(memberAssignments) || memberAssignments.includes(mod.key));
-      const personalAnswers = personalByMember[m.email] || {};
-      const remaining = assignedAssessments.filter((mod) => {
-        const answers = isPersonalModule(mod.key) ? personalAnswers : sharedModules;
-        return !answers[mod.key];
-      }).length;
+      const remaining = assessmentProgressForMember(m.email).outstanding;
       return `<button type="button" class="member-btn${m.email === viewingMember ? " active" : ""}"
         data-member="${escapeHtml(m.email)}">${escapeHtml(isYou(m.email) ? "You" : m.name)}
         <span class="member-btn-count" title="${remaining} remaining">${remaining}</span></button>`;
