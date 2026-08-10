@@ -750,6 +750,13 @@ function Send-File($ctx, $path) {
     $types = @{ '.html'='text/html'; '.css'='text/css'; '.js'='application/javascript'; '.png'='image/png'; '.svg'='image/svg+xml' }
     $ext = [IO.Path]::GetExtension($path).ToLower()
     $ctx.Response.ContentType = if ($types[$ext]) { $types[$ext] } else { 'application/octet-stream' }
+    # Mirrors serveAsset in worker.js. Without this the mock sent no
+    # Cache-Control at all, so the browser cached script.js heuristically and
+    # kept running an edited-away version - which cost real debugging time
+    # chasing a bug that was already fixed on disk.
+    if (@('.html', '.css', '.js') -contains $ext) {
+        $ctx.Response.Headers['Cache-Control'] = 'no-cache'
+    }
     $bytes = [IO.File]::ReadAllBytes($path)
     $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
     $ctx.Response.Close()
@@ -2112,7 +2119,15 @@ while ($listener.IsListening) {
             foreach ($m in (Get-HouseholdMembers $email)) {
                 if ($assignments.ContainsKey($m)) {
                     $list = @($assignments[$m])
-                    $byMember[$m] = , @($list)
+                    # NO `, @(...)` here. That wrapper protects a single-element
+                    # array from unrolling when it is RETURNED, but assigning it
+                    # into a hashtable stores the wrapper itself - which
+                    # serialized byMember as [["risk",...]] instead of ["risk",...].
+                    # The client then sees an array whose only element is an array,
+                    # so .includes(moduleKey) is false for everything and every
+                    # module reads as unassigned. ConvertTo-Json -Depth handles a
+                    # genuinely empty list fine; it is `[]`, which is what we want.
+                    $byMember[$m] = $list
                     foreach ($k in $list) { if (-not $union.Contains($k)) { $null = $union.Add($k) } }
                 } else {
                     $byMember[$m] = $null

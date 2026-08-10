@@ -6217,6 +6217,33 @@ async function handleScheduled(env) {
   }
 }
 
+// Static assets, with revalidation forced on the app's own code.
+//
+// None of these filenames are content-hashed (index.html loads plain
+// "assets/script.js"), so with no Cache-Control the browser applies heuristic
+// caching and can serve a stale copy for a long time. That already bit us once:
+// a fixed Home progress calculation kept rendering the old numbers because the
+// browser was still running the previous script.js. In production it is worse
+// than a stale number — a client running yesterday's JS against today's API is
+// a version mismatch nobody can see or explain.
+//
+// `no-cache` does NOT mean "don't cache": it means revalidate before use, so
+// the browser still stores the file and a 304 keeps repeat loads cheap. Applied
+// only to the app's own code and markup; images and fonts keep whatever the
+// assets platform sets, since those change rarely and are big.
+const REVALIDATE_EXT = /\.(?:html|js|css)$/i;
+
+async function serveAsset(request, env) {
+  const res = await env.ASSETS.fetch(request);
+  const path = new URL(request.url).pathname;
+  // A directory URL ("/", "/admin/") serves index.html, so match it too.
+  if (!REVALIDATE_EXT.test(path) && !path.endsWith('/')) return res;
+  // Response from ASSETS is immutable; clone before touching headers.
+  const out = new Response(res.body, res);
+  out.headers.set('Cache-Control', 'no-cache');
+  return out;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -6573,7 +6600,7 @@ export default {
       if (url.pathname.startsWith('/api/')) {
         return json({ error: 'Not found' }, 404, cors);
       }
-      return env.ASSETS.fetch(request);
+      return await serveAsset(request, env);
     } catch (err) {
       // Log the real error server-side so 500s are diagnosable via Cloudflare
       // live logs (`wrangler tail` / dashboard → Logs), without leaking stack
