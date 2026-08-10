@@ -335,28 +335,20 @@ function assessmentTotals() {
   let done = 0;
   let total = 0;
 
-  // Shared modules are ONE household copy, so they count once — counting them
-  // per member would have made a two-person household read "2 of 34" when there
-  // are really 13 shared slots plus 4 personal each. Available if ANY member is
-  // assigned it, matching the union the server returns.
-  for (const mod of all) {
-    if (isPersonalModule(mod.key)) continue;
-    if (!scope.some((m) => isAssignedTo(m, mod.key))) continue;
-    total += 1;
-    if (sharedModules[mod.key]) done += 1;
-  }
-
-  // Personal modules count once per member, since each has their own.
+  // Count each member's assigned work using the same rules as the Assessments
+  // tab. Non-personal answers still come from the household's shared copy, but
+  // the assignment belongs to a person. This keeps the household total equal to
+  // the member rows instead of showing 3 outstanding beside "You 4/4".
   const perMember = [];
   for (const m of scope) {
-    const answered = personalByMember[m] || {};
+    const personalAnswers = personalByMember[m] || {};
     let mDone = 0;
     let mTotal = 0;
     for (const mod of all) {
-      if (!isPersonalModule(mod.key)) continue;
       if (!isAssignedTo(m, mod.key)) continue;
       mTotal += 1;
-      if (answered[mod.key]) mDone += 1;
+      const answers = isPersonalModule(mod.key) ? personalAnswers : sharedModules;
+      if (answers[mod.key]) mDone += 1;
     }
     done += mDone;
     total += mTotal;
@@ -432,7 +424,8 @@ function renderHomeLanding() {
   if (totals.total) {
     // Says whose numbers these are. A shared household total is meaningless
     // without that — 16 of 34 looks like a broken count if you think it's yours.
-    const scopeNote = household.shared ? " across your household" : "";
+    const membersWithWork = totals.perMember.filter((p) => p.total > 0);
+    const scopeNote = membersWithWork.length > 1 ? " across your household" : "";
     document.getElementById("home-progress-line").textContent =
       `${totals.done} of ${totals.total} assessment${totals.total === 1 ? "" : "s"} complete${scopeNote}`;
     document.getElementById("home-progress-fill").style.width =
@@ -442,13 +435,13 @@ function renderHomeLanding() {
     // rather than only a blended figure.
     const breakdown = document.getElementById("home-progress-members");
     if (breakdown) {
-      breakdown.innerHTML = household.shared
-        ? totals.perMember
+      breakdown.innerHTML = membersWithWork.length > 1
+        ? membersWithWork
             .map((p) => `<span class="home-progress-member">${escapeHtml(shortMemberName(p.email))}
               ${p.done}/${p.total}</span>`)
             .join("")
         : "";
-      breakdown.classList.toggle("hidden", !household.shared);
+      breakdown.classList.toggle("hidden", membersWithWork.length <= 1);
     }
   }
 
