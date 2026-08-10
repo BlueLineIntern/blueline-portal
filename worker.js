@@ -70,6 +70,16 @@ const ADMIN_ACCOUNTS = [
   { email: 'jyoung@blueline-advisors.com', secret: 'ADMIN_PASSWORD_JYOUNG' },
   { email: 'intern@blueline-advisors.com', secret: 'ADMIN_PASSWORD_INTERN' },
 ];
+const FRANK_ADMIN_EMAIL = 'fsabin@blueline-advisors.com';
+const DEFAULT_FRANK_WORKSPACE_MEMBERS = [
+  'jyoung@blueline-advisors.com',
+  'intern@blueline-advisors.com',
+];
+const LEGACY_ADMIN_NAMES = {
+  'fsabin@blueline-advisors.com': 'Frank',
+  'jyoung@blueline-advisors.com': 'Jenn',
+  'intern@blueline-advisors.com': 'Intern',
+};
 const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 12; // 12 hours
 const ADMIN_PASSWORD_MIN_LENGTH = 10; // a step above the client minimum (8) — elevated privilege
 
@@ -116,6 +126,7 @@ async function isAdminAccount(env, email) {
 async function handleAdminCreateAdmin(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (adminEmail !== FRANK_ADMIN_EMAIL) return json({ error: 'Only Frank can add admin accounts' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const email = String(body.email || '').trim().toLowerCase();
@@ -156,6 +167,91 @@ async function addedAdminNames(env) {
   }
   return names;
 }
+
+// ---------- Admin workspaces ----------
+// Every admin owns a private data workspace. Frank can oversee every workspace;
+// everyone else sees their own plus workspaces explicitly shared with them.
+// Records written before workspaces existed belong to Frank, preserving the
+// current firm's data while preventing it from appearing in new employees'
+// private displays.
+const WORKSPACE_ACCESS_PREFIX = 'admin_workspace_access:';
+const workspaceAccessKey = (owner) => `${WORKSPACE_ACCESS_PREFIX}${owner}`;
+const recordWorkspace = (record) => String((record && record.workspace) || FRANK_ADMIN_EMAIL).trim().toLowerCase();
+
+async function workspaceMembers(env, owner) {
+  const raw = await env.PORTAL_KV.get(workspaceAccessKey(owner));
+  if (!raw) return owner === FRANK_ADMIN_EMAIL ? [...DEFAULT_FRANK_WORKSPACE_MEMBERS] : [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.members)
+      ? [...new Set(parsed.members.map((e) => String(e || '').trim().toLowerCase()).filter(Boolean))]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+async function accessibleWorkspaceOwners(env, adminEmail) {
+  const admins = await allAdminEmails(env);
+  if (adminEmail === FRANK_ADMIN_EMAIL) return admins;
+  const allowed = [adminEmail];
+  for (const owner of admins) {
+    if (owner === adminEmail) continue;
+    if ((await workspaceMembers(env, owner)).includes(adminEmail)) allowed.push(owner);
+  }
+  return [...new Set(allowed)];
+}
+
+async function requestedAdminWorkspace(request, env, adminEmail) {
+  const requested = String(request.headers.get('X-Admin-Workspace') || adminEmail).trim().toLowerCase();
+  const allowed = await accessibleWorkspaceOwners(env, adminEmail);
+  return allowed.includes(requested) ? requested : null;
+}
+
+async function handleAdminWorkspaces(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const names = { ...LEGACY_ADMIN_NAMES, ...(await addedAdminNames(env)) };
+  const admins = await allAdminEmails(env);
+  const allowed = await accessibleWorkspaceOwners(env, adminEmail);
+  const requested = await requestedAdminWorkspace(request, env, adminEmail);
+  const workspaces = allowed.map((owner) => ({
+    owner,
+    name: names[owner] || owner.split('@')[0],
+    own: owner === adminEmail,
+    members: adminEmail === FRANK_ADMIN_EMAIL ? [] : undefined,
+  }));
+  const grants = {};
+  if (adminEmail === FRANK_ADMIN_EMAIL) {
+    for (const owner of admins) grants[owner] = await workspaceMembers(env, owner);
+  }
+  return json({
+    you: adminEmail,
+    boss: adminEmail === FRANK_ADMIN_EMAIL,
+    active: requested || adminEmail,
+    workspaces,
+    admins: admins.map((email) => ({ email, name: names[email] || email.split('@')[0] })),
+    grants,
+  }, 200, cors);
+}
+
+async function handleAdminSaveWorkspaceAccess(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (adminEmail !== FRANK_ADMIN_EMAIL) return json({ error: 'Only Frank can manage workspace access' }, 403, cors);
+  const body = await request.json().catch(() => null);
+  if (!body || !isValidEmail(body.owner) || !Array.isArray(body.members)) {
+    return json({ error: 'owner and members are required' }, 400, cors);
+  }
+  const owner = String(body.owner).trim().toLowerCase();
+  if (!(await isAdminAccount(env, owner))) return json({ error: 'Unknown workspace owner' }, 404, cors);
+  const admins = new Set(await allAdminEmails(env));
+  const members = [...new Set(body.members.map((e) => String(e || '').trim().toLowerCase()))]
+    .filter((e) => e && e !== owner && admins.has(e));
+  await env.PORTAL_KV.put(workspaceAccessKey(owner), JSON.stringify({ members, updatedAt: new Date().toISOString(), updatedBy: adminEmail }));
+  await logAudit(env, adminEmail, 'workspace-access-changed', { owner, members });
+  return json({ owner, members }, 200, cors);
+}
 const AUDIT_TTL_SECONDS = 60 * 60 * 24 * 400; // audit entries retained ~13 months
 
 // Fixed-window rate limits: [max requests, window in seconds].
@@ -189,7 +285,7 @@ function corsHeaders(corsOrigin) {
   const headers = {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers':
-      'Content-Type, Authorization, X-Onboarding-Token, X-Upload-Ticket, X-Upload-Offset',
+      'Content-Type, Authorization, X-Admin-Workspace, X-Onboarding-Token, X-Upload-Ticket, X-Upload-Offset',
     Vary: 'Origin',
   };
   if (corsOrigin) headers['Access-Control-Allow-Origin'] = corsOrigin;
@@ -669,7 +765,7 @@ async function handleAdminListAdmins(request, env, cors) {
     const mfa = await getAdminMfa(env, email); // throws on decrypt fail -> 500 (fail closed)
     admins.push({ email, name: names[email] || null, mfaEnabled: !!(mfa && mfa.confirmed) });
   }
-  return json({ admins, you: adminEmail }, 200, cors);
+  return json({ admins, you: adminEmail, boss: adminEmail === FRANK_ADMIN_EMAIL }, 200, cors);
 }
 
 // One admin resets another's MFA (recovery for a lost authenticator). Deleting
@@ -680,6 +776,7 @@ async function handleAdminListAdmins(request, env, cors) {
 async function handleAdminResetMfa(request, env, cors, targetEmail) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (adminEmail !== FRANK_ADMIN_EMAIL) return json({ error: 'Only Frank can reset admin MFA' }, 403, cors);
   const normalized = String(targetEmail).trim().toLowerCase();
   if (!(await isAdminAccount(env, normalized))) {
     return json({ error: 'Not an admin account' }, 404, cors);
@@ -1802,9 +1899,12 @@ async function handleGetAssignments(request, env, cors) {
 async function handleAdminSetAssignments(request, env, cors, rawEmail) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
 
   const email = String(rawEmail || '').trim().toLowerCase();
   if (!isValidEmail(email)) return json({ error: 'Invalid client email' }, 400, cors);
+  if (!(await contactBelongsToWorkspace(env, email, workspace))) return json({ error: 'Client not found in this workspace' }, 404, cors);
   const exists = await env.PORTAL_KV.get(`user:${email}`);
   if (!exists) return json({ error: 'Unknown client' }, 404, cors);
 
@@ -1989,11 +2089,14 @@ async function syncOnboardingContact(env, email, record) {
 async function handleAdminDeleteOnboarding(request, env, cors, onboardingId) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   if (!ONBOARDING_ID_PATTERN.test(onboardingId)) return json({ error: 'Invalid onboarding id' }, 400, cors);
 
   const raw = await env.PORTAL_KV.get(`onboarding:${onboardingId}`);
   if (!raw) return json({ error: 'Not found' }, 404, cors);
   const record = JSON.parse(raw);
+  if (!(await onboardingBelongsToWorkspace(env, record, workspace))) return json({ error: 'Not found' }, 404, cors);
   record.deleted = true;
   record.deletedAt = new Date().toISOString();
   await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record), {
@@ -2006,11 +2109,14 @@ async function handleAdminDeleteOnboarding(request, env, cors, onboardingId) {
 async function handleAdminRestoreOnboarding(request, env, cors, onboardingId) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   if (!ONBOARDING_ID_PATTERN.test(onboardingId)) return json({ error: 'Invalid onboarding id' }, 400, cors);
 
   const raw = await env.PORTAL_KV.get(`onboarding:${onboardingId}`);
   if (!raw) return json({ error: 'Not found or already purged' }, 404, cors);
   const record = JSON.parse(raw);
+  if (!(await onboardingBelongsToWorkspace(env, record, workspace))) return json({ error: 'Not found' }, 404, cors);
   record.deleted = false;
   delete record.deletedAt;
   // Re-put with no TTL so it stops counting down toward purge.
@@ -2022,6 +2128,8 @@ async function handleAdminRestoreOnboarding(request, env, cors, onboardingId) {
 async function handleAdminOnboarding(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
 
   const records = [];
   let cursor;
@@ -2031,7 +2139,8 @@ async function handleAdminOnboarding(request, env, cors) {
       const raw = await env.PORTAL_KV.get(key.name);
       if (!raw) continue;
       try {
-        records.push(JSON.parse(raw));
+        const record = JSON.parse(raw);
+        if (await onboardingBelongsToWorkspace(env, record, workspace)) records.push(record);
       } catch {}
     }
     cursor = page.cursor;
@@ -2039,7 +2148,25 @@ async function handleAdminOnboarding(request, env, cors) {
   } while (cursor);
 
   records.sort((a, b) => String(b.startTime).localeCompare(String(a.startTime)));
-  return json({ records }, 200, cors);
+  return json({ records, workspace }, 200, cors);
+}
+
+function onboardingRecordEmail(record) {
+  const data = (record && record.data) || {};
+  return String(
+    (data.profile && data.profile.email)
+    || (data.consent && data.consent.email)
+    || ''
+  ).trim().toLowerCase();
+}
+
+async function onboardingBelongsToWorkspace(env, record, workspace) {
+  const email = onboardingRecordEmail(record);
+  // A submission that has not captured an email yet is part of the legacy,
+  // unassigned intake queue and therefore remains in Frank's workspace.
+  return email
+    ? contactBelongsToWorkspace(env, email, workspace)
+    : workspace === FRANK_ADMIN_EMAIL;
 }
 
 // Returns a page of audit entries (who did what, when), newest first. Because
@@ -2050,6 +2177,10 @@ async function handleAdminOnboarding(request, env, cors) {
 async function handleAdminAudit(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  // Audit entries predate workspace ownership and can contain client names and
+  // emails from anywhere in the firm. Until every entry carries a workspace,
+  // the safe view is the boss-only firm log.
+  if (adminEmail !== FRANK_ADMIN_EMAIL) return json({ error: 'Only Frank can view the firm audit log' }, 403, cors);
 
   const AUDIT_PAGE_SIZE = 10;
   const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
@@ -3549,8 +3680,10 @@ function sanitizeComplianceFields(body, { requireCore = false } = {}) {
 async function handleAdminComplianceList(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const items = await getComplianceItems(env);
-  const shaped = complianceSort(items).map(withComplianceStatus);
+  const shaped = complianceSort(items.filter((item) => recordWorkspace(item) === workspace)).map(withComplianceStatus);
   return json({
     items: shaped,
     owners: COMPLIANCE_OWNERS,
@@ -3562,12 +3695,15 @@ async function handleAdminComplianceList(request, env, cors) {
     // Source values come from the data rather than a fixed list — the set grows
     // as policies are added, and a hardcoded list would quietly omit new ones.
     sources: [...new Set(shaped.map((i) => String(i.source || '').trim()).filter(Boolean))].sort(),
+    workspace,
   }, 200, cors);
 }
 
 async function handleAdminComplianceCreate(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const { fields, error } = sanitizeComplianceFields(body, { requireCore: true });
@@ -3580,6 +3716,7 @@ async function handleAdminComplianceCreate(request, env, cors) {
   // importing a spreadsheet that lists them.
   const base = {
     id: `cx-${invTs()}-${randomHex(3)}`,
+    workspace,
     whatToDo: '', frequency: 'One-time', frequencyDetail: '',
       source: '', notes: '', waitingOn: '',
       complianceArea: '', requirement: 'Best practice',
@@ -3607,13 +3744,15 @@ async function handleAdminComplianceCreate(request, env, cors) {
 async function handleAdminComplianceUpdate(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const { fields, error } = sanitizeComplianceFields(body);
   if (error) return json({ error }, 400, cors);
 
   const items = await getComplianceItems(env);
-  const idx = items.findIndex((x) => x.id === id);
+  const idx = items.findIndex((x) => x.id === id && recordWorkspace(x) === workspace);
   if (idx < 0) return json({ error: 'Compliance item not found' }, 404, cors);
 
   const next = { ...items[idx], ...fields, updatedAt: new Date().toISOString() };
@@ -3664,8 +3803,10 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
 async function handleAdminComplianceDelete(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const items = await getComplianceItems(env);
-  const idx = items.findIndex((x) => x.id === id);
+  const idx = items.findIndex((x) => x.id === id && recordWorkspace(x) === workspace);
   if (idx < 0) return json({ error: 'Compliance item not found' }, 404, cors);
   const target = items[idx];
 
@@ -3678,8 +3819,8 @@ async function handleAdminComplianceDelete(request, env, cors, id) {
   let removedItems = [target];
   if (wholeSeries) {
     const sid = target.seriesId;
-    removedItems = items.filter((x) => x.seriesId === sid);
-    const kept = items.filter((x) => x.seriesId !== sid);
+    removedItems = items.filter((x) => x.seriesId === sid && recordWorkspace(x) === workspace);
+    const kept = items.filter((x) => x.seriesId !== sid || recordWorkspace(x) !== workspace);
     removedCount = items.length - kept.length;
     items.length = 0;
     items.push(...kept);
@@ -3710,6 +3851,8 @@ async function handleAdminComplianceDelete(request, env, cors, id) {
 async function handleAdminComplianceImport(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body || !Array.isArray(body.items)) return json({ error: 'Invalid JSON body' }, 400, cors);
   if (!body.items.length) return json({ error: 'That file has no rows to import' }, 400, cors);
@@ -3724,13 +3867,16 @@ async function handleAdminComplianceImport(request, env, cors) {
   }
 
   const items = await getComplianceItems(env);
+  const otherWorkspaces = items.filter((it) => recordWorkspace(it) !== workspace);
+  const workspaceItems = items.filter((it) => recordWorkspace(it) === workspace);
   // complianceStatus, not a stored flag — CLOSED is derived from completedAt.
-  const kept = items.filter((it) => complianceStatus(it) === 'CLOSED');
-  const dropped = items.filter((it) => complianceStatus(it) !== 'CLOSED');
+  const kept = workspaceItems.filter((it) => complianceStatus(it) === 'CLOSED');
+  const dropped = workspaceItems.filter((it) => complianceStatus(it) !== 'CLOSED');
 
   const created = prepared.map((fields) => {
     return {
       id: `cx-${invTs()}-${randomHex(3)}`,
+      workspace,
       whatToDo: '', frequency: 'One-time', frequencyDetail: '',
       source: '', notes: '', waitingOn: '',
       complianceArea: '', requirement: 'Best practice',
@@ -3749,7 +3895,7 @@ async function handleAdminComplianceImport(request, env, cors) {
     };
   });
 
-  const next = [...kept, ...created];
+  const next = [...otherWorkspaces, ...kept, ...created];
   await saveComplianceItems(env, next);
 
   // Mirrors are best-effort and run AFTER the authoritative save, so a
@@ -3764,7 +3910,7 @@ async function handleAdminComplianceImport(request, env, cors) {
   for (let i = 0; i < created.length; i += 1) {
     created[i] = await pushComplianceToSharePoint(env, created[i]);
   }
-  await saveComplianceItems(env, [...kept, ...created]);
+  await saveComplianceItems(env, [...otherWorkspaces, ...kept, ...created]);
 
   await logAudit(env, adminEmail, 'compliance-import', {
     replaced: dropped.length, imported: created.length, keptCompleted: kept.length,
@@ -3840,8 +3986,10 @@ function sanitizeContactFields(body) {
 async function handleAdminContacts(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   return json(
-    { contacts: await buildContactList(env), admins: await allAdminEmails(env), adminNames: await addedAdminNames(env) },
+    { contacts: await buildContactList(env, workspace), admins: await allAdminEmails(env), adminNames: await addedAdminNames(env), workspace },
     200,
     cors
   );
@@ -3849,13 +3997,14 @@ async function handleAdminContacts(request, env, cors) {
 
 // The merge itself, without the HTTP wrapper, so any other caller can read the
 // same shape the CRM UI does rather than re-deriving it from KV.
-async function buildContactList(env) {
+async function buildContactList(env, workspace = FRANK_ADMIN_EMAIL) {
   const merged = new Map(); // email -> entry
 
   // CRM contact records first (decrypt failure fails closed like elsewhere).
   for (const keyName of await listKeys(env, 'contact:')) {
     const rec = await decryptToObject(env, await env.PORTAL_KV.get(keyName));
     if (!rec || !rec.email) continue;
+    if (recordWorkspace(rec) !== workspace) continue;
     merged.set(rec.email, {
       email: rec.email,
       name: rec.name || '',
@@ -3877,6 +4026,7 @@ async function buildContactList(env) {
       modules: {},
       modulesError: false,
       assignments: null,
+      workspace,
     });
   }
 
@@ -3886,7 +4036,11 @@ async function buildContactList(env) {
     const userRaw = await env.PORTAL_KV.get(keyName);
     if (!userRaw) continue;
     const user = JSON.parse(userRaw);
-    const entry = merged.get(email) || {
+    const existing = merged.get(email);
+    // A portal account without a CRM contact predates workspace ownership and
+    // therefore belongs to Frank until an employee creates its contact record.
+    if (!existing && workspace !== FRANK_ADMIN_EMAIL) continue;
+    const entry = existing || {
       email,
       name: '',
       preferredName: '',
@@ -3906,6 +4060,7 @@ async function buildContactList(env) {
       modules: {},
       modulesError: false,
       assignments: null,
+      workspace: FRANK_ADMIN_EMAIL,
     };
     entry.hasAccount = true;
     if (!entry.name) entry.name = user.name || '';
@@ -3925,11 +4080,25 @@ async function buildContactList(env) {
   return [...merged.values()];
 }
 
+async function contactBelongsToWorkspace(env, email, workspace) {
+  try {
+    const contact = await decryptToObject(env, await env.PORTAL_KV.get(`contact:${email}`));
+    if (contact) return recordWorkspace(contact) === workspace;
+  } catch {
+    return false; // unreadable ownership must fail closed
+  }
+  // Portal-only clients have no ownership field and are part of the legacy
+  // dataset, which belongs to Frank until a contact record assigns them.
+  return workspace === FRANK_ADMIN_EMAIL && !!(await env.PORTAL_KV.get(`user:${email}`));
+}
+
 // Create/update the CRM fields for one contact. Partial update: only the
 // fields present in the body change; the rest of the record is preserved.
 async function handleAdminUpsertContact(request, env, cors, targetEmail) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const email = String(targetEmail).trim().toLowerCase();
   if (!isValidEmail(email)) return json({ error: 'Invalid contact email' }, 400, cors);
   const body = await request.json().catch(() => null);
@@ -3938,12 +4107,22 @@ async function handleAdminUpsertContact(request, env, cors, targetEmail) {
   const { fields, error } = sanitizeContactFields(body);
   if (error) return json({ error }, 400, cors);
 
-  const existing = (await decryptToObject(env, await env.PORTAL_KV.get(`contact:${email}`))) || {
+  const stored = await decryptToObject(env, await env.PORTAL_KV.get(`contact:${email}`));
+  if (stored && recordWorkspace(stored) !== workspace) return json({ error: 'Contact not found in this workspace' }, 404, cors);
+  // A portal account with no contact record is legacy Frank data. Only Frank
+  // may deliberately claim it into a new employee's display; otherwise an
+  // employee who guessed the email could silently take ownership of the client.
+  if (!stored && workspace !== FRANK_ADMIN_EMAIL && adminEmail !== FRANK_ADMIN_EMAIL
+      && await env.PORTAL_KV.get(`user:${email}`)) {
+    return json({ error: 'Only Frank can assign an existing portal client to this admin display' }, 403, cors);
+  }
+  const existing = stored || {
     email,
     status: 'prospect',
+    workspace,
     createdAt: new Date().toISOString(),
   };
-  let record = { ...existing, ...fields, email, updatedAt: new Date().toISOString() };
+  let record = { ...existing, ...fields, email, workspace, updatedAt: new Date().toISOString() };
   // Best-effort two-way mirror — see pushContactToSharePoint. May return the
   // record adopted from a newer SharePoint edit instead of what was just
   // submitted here; either way, what's persisted and returned is the true
@@ -3960,16 +4139,22 @@ async function handleAdminUpsertContact(request, env, cors, targetEmail) {
 async function handleAdminArchiveContact(request, env, cors, targetEmail, archived) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const email = String(targetEmail).trim().toLowerCase();
   if (!isValidEmail(email)) return json({ error: 'Invalid contact email' }, 400, cors);
-  const existing = (await decryptToObject(env, await env.PORTAL_KV.get(`contact:${email}`))) || {
+  const stored = await decryptToObject(env, await env.PORTAL_KV.get(`contact:${email}`));
+  if (stored && recordWorkspace(stored) !== workspace) return json({ error: 'Contact not found in this workspace' }, 404, cors);
+  const existing = stored || {
     email,
     status: 'prospect',
+    workspace,
     createdAt: new Date().toISOString(),
   };
   const record = {
     ...existing,
     email,
+    workspace,
     archived,
     archivedAt: archived ? new Date().toISOString() : null,
     archivedBy: archived ? adminEmail : null,
@@ -5148,23 +5333,37 @@ function sanitizeHouseholdFields(body, existingKind) {
   return { fields: out };
 }
 
+async function invalidHouseholdMembers(env, members, workspace) {
+  const invalid = [];
+  for (const member of members || []) {
+    if (!(await contactBelongsToWorkspace(env, member.email, workspace))) invalid.push(member.email);
+  }
+  return invalid;
+}
+
 async function handleAdminListHouseholds(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const { items, errors } = await readAllEncrypted(env, 'household:');
   // Normalized here rather than in the page: records predate `kind`, and every
   // consumer would otherwise need the same `kind || 'family'` fallback.
-  const households = items.map((h) => ({ ...h, kind: groupKindOf(h) }));
-  return json({ households, decryptErrors: errors }, 200, cors);
+  const households = items.filter((h) => recordWorkspace(h) === workspace).map((h) => ({ ...h, kind: groupKindOf(h) }));
+  return json({ households, decryptErrors: errors, workspace }, 200, cors);
 }
 
 async function handleAdminCreateHousehold(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const { fields, error } = sanitizeHouseholdFields(body);
   if (error) return json({ error }, 400, cors);
+  const invalidMembers = await invalidHouseholdMembers(env, fields.members, workspace);
+  if (invalidMembers.length) return json({ error: 'Every member must be a contact in this admin display' }, 400, cors);
   const kind = fields.kind || 'family';
   if (!fields.name) {
     return json({ error: `${kind === 'company' ? 'Company' : 'Family'} name is required` }, 400, cors);
@@ -5172,6 +5371,7 @@ async function handleAdminCreateHousehold(request, env, cors) {
   const id = `hh-${randomHex(6)}`;
   let record = {
     id,
+    workspace,
     type: 'household',
     kind,
     name: fields.name,
@@ -5204,13 +5404,18 @@ async function handleAdminCreateHousehold(request, env, cors) {
 async function handleAdminUpdateHousehold(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const raw = await env.PORTAL_KV.get(`household:${id}`);
   if (!raw) return json({ error: 'Household not found' }, 404, cors);
   const existing = await decryptToObject(env, raw);
+  if (recordWorkspace(existing) !== workspace) return json({ error: 'Household not found' }, 404, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const { fields, error } = sanitizeHouseholdFields(body, groupKindOf(existing));
   if (error) return json({ error }, 400, cors);
+  const invalidMembers = await invalidHouseholdMembers(env, fields.members, workspace);
+  if (invalidMembers.length) return json({ error: 'Every member must be a contact in this admin display' }, 400, cors);
   // Archive is a soft-delete toggle, handled here rather than as its own route
   // because a household has no portal account to keep consistent.
   if (body.archived !== undefined) {
@@ -5239,12 +5444,15 @@ async function handleAdminUpdateHousehold(request, env, cors, id) {
 async function handleAdminDeleteHousehold(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const raw = await env.PORTAL_KV.get(`household:${id}`);
   if (!raw) return json({ error: 'Household not found' }, 404, cors);
   // Decrypted so its sharePointItemId is known — an intentional delete here
   // should remove the SharePoint backup row too, or it reads as a still-live
   // household if someone checks SharePoint during a later outage.
   const existing = await decryptToObject(env, raw);
+  if (recordWorkspace(existing) !== workspace) return json({ error: 'Household not found' }, 404, cors);
   await deleteHouseholdFromSharePoint(env, existing);
   // Deleting the grouping never touches the member contacts themselves.
   await env.PORTAL_KV.delete(`household:${id}`);
@@ -5595,6 +5803,7 @@ async function createTask(env, fields) {
   const id = `${invTs()}-${randomHex(4)}`;
   const task = {
     id,
+    workspace: String(fields.workspace || FRANK_ADMIN_EMAIL).trim().toLowerCase(),
     title: String(fields.title || '').trim().slice(0, 200),
     description: String(fields.description || '').trim().slice(0, 2000),
     client: fields.client || '',
@@ -5656,11 +5865,15 @@ async function maybeAutoTask(env, rule, client, fields) {
     if (await env.PORTAL_KV.get(marker)) return;
     await env.PORTAL_KV.put(marker, '1');
     let assignee = '';
+    let workspace = FRANK_ADMIN_EMAIL;
     try {
       const contact = await decryptToObject(env, await env.PORTAL_KV.get(`contact:${client}`));
-      if (contact && contact.advisor) assignee = contact.advisor;
+      if (contact) {
+        if (contact.advisor) assignee = contact.advisor;
+        workspace = recordWorkspace(contact);
+      }
     } catch {}
-    await createTask(env, { ...fields, client, assignee, createdBy: 'auto' });
+    await createTask(env, { ...fields, client, assignee, workspace, createdBy: 'auto' });
   } catch {
     // swallow — automation is best-effort
   }
@@ -5685,8 +5898,10 @@ async function readAllEncrypted(env, prefix) {
 async function handleAdminListTasks(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const { items, errors } = await readAllEncrypted(env, 'task:');
-  return json({ tasks: items, decryptErrors: errors }, 200, cors);
+  return json({ tasks: items.filter((task) => recordWorkspace(task) === workspace), decryptErrors: errors, workspace }, 200, cors);
 }
 
 // allowedAssignees is a Set of assignable identifiers (admin account emails).
@@ -5774,25 +5989,36 @@ function sanitizeTaskFields(body, allowedAssignees) {
 async function handleAdminCreateTask(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   if (!body.title || !String(body.title).trim()) return json({ error: 'Title is required' }, 400, cors);
   const { fields, error } = sanitizeTaskFields(body, await allowedAssigneeSet(env));
   if (error) return json({ error }, 400, cors);
-  const task = await createTask(env, { ...fields, createdBy: adminEmail });
+  if (fields.client && !(await contactBelongsToWorkspace(env, fields.client, workspace))) {
+    return json({ error: 'Client not found in this workspace' }, 400, cors);
+  }
+  const task = await createTask(env, { ...fields, workspace, createdBy: adminEmail });
   return json({ task }, 200, cors);
 }
 
 async function handleAdminUpdateTask(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const raw = await env.PORTAL_KV.get(`task:${id}`);
   if (!raw) return json({ error: 'Task not found' }, 404, cors);
   const task = await decryptToObject(env, raw);
+  if (recordWorkspace(task) !== workspace) return json({ error: 'Task not found in this workspace' }, 404, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const { fields, error } = sanitizeTaskFields(body, await allowedAssigneeSet(env));
   if (error) return json({ error }, 400, cors);
+  if (fields.client && !(await contactBelongsToWorkspace(env, fields.client, workspace))) {
+    return json({ error: 'Client not found in this workspace' }, 400, cors);
+  }
 
   const wasOpen = task.status === 'open';
   const wasReady = !!task.readyAt;
@@ -5872,6 +6098,7 @@ async function handleAdminUpdateTask(request, env, cors, id) {
         // events, so copying them would make the new occurrence overwrite the
         // completed one's calendar entries.
         calendarOwners: taskCalendarOwners(task),
+        workspace,
         // Carry the prep items forward but unticked — it's a fresh occurrence.
         checklist: (task.checklist || []).map((c) => ({ ...c, done: false })),
         createdBy: adminEmail,
@@ -5912,11 +6139,14 @@ async function handleAdminUpdateTask(request, env, cors, id) {
 async function handleAdminDeleteTask(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const raw = await env.PORTAL_KV.get(`task:${id}`);
   let task = null;
   if (raw) {
     try { task = await decryptToObject(env, raw); } catch {}
   }
+  if (!task || recordWorkspace(task) !== workspace) return json({ error: 'Task not found in this workspace' }, 404, cors);
   await env.PORTAL_KV.delete(`task:${id}`);
   await deleteTimelineRefs(env, task);
   // Take every mirrored Outlook event down with it, so a deleted meeting doesn't
@@ -5941,13 +6171,16 @@ async function handleAdminDeleteTask(request, env, cors, id) {
 
 const BOARD_LISTS_KEY = 'board_lists';
 const BOARD_LISTS_MAX = 50;
+const boardListsKey = (workspace) => workspace === FRANK_ADMIN_EMAIL ? BOARD_LISTS_KEY : `${BOARD_LISTS_KEY}:${workspace}`;
 
-async function getBoardLists(env) {
+async function getBoardLists(env, workspace = FRANK_ADMIN_EMAIL) {
   try {
-    const rec = await decryptToObject(env, await env.PORTAL_KV.get(BOARD_LISTS_KEY));
+    const rec = await decryptToObject(env, await env.PORTAL_KV.get(boardListsKey(workspace)));
     if (rec && Array.isArray(rec.lists)) return rec.lists;
     // Migrate the earlier team_roster (free-text members) → custom lists.
-    const legacy = await decryptToObject(env, await env.PORTAL_KV.get('team_roster'));
+    const legacy = workspace === FRANK_ADMIN_EMAIL
+      ? await decryptToObject(env, await env.PORTAL_KV.get('team_roster'))
+      : null;
     if (legacy && Array.isArray(legacy.members)) {
       return legacy.members.map((m) => ({ id: m.id, type: 'custom', name: m.name, createdAt: m.createdAt || null }));
     }
@@ -5963,15 +6196,19 @@ async function allowedAssigneeSet(env) {
 async function handleAdminListLists(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  return json({ lists: await getBoardLists(env) }, 200, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
+  return json({ lists: await getBoardLists(env, workspace), workspace }, 200, cors);
 }
 
 async function handleAdminCreateList(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const body = await request.json().catch(() => null);
   const type = (body && body.type) === 'person' ? 'person' : 'custom';
-  const lists = await getBoardLists(env);
+  const lists = await getBoardLists(env, workspace);
   if (lists.length >= BOARD_LISTS_MAX) return json({ error: 'Too many lists' }, 400, cors);
 
   let list;
@@ -5991,15 +6228,17 @@ async function handleAdminCreateList(request, env, cors) {
     list = { id: `l-${randomHex(6)}`, type: 'custom', name, createdAt: new Date().toISOString() };
   }
   lists.push(list);
-  await env.PORTAL_KV.put(BOARD_LISTS_KEY, await encryptJSON(env, { lists }));
+  await env.PORTAL_KV.put(boardListsKey(workspace), await encryptJSON(env, { lists }));
   return json({ list, lists }, 200, cors);
 }
 
 async function handleAdminDeleteList(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  const lists = (await getBoardLists(env)).filter((l) => l.id !== id);
-  await env.PORTAL_KV.put(BOARD_LISTS_KEY, await encryptJSON(env, { lists }));
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
+  const lists = (await getBoardLists(env, workspace)).filter((l) => l.id !== id);
+  await env.PORTAL_KV.put(boardListsKey(workspace), await encryptJSON(env, { lists }));
   // Tasks that referenced this list (or an unlisted assignee) just fall into
   // Unassigned on the board; they aren't rewritten here.
   return json({ lists }, 200, cors);
@@ -6079,6 +6318,7 @@ async function handleAdminGetPortalLinks(request, env, cors) {
 async function handleAdminSavePortalLinks(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (adminEmail !== FRANK_ADMIN_EMAIL) return json({ error: 'Only Frank can change firm-wide portal links' }, 403, cors);
   const body = await request.json().catch(() => null);
   const { links, error } = sanitizePortalLinks(body);
   if (error) return json({ error }, 400, cors);
@@ -6103,19 +6343,31 @@ async function handleGetPortalLinks(request, env, cors) {
 async function handleAdminListNotes(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const client = new URL(request.url).searchParams.get('client');
+  if (client && !(await contactBelongsToWorkspace(env, String(client).trim().toLowerCase(), workspace))) {
+    return json({ error: 'Contact not found in this workspace' }, 404, cors);
+  }
   const prefix = client ? `note:${String(client).trim().toLowerCase()}:` : 'note:';
   const { items, errors } = await readAllEncrypted(env, prefix);
-  return json({ notes: items, decryptErrors: errors }, 200, cors);
+  const visible = [];
+  for (const note of items) {
+    if (await contactBelongsToWorkspace(env, note.client, workspace)) visible.push(note);
+  }
+  return json({ notes: visible, decryptErrors: errors }, 200, cors);
 }
 
 async function handleAdminCreateNote(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   const client = String(body.client || '').trim().toLowerCase();
   if (!isValidEmail(client)) return json({ error: 'A valid client email is required' }, 400, cors);
+  if (!(await contactBelongsToWorkspace(env, client, workspace))) return json({ error: 'Contact not found in this workspace' }, 404, cors);
   const text = String(body.body || '').trim();
   if (!text) return json({ error: 'Note text is required' }, 400, cors);
 
@@ -6144,9 +6396,12 @@ async function handleAdminCreateNote(request, env, cors) {
 async function handleAdminUpdateNote(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const raw = await env.PORTAL_KV.get(`note:${id}`);
   if (!raw) return json({ error: 'Note not found' }, 404, cors);
   const note = await decryptToObject(env, raw);
+  if (!(await contactBelongsToWorkspace(env, note.client, workspace))) return json({ error: 'Note not found' }, 404, cors);
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
   if (body.body !== undefined) {
@@ -6166,11 +6421,14 @@ async function handleAdminUpdateNote(request, env, cors, id) {
 async function handleAdminDeleteNote(request, env, cors, id) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const raw = await env.PORTAL_KV.get(`note:${id}`);
   let note = null;
   if (raw) {
     try { note = await decryptToObject(env, raw); } catch {}
   }
+  if (!note || !(await contactBelongsToWorkspace(env, note.client, workspace))) return json({ error: 'Note not found' }, 404, cors);
   await env.PORTAL_KV.delete(`note:${id}`);
   await deleteTimelineRefs(env, note);
   return json({ ok: true }, 200, cors);
@@ -6235,8 +6493,11 @@ async function filterDeletedReferences(entries, env) {
 async function handleAdminTimeline(request, env, cors, rawEmail) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const email = String(rawEmail || '').trim().toLowerCase();
   if (!isValidEmail(email)) return json({ error: 'Invalid client email' }, 400, cors);
+  if (!(await contactBelongsToWorkspace(env, email, workspace))) return json({ error: 'Contact not found in this workspace' }, 404, cors);
   const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
   const result = await pagedEncryptedList(env, `timeline:${email}:`, cursor, 50);
   result.entries = await filterDeletedReferences(result.entries, env);
@@ -6246,33 +6507,50 @@ async function handleAdminTimeline(request, env, cors, rawEmail) {
 async function handleAdminActivity(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
   const result = await pagedEncryptedList(env, 'activity:', cursor, 30);
   result.entries = await filterDeletedReferences(result.entries, env);
+  const visible = [];
+  for (const entry of result.entries) {
+    if (await contactBelongsToWorkspace(env, entry.client, workspace)) visible.push(entry);
+  }
+  result.entries = visible;
   return json(result, 200, cors);
 }
 
-// Per-admin notification read cursor. Notifications themselves are DERIVED
+// Per-admin, per-workspace notification read cursor. Notifications themselves are DERIVED
 // (activity newer than this timestamp + overdue tasks) — nothing is fanned out
 // or stored per event, so there is nothing to keep consistent.
 async function handleAdminGetNotifSeen(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  const seen = await env.PORTAL_KV.get(`notif_seen:${adminEmail}`);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
+  let seen = await env.PORTAL_KV.get(`notif_seen:${adminEmail}:${workspace}`);
+  // Preserve Frank's pre-workspace read cursor on his own display only.
+  if (!seen && adminEmail === FRANK_ADMIN_EMAIL && workspace === FRANK_ADMIN_EMAIL) {
+    seen = await env.PORTAL_KV.get(`notif_seen:${adminEmail}`);
+  }
   return json({ seen: seen || null }, 200, cors);
 }
 
 async function handleAdminSetNotifSeen(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const seen = new Date().toISOString();
-  await env.PORTAL_KV.put(`notif_seen:${adminEmail}`, seen);
+  await env.PORTAL_KV.put(`notif_seen:${adminEmail}:${workspace}`, seen);
   return json({ seen }, 200, cors);
 }
 
 async function handleAdminClients(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
 
   const clients = [];
   let cursor;
@@ -6283,6 +6561,7 @@ async function handleAdminClients(request, env, cors) {
       const userRaw = await env.PORTAL_KV.get(key.name);
       const assignmentsRaw = await env.PORTAL_KV.get(`assignments:${email}`);
       if (!userRaw) continue;
+      if (!(await contactBelongsToWorkspace(env, email, workspace))) continue;
       const user = JSON.parse(userRaw);
       // Decrypt per client; a single undecryptable record surfaces as an error
       // flag on that client rather than failing the whole listing.
@@ -6308,7 +6587,7 @@ async function handleAdminClients(request, env, cors) {
     if (page.list_complete) break;
   } while (cursor);
 
-  return json({ clients }, 200, cors);
+  return json({ clients, workspace }, 200, cors);
 }
 
 async function handleScheduled(env) {
@@ -6424,6 +6703,12 @@ export default {
       if (url.pathname === '/api/admin/admins' && request.method === 'POST') {
         return await handleAdminCreateAdmin(request, env, cors);
       }
+      if (url.pathname === '/api/admin/workspaces' && request.method === 'GET') {
+        return await handleAdminWorkspaces(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/workspaces/access' && request.method === 'POST') {
+        return await handleAdminSaveWorkspaceAccess(request, env, cors);
+      }
       if (url.pathname === '/api/admin/contacts' && request.method === 'GET') {
         return await handleAdminContacts(request, env, cors);
       }
@@ -6447,6 +6732,7 @@ export default {
       if (url.pathname === '/api/admin/contacts/sync' && request.method === 'POST') {
         const adminEmail = await getAdminEmail(request, env);
         if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        if (adminEmail !== FRANK_ADMIN_EMAIL) return json({ error: 'Only Frank can run firm-wide SharePoint sync' }, 403, cors);
         try {
           const result = await syncSharePointContacts(env);
           await logAudit(env, adminEmail, 'sync-sharepoint-contacts', result);
@@ -6459,6 +6745,7 @@ export default {
       if (url.pathname === '/api/admin/households/sync' && request.method === 'POST') {
         const adminEmail = await getAdminEmail(request, env);
         if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        if (adminEmail !== FRANK_ADMIN_EMAIL) return json({ error: 'Only Frank can run firm-wide SharePoint sync' }, 403, cors);
         try {
           const result = await syncSharePointHouseholds(env);
           await logAudit(env, adminEmail, 'sync-sharepoint-households', result);
@@ -6475,6 +6762,7 @@ export default {
       if (url.pathname === '/api/admin/sharepoint/site' && request.method === 'GET') {
         const adminEmail = await getAdminEmail(request, env);
         if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        if (adminEmail !== FRANK_ADMIN_EMAIL) return json({ error: 'Only Frank can inspect SharePoint configuration' }, 403, cors);
         const raw = url.searchParams.get('url');
         if (!raw) return json({ error: 'Pass ?url=<the site address>' }, 400, cors);
         let host;
@@ -6514,6 +6802,7 @@ export default {
       if (url.pathname === '/api/admin/sharepoint/lists' && request.method === 'GET') {
         const adminEmail = await getAdminEmail(request, env);
         if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        if (adminEmail !== FRANK_ADMIN_EMAIL) return json({ error: 'Only Frank can inspect SharePoint configuration' }, 403, cors);
         const siteId = url.searchParams.get('site') || env.SHAREPOINT_SITE_ID;
         try {
           const token = await getGraphToken(env);
@@ -6562,6 +6851,22 @@ export default {
       if (url.pathname === '/api/admin/learning/upload/chunk' && request.method === 'PUT') {
         return await handleAdminLearningUploadChunk(request, env, cors);
       }
+      // Every nested contact endpoint (info, documents, requests, email,
+      // archive) is workspace-gated here so a guessed URL cannot bypass the
+      // filtered Contacts list. Bare /contacts/:email POST is checked inside
+      // the upsert handler because it is also how a new workspace claims a new
+      // contact email.
+      const scopedContactMatch = url.pathname.match(/^\/api\/admin\/contacts\/([^/]+)\/.+$/);
+      if (scopedContactMatch) {
+        const adminEmail = await getAdminEmail(request, env);
+        if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+        if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
+        const email = decodeURIComponent(scopedContactMatch[1]).trim().toLowerCase();
+        if (!(await contactBelongsToWorkspace(env, email, workspace))) {
+          return json({ error: 'Contact not found in this workspace' }, 404, cors);
+        }
+      }
       // Archive/unarchive must be matched before the generic upsert route below,
       // whose `(.+)` would otherwise swallow the "/archive" suffix into the email.
       const archiveMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/(archive|unarchive)$/);
@@ -6603,6 +6908,20 @@ export default {
       }
       if (docReqListMatch && request.method === 'POST') {
         return await handleAdminCreateDocRequest(request, env, cors, decodeURIComponent(docReqListMatch[1]));
+      }
+      // Item ids begin with the owning client's email. Gate the non-nested item
+      // routes too; otherwise someone could bypass Contacts isolation by
+      // guessing a document/request id directly.
+      const scopedClientItemMatch = url.pathname.match(/^\/api\/admin\/(?:document-requests|client-documents)\/(.+)$/);
+      if (scopedClientItemMatch) {
+        const adminEmail = await getAdminEmail(request, env);
+        if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+        const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+        if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
+        const ownerEmail = decodeURIComponent(scopedClientItemMatch[1]).split(':')[0].trim().toLowerCase();
+        if (!(await contactBelongsToWorkspace(env, ownerEmail, workspace))) {
+          return json({ error: 'Item not found in this workspace' }, 404, cors);
+        }
       }
       // Request ids are `<email>:<invTs>-<rand>` — same greedy match as documents.
       const docReqItemMatch = url.pathname.match(/^\/api\/admin\/document-requests\/(.+)$/);

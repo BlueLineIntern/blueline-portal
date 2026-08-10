@@ -42,7 +42,26 @@
       <p class="form-error" id="new-admin-error"></p>
     </div>
 
-    <div class="panel" id="links-card">
+    <div class="panel hidden" id="workspace-access-card">
+      <div class="panel-head"><h2>Admin Display Access</h2></div>
+      <p class="hint">Frank can oversee every admin display. Choose whose display you are sharing, then select the employees who may also open it. Employees always retain access to their own display.</p>
+      <div class="field-row" style="align-items:end;">
+        <div class="field">
+          <label for="workspace-owner-select">Admin display</label>
+          <select class="input" id="workspace-owner-select"></select>
+        </div>
+        <div class="field">
+          <label>Employees who can open it</label>
+          <div id="workspace-member-checks" style="display:flex; gap:var(--sp-3); flex-wrap:wrap; min-height:40px; align-items:center;"></div>
+        </div>
+      </div>
+      <div style="margin-top:var(--sp-4); display:flex; gap:var(--sp-3); align-items:center;">
+        <button type="button" class="btn btn-primary btn-small" id="workspace-access-save">Save access</button>
+        <span class="panel-status" id="workspace-access-status"></span>
+      </div>
+    </div>
+
+    <div class="panel hidden" id="links-card">
       <div class="panel-head">
         <h2>Client Portal Links</h2>
         <button type="button" class="btn btn-ghost btn-small" id="links-add-btn">+ Add link</button>
@@ -63,7 +82,7 @@
       <p class="form-error" id="links-error"></p>
     </div>
 
-    <div class="panel" id="audit-card">
+    <div class="panel hidden" id="audit-card">
       <div class="panel-head">
         <h2>Audit Log</h2>
         <button type="button" class="btn btn-ghost btn-small" id="audit-refresh-btn">↻ Refresh</button>
@@ -198,7 +217,7 @@
   }
 
   // ---------- Admin accounts / MFA ----------
-  function renderAdmins(admins, you) {
+  function renderAdmins(admins, you, boss) {
     const body = document.getElementById('admins-body');
     body.innerHTML = (admins || [])
       .map((a) => {
@@ -206,7 +225,7 @@
         const status = a.mfaEnabled
           ? '<span class="badge badge-green">Enabled</span>'
           : '<span class="badge badge-amber">Not set up</span>';
-        const action = a.mfaEnabled
+        const action = boss && a.mfaEnabled
           ? `<button type="button" class="btn btn-ghost btn-small reset-mfa-btn" data-email="${escapeHtml(a.email)}">Reset MFA</button>`
           : '<span class="cell-missing">—</span>';
         return `<tr><td>${escapeHtml(staffLabel(a.email))}</td><td>${escapeHtml(a.email)}${isYou ? ' <span class="cell-missing">(you)</span>' : ''}</td><td>${status}</td><td>${action}</td></tr>`;
@@ -220,7 +239,9 @@
       // staffLabel() checks this map before falling back to a capitalized
       // email guess — populate it from each admin's stored name first.
       registerStaff((data.admins || []).filter((a) => a.name).map((a) => ({ id: a.email, name: a.name })));
-      renderAdmins(data.admins || [], data.you);
+      renderAdmins(data.admins || [], data.you, data.boss);
+      document.getElementById('new-admin-add').parentElement.classList.toggle('hidden', !data.boss);
+      document.getElementById('new-admin-error').previousElementSibling.classList.toggle('hidden', !data.boss);
     } catch (err) {
       document.getElementById('admins-status').textContent = `Failed to load: ${err.message}`;
     }
@@ -260,6 +281,60 @@
       loadAdmins();
     } catch (err) {
       statusEl.textContent = `Reset failed: ${err.message}`;
+    }
+  });
+
+  // ---------- Admin display access (Frank only) ----------
+  let workspaceAccessData = null;
+
+  function renderWorkspaceMembers() {
+    if (!workspaceAccessData) return;
+    const owner = document.getElementById('workspace-owner-select').value;
+    const selected = new Set((workspaceAccessData.grants && workspaceAccessData.grants[owner]) || []);
+    document.getElementById('workspace-member-checks').innerHTML = (workspaceAccessData.admins || [])
+      .filter((a) => a.email !== owner)
+      .map((a) => `<label class="hint" style="display:inline-flex; align-items:center; gap:6px;">
+        <input type="checkbox" class="workspace-member-check" value="${escapeHtml(a.email)}"${selected.has(a.email) ? ' checked' : ''} />
+        ${escapeHtml(a.name || staffLabel(a.email))}
+      </label>`).join('') || '<span class="empty">No other employees yet.</span>';
+  }
+
+  async function loadWorkspaceAccess() {
+    try {
+      const data = await api('/api/admin/workspaces');
+      if (!data.boss) return;
+      workspaceAccessData = data;
+      const card = document.getElementById('workspace-access-card');
+      card.classList.remove('hidden');
+      document.getElementById('links-card').classList.remove('hidden');
+      document.getElementById('audit-card').classList.remove('hidden');
+      const select = document.getElementById('workspace-owner-select');
+      select.innerHTML = (data.admins || []).map((a) =>
+        `<option value="${escapeHtml(a.email)}">${escapeHtml(a.name || staffLabel(a.email))}'s display</option>`
+      ).join('');
+      select.value = data.you;
+      select.addEventListener('change', renderWorkspaceMembers);
+      renderWorkspaceMembers();
+      loadPortalLinks();
+      loadAudit();
+    } catch (err) {
+      document.getElementById('workspace-access-status').textContent = `Failed to load: ${err.message}`;
+    }
+  }
+
+  document.getElementById('workspace-access-save').addEventListener('click', async () => {
+    const owner = document.getElementById('workspace-owner-select').value;
+    const members = Array.from(document.querySelectorAll('.workspace-member-check:checked')).map((el) => el.value);
+    const status = document.getElementById('workspace-access-status');
+    status.textContent = 'Saving…';
+    try {
+      const saved = await api('/api/admin/workspaces/access', {
+        method: 'POST', body: JSON.stringify({ owner, members }),
+      });
+      workspaceAccessData.grants[owner] = saved.members;
+      status.textContent = `Saved ${new Date().toLocaleTimeString()}`;
+    } catch (err) {
+      status.textContent = `Save failed: ${err.message}`;
     }
   });
 
@@ -352,8 +427,7 @@
   document.getElementById('audit-more-btn').addEventListener('click', () => loadOlderAudit());
 
   loadAdmins();
-  loadPortalLinks();
-  loadAudit();
+  loadWorkspaceAccess();
 </script>
 </body>
 </html>

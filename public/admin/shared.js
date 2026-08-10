@@ -21,18 +21,29 @@ if (!SESSION) {
   location.replace('/admin.html');
 }
 
+const ADMIN_WORKSPACE_KEY = `blueline_admin_workspace:${(SESSION && SESSION.email) || ''}`;
+let ACTIVE_ADMIN_WORKSPACE = (() => {
+  try { return localStorage.getItem(ADMIN_WORKSPACE_KEY) || (SESSION && SESSION.email) || ''; }
+  catch { return (SESSION && SESSION.email) || ''; }
+})();
+
 function logoutLocal() {
   localStorage.removeItem(ADMIN_SESSION_KEY);
   // Recently-viewed holds client names. On a shared machine those must not
   // outlive the session, so they go with the token rather than lingering.
   localStorage.removeItem('blueline_recent_contacts');
+  localStorage.removeItem(ADMIN_WORKSPACE_KEY);
   location.replace('/admin.html');
 }
 
 // Authenticated JSON fetch. Any 401 means the server session died (expired,
 // revoked) — clear the stale local copy and return to login.
 async function api(path, opts = {}) {
-  const headers = { Authorization: `Bearer ${SESSION.token}`, ...(opts.headers || {}) };
+  const headers = {
+    Authorization: `Bearer ${SESSION.token}`,
+    'X-Admin-Workspace': ACTIVE_ADMIN_WORKSPACE,
+    ...(opts.headers || {}),
+  };
   // FormData must set its own Content-Type: the header carries the multipart
   // boundary the browser generates, and forcing application/json here makes the
   // body unparseable on the server.
@@ -566,6 +577,10 @@ function initShell(activePage) {
     <div class="sidebar-brand">
       <a href="/admin/"><img src="/assets/wealthadvisorstransparentwhite.png" alt="BlueLine Advisors" /></a>
     </div>
+    <div class="sidebar-workspace" id="sidebar-workspace">
+      <label for="workspace-select">Admin display</label>
+      <select id="workspace-select" aria-label="Admin display"></select>
+    </div>
     <div class="sidebar-search">
       <button type="button" id="shell-search-btn"><span class="nav-icon">${icon('search')}</span>Search<span class="kbd">Ctrl K</span></button>
     </div>
@@ -603,7 +618,40 @@ function initShell(activePage) {
     }
   });
   document.getElementById('shell-notif-btn').addEventListener('click', toggleNotifPanel);
+  loadWorkspaceSwitcher();
   refreshNotifications(); // badge appears once loaded; fire-and-forget
+}
+
+async function loadWorkspaceSwitcher() {
+  const wrap = document.getElementById('sidebar-workspace');
+  const select = document.getElementById('workspace-select');
+  if (!wrap || !select) return;
+  try {
+    const data = await api('/api/admin/workspaces');
+    const workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
+    const allowed = workspaces.map((w) => w.owner);
+    if (!allowed.includes(ACTIVE_ADMIN_WORKSPACE)) {
+      ACTIVE_ADMIN_WORKSPACE = data.active || SESSION.email;
+      localStorage.setItem(ADMIN_WORKSPACE_KEY, ACTIVE_ADMIN_WORKSPACE);
+      location.reload();
+      return;
+    }
+    select.innerHTML = workspaces.map((w) =>
+      `<option value="${escapeHtml(w.owner)}">${escapeHtml(w.name)}${w.own ? ' (mine)' : ''}</option>`
+    ).join('');
+    select.value = ACTIVE_ADMIN_WORKSPACE;
+    wrap.classList.toggle('workspace-boss', !!data.boss);
+    select.addEventListener('change', () => {
+      ACTIVE_ADMIN_WORKSPACE = select.value;
+      localStorage.setItem(ADMIN_WORKSPACE_KEY, ACTIVE_ADMIN_WORKSPACE);
+      // Recently viewed contains client names, so it cannot cross workspace
+      // boundaries on the same browser.
+      localStorage.removeItem('blueline_recent_contacts');
+      location.reload();
+    });
+  } catch (err) {
+    wrap.innerHTML = '<span class="workspace-error">Workspace unavailable</span>';
+  }
 }
 
 // ---------- Notifications (derived: overdue tasks + activity since last seen) ----------
