@@ -2203,14 +2203,17 @@ while ($listener.IsListening) {
             # never affected; this only ever misled local testing.
             $asg = if ($assignments.ContainsKey($email)) { , @($assignments[$email]) } else { $null }
             # Per member plus a household union: a shared portal must show a
-            # module if ANY member is assigned it. One member with no record
-            # (= everything visible) makes the whole union null, by the same rule
-            # that applies to them individually.
+            # module if ANY member is assigned it. One REGISTERED member with no
+            # record (= everything visible) makes the whole union null. A family
+            # contact without a portal account has nobody to assign work to yet,
+            # so their list is empty and does not widen the household union.
             $byMember = [ordered]@{}
             $union = [System.Collections.ArrayList]@()
             $anyUnrestricted = $false
             foreach ($m in (Get-HouseholdMembers $email)) {
-                if ($assignments.ContainsKey($m)) {
+                if (-not $users.ContainsKey($m)) {
+                    $byMember[$m] = @()
+                } elseif ($assignments.ContainsKey($m)) {
                     $list = @($assignments[$m])
                     # NO `, @(...)` here. That wrapper protects a single-element
                     # array from unrolling when it is RETURNED, but assigning it
