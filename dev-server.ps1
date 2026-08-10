@@ -250,6 +250,55 @@ function Get-DocCategory($raw) {
     return 'other'
 }
 
+# Mirror of householdPortalMembers in worker.js. Everyone in a FAMILY (not a
+# company) shares one portal: same documents, same requests, each other's
+# assessments. Every member including child/dependent roles; automatic, no
+# opt-in. Always returns at least the caller, so a client in no household
+# behaves exactly as before. Returns , @(...) for the same load-bearing reason
+# ConvertTo-CalendarOwners does - a bare single-element array unrolls to a string.
+#
+# CALL IT BY ASSIGNING, never inline inside @():  $mem = Get-HouseholdMembers $x
+# `@(Get-HouseholdMembers $x)` wraps the returned array in ANOTHER array, so
+# .Count reads 1 and -contains never matches. That produced exactly one bug here
+# already: /api/household reported shared=false for a real two-person family and
+# every household document query matched nothing.
+function Get-HouseholdMembers($email) {
+    $addr = ([string]$email).Trim().ToLower()
+    $fam = @($households.Values | Where-Object {
+        $_.id -and (Get-GroupKind $_) -ne 'company' -and -not $_.archived -and
+        @($_.members | Where-Object { $_ -and ([string]$_.email).ToLower() -eq $addr }).Count -gt 0
+    } | Sort-Object `
+        @{ Expression = { if ([string]$_.createdAt) { [string]$_.createdAt } else { '9999' } } }, `
+        @{ Expression = { [string]$_.id } })
+    if (-not $fam.Count) { return , @($addr) }
+    $out = [System.Collections.ArrayList]@()
+    foreach ($m in $fam[0].members) {
+        $e = ([string]$m.email).Trim().ToLower()
+        if ($e -and -not $out.Contains($e)) { $null = $out.Add($e) }
+    }
+    if (-not $out.Contains($addr)) { $null = $out.Add($addr) }
+    return , @($out.ToArray())
+}
+
+function Get-HouseholdRecord($email) {
+    $addr = ([string]$email).Trim().ToLower()
+    $fam = @($households.Values | Where-Object {
+        $_.id -and (Get-GroupKind $_) -ne 'company' -and -not $_.archived -and
+        @($_.members | Where-Object { $_ -and ([string]$_.email).ToLower() -eq $addr }).Count -gt 0
+    } | Sort-Object `
+        @{ Expression = { if ([string]$_.createdAt) { [string]$_.createdAt } else { '9999' } } }, `
+        @{ Expression = { [string]$_.id } })
+    if ($fam.Count) { return $fam[0] }
+    return $null
+}
+
+function Get-MemberName($email) {
+    $e = ([string]$email).Trim().ToLower()
+    if ($contacts.ContainsKey($e) -and ([string]$contacts[$e].name)) { return [string]$contacts[$e].name }
+    if ($users.ContainsKey($e) -and ([string]$users[$e].name)) { return [string]$users[$e].name }
+    return $e
+}
+
 # Fixed sample data standing in for a live Microsoft Graph mailbox search (see
 # fetchClientEmailHistory in worker.js) - the mock has no Outlook behind it at
 # all, unlike documents/info which at least have real in-memory CRUD.
@@ -1336,25 +1385,32 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/document-requests' -and $method -eq 'GET') {
             $email = Get-SessionEmail $ctx
             if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
-            $reqs = @($docRequests.Values | Where-Object { $_.client -eq $email -and $_.status -ne 'cancelled' } |
+            # Household-wide: forEmail/forName say who was actually asked.
+            $mem = Get-HouseholdMembers $email
+            $reqs = @($docRequests.Values | Where-Object { $mem -contains $_.client -and $_.status -ne 'cancelled' } |
                 Sort-Object -Property @{ Expression = { [string]$_['requestedAt'] } } -Descending |
                 ForEach-Object { [ordered]@{
                     id = $_.id; label = $_.label; notes = $_.notes; dueDate = $_.dueDate
                     category = (Get-DocCategory $_.category)
-                    status = $_.status; requestedAt = $_.requestedAt; fulfilledAt = $_.fulfilledAt } })
-            Send-Json $ctx 200 @{ requests = $reqs; categories = $docCategories }
+                    status = $_.status; requestedAt = $_.requestedAt; fulfilledAt = $_.fulfilledAt
+                    forEmail = $_.client; forName = (Get-MemberName $_.client) } })
+            Send-Json $ctx 200 @{ requests = $reqs; categories = $docCategories; you = $email }
         }
         elseif ($path -eq '/api/documents' -and $method -eq 'GET') {
             $email = Get-SessionEmail $ctx
             if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
             # source -eq 'client' ONLY. An advisor's attachment lives in the same
             # store but was filed with no expectation of client visibility.
-            $docs = @($clientDocs.Values | Where-Object { $_.client -eq $email -and $_.source -eq 'client' } |
+            # Household-wide, with ownerEmail/ownerName so a shared row says whose
+            # upload it is rather than blending a spouse's files with your own.
+            $mem = Get-HouseholdMembers $email
+            $docs = @($clientDocs.Values | Where-Object { $mem -contains $_.client -and $_.source -eq 'client' } |
                 Sort-Object -Property @{ Expression = { [string]$_['uploadedAt'] } } -Descending |
                 ForEach-Object { [ordered]@{
                     id = $_.id; name = $_.name; filename = $_.filename
-                    size = $_.size; category = (Get-DocCategory $_.category); uploadedAt = $_.uploadedAt } })
-            Send-Json $ctx 200 @{ documents = $docs; categories = $docCategories }
+                    size = $_.size; category = (Get-DocCategory $_.category); uploadedAt = $_.uploadedAt
+                    ownerEmail = $_.client; ownerName = (Get-MemberName $_.client) } })
+            Send-Json $ctx 200 @{ documents = $docs; categories = $docCategories; you = $email }
         }
         elseif ($path -eq '/api/documents/upload' -and $method -eq 'POST') {
             $email = Get-SessionEmail $ctx
@@ -1379,11 +1435,15 @@ while ($listener.IsListening) {
             # Only honour a request id that really is this client's and still open.
             # The request's category wins: the advisor said what they were asking
             # for, so the answer files where they filed the ask.
+            # Household-scoped: one member can clear a request addressed to
+            # another (the point of a shared portal), but nobody can clear an
+            # unrelated client's request by guessing an id.
             $validReq = ''
             $category = Get-DocCategory $body.category
+            $mem = Get-HouseholdMembers $email
             if ($reqId -and $docRequests.ContainsKey($reqId)) {
                 $r = $docRequests[$reqId]
-                if ($r.client -eq $email -and $r.status -eq 'open') {
+                if ($mem -contains $r.client -and $r.status -eq 'open') {
                     $validReq = $reqId
                     $category = Get-DocCategory $r.category
                 }
@@ -1428,10 +1488,15 @@ while ($listener.IsListening) {
             $clientDocUploads.Remove($uid)
             if ($up.requestId -and $docRequests.ContainsKey($up.requestId)) {
                 $r = $docRequests[$up.requestId]
-                if ($r.client -eq $email -and $r.status -eq 'open') {
+                # Household-scoped, matching the upload-start check — comparing
+                # against the caller alone would leave a spouse's request open
+                # even though the document arrived.
+                $memChunk = Get-HouseholdMembers $email
+                if ($memChunk -contains $r.client -and $r.status -eq 'open') {
                     $r.status = 'fulfilled'
                     $r.fulfilledAt = (Get-Date).ToString('o')
                     $r.fulfilledDocId = $id
+                    if ($r.client -ne $email) { $r['fulfilledBy'] = $email }
                 }
             }
             Write-Timeline $email 'document-uploaded' 'client' @{ name = $up.name; filename = $up.filename }
@@ -1963,7 +2028,30 @@ while ($listener.IsListening) {
             $email = Get-SessionEmail $ctx
             if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
             if (-not $responses.ContainsKey($email)) { $responses[$email] = @{} }
-            Send-Json $ctx 200 @{ modules = $responses[$email] }
+            # Every household member's set, keyed by member — NOT merged. Two
+            # people can't both answer "my risk tolerance" in one record.
+            $byMember = [ordered]@{}
+            foreach ($m in (Get-HouseholdMembers $email)) {
+                if (-not $responses.ContainsKey($m)) { $responses[$m] = @{} }
+                $byMember[$m] = $responses[$m]
+            }
+            Send-Json $ctx 200 @{ modules = $responses[$email]; byMember = $byMember; you = $email }
+        }
+        elseif ($path -eq '/api/household' -and $method -eq 'GET') {
+            $email = Get-SessionEmail $ctx
+            if (-not $email) { Send-Json $ctx 401 @{ error = 'Not authenticated' }; continue }
+            $members = Get-HouseholdMembers $email
+            $hh = Get-HouseholdRecord $email
+            $roleOf = @{}
+            if ($hh) { foreach ($m in $hh.members) { $roleOf[([string]$m.email).ToLower()] = [string]$m.role } }
+            Send-Json $ctx 200 @{
+                shared = ($members.Count -gt 1)
+                householdName = if ($hh) { [string]$hh.name } else { '' }
+                you = $email
+                members = @($members | ForEach-Object { [ordered]@{
+                    email = $_; name = (Get-MemberName $_)
+                    role = if ($roleOf.ContainsKey($_)) { $roleOf[$_] } else { '' } } })
+            }
         }
         elseif ($path -match '^/api/assessments/([a-z]+)$' -and $method -eq 'POST') {
             $moduleName = $Matches[1]
@@ -1972,20 +2060,37 @@ while ($listener.IsListening) {
             $body = Read-Body $ctx
             $module = Build-Module $moduleName $body
             if (-not $module) { Send-Json $ctx 404 @{ error = 'Unknown assessment module' }; continue }
+            # Whose assessment. Validated against the household, never trusted —
+            # otherwise `owner` would let any client write answers into anyone
+            # else's record just by naming their address.
+            $owner = $email
+            $wanted = ([string]$body.owner).Trim().ToLower()
+            if ($wanted -and $wanted -ne $email) {
+                # Assigned first, never @()-wrapped inline: Get-HouseholdMembers
+                # returns `, @(...)`, and wrapping that in @() nests the array
+                # instead of flattening it (same trap as ConvertTo-CalendarOwners).
+                $hhMembers = Get-HouseholdMembers $email
+                if ($hhMembers -notcontains $wanted) {
+                    Send-Json $ctx 403 @{ error = 'That assessment does not belong to your household' }; continue
+                }
+                $owner = $wanted
+            }
             $module['updatedAt'] = (Get-Date).ToString('o')
-            if (-not $responses.ContainsKey($email)) { $responses[$email] = @{} }
-            $firstCompletion = -not $responses[$email].ContainsKey($moduleName)
-            $responses[$email][$moduleName] = $module
+            if (-not $responses.ContainsKey($owner)) { $responses[$owner] = @{} }
+            $firstCompletion = -not $responses[$owner].ContainsKey($moduleName)
+            $responses[$owner][$moduleName] = $module
             $evt = if ($firstCompletion) { 'assessment-completed' } else { 'assessment-updated' }
-            Write-Timeline $email $evt 'client' @{ module = $moduleName }
+            $detail = @{ module = $moduleName }
+            if ($owner -ne $email) { $detail['filledInBy'] = $email }
+            Write-Timeline $owner $evt 'client' $detail
             if ($firstCompletion) {
-                Invoke-AutoTask "review-assessment-$moduleName" $email @{
-                    title = "Review $moduleName assessment - $email"
-                    description = "The client completed the $moduleName assessment. Review their responses."
+                Invoke-AutoTask "review-assessment-$moduleName" $owner @{
+                    title = "Review $moduleName assessment - $owner"
+                    description = "The $moduleName assessment was completed for this client. Review their responses."
                     category = 'review'
                 }
             }
-            Send-Json $ctx 200 @{ module = $module; modules = $responses[$email] }
+            Send-Json $ctx 200 @{ module = $module; modules = $responses[$owner]; owner = $owner }
         }
         elseif ($path -eq '/api/assignments' -and $method -eq 'GET') {
             $email = Get-SessionEmail $ctx
@@ -1997,7 +2102,25 @@ while ($listener.IsListening) {
             # returns `, @(...)`. The real worker returns a JS array and was
             # never affected; this only ever misled local testing.
             $asg = if ($assignments.ContainsKey($email)) { , @($assignments[$email]) } else { $null }
-            Send-Json $ctx 200 @{ assignments = $asg }
+            # Per member plus a household union: a shared portal must show a
+            # module if ANY member is assigned it. One member with no record
+            # (= everything visible) makes the whole union null, by the same rule
+            # that applies to them individually.
+            $byMember = [ordered]@{}
+            $union = [System.Collections.ArrayList]@()
+            $anyUnrestricted = $false
+            foreach ($m in (Get-HouseholdMembers $email)) {
+                if ($assignments.ContainsKey($m)) {
+                    $list = @($assignments[$m])
+                    $byMember[$m] = , @($list)
+                    foreach ($k in $list) { if (-not $union.Contains($k)) { $null = $union.Add($k) } }
+                } else {
+                    $byMember[$m] = $null
+                    $anyUnrestricted = $true
+                }
+            }
+            $unionOut = if ($anyUnrestricted) { $null } else { , @($union.ToArray()) }
+            Send-Json $ctx 200 @{ assignments = $unionOut; byMember = $byMember; you = $email }
         }
         elseif ($path -match '^/api/admin/assignments/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx

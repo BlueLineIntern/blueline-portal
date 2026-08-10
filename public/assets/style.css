@@ -230,6 +230,56 @@ body {
 .doc-sent { padding: var(--sp-3) 0; border-bottom: 1px solid var(--border); }
 .doc-sent:last-child { border-bottom: none; }
 
+/* Household member switcher (Assessments tab). Only rendered when the client
+   shares a portal, so a single client never sees it. */
+.member-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-5);
+}
+.member-switch-label { font-size: var(--fs-sm); color: var(--text-muted); }
+.member-switch-btns { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.member-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  border: 1px solid var(--border-strong);
+  background: var(--panel, #fff);
+  color: var(--text);
+  border-radius: var(--radius-pill);
+  padding: 5px var(--sp-4);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.member-btn:hover { border-color: var(--sky); }
+.member-btn.active { background: var(--navy); border-color: var(--navy); color: #fff; }
+/* Completed count, so you can see at a glance who still owes work. */
+.member-btn-count {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  background: var(--gray-bg);
+  color: var(--muted);
+  border-radius: var(--radius-pill);
+  padding: 0 6px;
+}
+.member-btn.active .member-btn-count { background: rgba(255,255,255,0.22); color: #fff; }
+
+/* Whose document / whose request, on a shared household list. Neutral and small
+   — it identifies a person, it isn't a status. */
+.doc-who {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  background: var(--gray-bg);
+  color: var(--muted);
+  border-radius: var(--radius-pill);
+  padding: 1px var(--sp-2);
+  white-space: nowrap;
+  margin-left: var(--sp-2);
+}
+
 /* Documents already filed in a section, above that section's upload row. The
    rule separates the list from the controls; with nothing filed the .empty line
    carries it instead, so the border never floats above an empty gap. */

@@ -1468,12 +1468,112 @@ const MODULE_VALIDATORS = {
   },
 };
 
+// ---------- Household-shared portal ----------
+// Every member of a family sees one portal: the same documents, the same
+// requests, and each other's assessments. Resolved per request from the
+// household record rather than stored on the client, so adding or removing a
+// member takes effect immediately and there is no second copy to fall out of
+// step.
+//
+// Scope, decided deliberately and worth knowing before changing anything here:
+//   * FAMILIES only, not companies — same rule resolveClientDocFolder uses.
+//   * EVERY member, including child/dependent roles.
+//   * Automatic for every family; there is no per-household opt-in.
+// The consequence is that a document one member uploaded is visible to all of
+// them, including estate documents filed before this existed. That is the
+// intended behaviour here, but it is the reason every shared row is labelled
+// with whose it is rather than silently blended — a client should be able to see
+// that they are looking at a spouse's file.
+//
+// Always returns at least the caller, so a client in no household behaves
+// exactly as they did before any of this.
+async function householdPortalMembers(env, email) {
+  const addr = String(email || '').trim().toLowerCase();
+  try {
+    const { items } = await readAllEncrypted(env, 'household:');
+    const families = items.filter((h) => h && h.id && groupKindOf(h) !== 'company' && !h.archived);
+    const mine = families
+      .filter((h) => (h.members || []).some((m) => m && String(m.email || '').toLowerCase() === addr))
+      .sort(oldestFirst);
+    if (!mine.length) return { members: [addr], household: null };
+    // Nothing stops a contact being listed in two families; oldest wins, the
+    // same tie-break the document folder resolver uses, so the two agree.
+    const hh = mine[0];
+    const members = [];
+    for (const m of hh.members || []) {
+      const e = String((m && m.email) || '').trim().toLowerCase();
+      if (e && !members.includes(e)) members.push(e);
+    }
+    if (!members.includes(addr)) members.push(addr);
+    return { members, household: hh };
+  } catch (err) {
+    // A read failure must never widen access. Falling back to just the caller
+    // fails closed: they see their own portal, never someone else's.
+    console.error('Could not resolve household for the portal, using own records only:', err);
+    return { members: [addr], household: null };
+  }
+}
+
+// Display name for a member, for the "whose is this" labels. Falls back to the
+// address so a member with no contact record still renders.
+async function memberDisplayNames(env, emails) {
+  const names = {};
+  for (const e of emails) {
+    try {
+      const rec = await decryptToObject(env, await env.PORTAL_KV.get(`contact:${e}`));
+      names[e] = (rec && rec.name) || e;
+    } catch {
+      names[e] = e;
+    }
+  }
+  return names;
+}
+
+// The household this client shares a portal with, for the member switcher and
+// the whose-is-it labels. `shared` is false for a client in no family, which is
+// how the UI knows to hide all of it.
+async function handleGetHousehold(request, env, cors) {
+  const email = await getSessionEmail(request, env);
+  if (!email) return json({ error: 'Not authenticated' }, 401, cors);
+  const { members, household } = await householdPortalMembers(env, email);
+  const names = await memberDisplayNames(env, members);
+  const roleOf = {};
+  for (const m of (household && household.members) || []) {
+    roleOf[String((m && m.email) || '').toLowerCase()] = (m && m.role) || '';
+  }
+  return json({
+    shared: members.length > 1,
+    householdName: (household && household.name) || '',
+    you: email,
+    members: members.map((e) => ({ email: e, name: names[e], role: roleOf[e] || '' })),
+  }, 200, cors);
+}
+
+// Every member's assessments, keyed by member email, so the portal can show a
+// spouse's completed work rather than only the caller's. `you` names which set
+// belongs to the caller.
+//
+// NOT merged into one shared set on purpose: two people cannot both answer "my
+// risk tolerance" in a single record — the second save would overwrite the
+// first, losing that answer outright — and one blended risk profile per
+// household leaves no per-client suitability record. Sharing here means "see and
+// edit each other's", not "overwrite each other's".
 async function handleGetAssessments(request, env, cors) {
   const email = await getSessionEmail(request, env);
   if (!email) return json({ error: 'Not authenticated' }, 401, cors);
 
-  const raw = await env.PORTAL_KV.get(`responses:${email}`);
-  return json({ modules: await loadModules(env, raw) }, 200, cors);
+  const { members } = await householdPortalMembers(env, email);
+  const byMember = {};
+  for (const m of members) {
+    byMember[m] = await loadModules(env, await env.PORTAL_KV.get(`responses:${m}`));
+  }
+  return json({
+    // `modules` stays the caller's own set so anything reading the old shape
+    // keeps working; `byMember` is what the shared portal renders from.
+    modules: byMember[email] || {},
+    byMember,
+    you: email,
+  }, 200, cors);
 }
 
 async function handleSaveAssessment(request, env, cors, moduleName) {
@@ -1494,27 +1594,54 @@ async function handleSaveAssessment(request, env, cors, moduleName) {
   const result = validator(body);
   if (result.error) return json({ error: result.error }, 400, cors);
 
-  const raw = await env.PORTAL_KV.get(`responses:${email}`);
+  // Which member's assessment this is. A shared household portal lets one member
+  // open another's, so the save has to land on the ORIGINAL owner's record —
+  // writing it to the caller instead would fork a second copy and leave the
+  // spouse's own answers untouched and stale.
+  //
+  // Validated against the caller's household, NOT taken on trust: without this
+  // check `owner` would let any authenticated client write assessment answers
+  // into any other client's record by naming their address.
+  const { members } = await householdPortalMembers(env, email);
+  const requested = String((body && body.owner) || '').trim().toLowerCase();
+  let owner = email;
+  if (requested && requested !== email) {
+    if (!members.includes(requested)) {
+      return json({ error: 'That assessment does not belong to your household' }, 403, cors);
+    }
+    owner = requested;
+  }
+
+  const raw = await env.PORTAL_KV.get(`responses:${owner}`);
   const modules = await loadModules(env, raw);
   const firstCompletion = !modules[moduleName];
   modules[moduleName] = { ...result.data, updatedAt: new Date().toISOString() };
 
-  await env.PORTAL_KV.put(`responses:${email}`, await encryptJSON(env, { modules }));
+  await env.PORTAL_KV.put(`responses:${owner}`, await encryptJSON(env, { modules }));
 
   // CRM history + automation: record the event, and the FIRST completion of a
   // module opens a review task for the advisor (deduped by marker, so
-  // re-saves/edits never pile up duplicates).
-  await logTimeline(env, email, firstCompletion ? 'assessment-completed' : 'assessment-updated', 'client', {
+  // re-saves/edits never pile up duplicates). Logged against the OWNER, so the
+  // advisor's timeline shows whose assessment changed, with `by` naming who
+  // actually filled it in when that was a different member.
+  await logTimeline(env, owner, firstCompletion ? 'assessment-completed' : 'assessment-updated', 'client', {
     module: moduleName,
+    ...(owner !== email ? { filledInBy: email } : {}),
   });
   if (firstCompletion) {
-    await maybeAutoTask(env, `review-assessment-${moduleName}`, email, {
-      title: `Review ${moduleName} assessment - ${email}`,
-      description: `The client completed the ${moduleName} assessment. Review their responses.`,
+    // Keyed to the OWNER, not the caller: the advisor is reviewing that member's
+    // assessment, and using the caller here would open the task against the
+    // wrong client whenever one member completed another's.
+    await maybeAutoTask(env, `review-assessment-${moduleName}`, owner, {
+      title: `Review ${moduleName} assessment - ${owner}`,
+      description: `The ${moduleName} assessment was completed for this client`
+        + `${owner !== email ? ` by ${email}` : ''}. Review their responses.`,
       category: 'review',
     });
   }
-  return json({ module: modules[moduleName], modules }, 200, cors);
+  // `owner` comes back so a shared portal knows which member's set to patch
+  // rather than assuming it was the caller's.
+  return json({ module: modules[moduleName], modules, owner }, 200, cors);
 }
 
 // ---------- Module assignments ----------
@@ -1537,11 +1664,34 @@ function loadAssignments(raw) {
   }
 }
 
+// Per member, plus a household union. A shared portal has to show a module if
+// ANY member is assigned it — otherwise a spouse assigned something the caller
+// isn't would have their own work hidden from the portal they share.
+//
+// A single null (= "no record, everything visible") makes the whole union null,
+// because one member with no assignment record means everything is visible to
+// the household by the same rule that applies to them individually.
 async function handleGetAssignments(request, env, cors) {
   const email = await getSessionEmail(request, env);
   if (!email) return json({ error: 'Not authenticated' }, 401, cors);
-  const raw = await env.PORTAL_KV.get(`assignments:${email}`);
-  return json({ assignments: loadAssignments(raw) }, 200, cors);
+  const { members } = await householdPortalMembers(env, email);
+  const byMember = {};
+  let union = [];
+  let anyUnrestricted = false;
+  for (const m of members) {
+    const list = loadAssignments(await env.PORTAL_KV.get(`assignments:${m}`));
+    byMember[m] = list;
+    if (list === null) anyUnrestricted = true;
+    else for (const k of list) if (!union.includes(k)) union.push(k);
+  }
+  return json({
+    // `assignments` keeps the old shape (the union) so existing callers and the
+    // gate checks behave; byMember is what a shared portal filters each member's
+    // own grid with.
+    assignments: anyUnrestricted ? null : union,
+    byMember,
+    you: email,
+  }, 200, cors);
 }
 
 async function handleAdminSetAssignments(request, env, cors, rawEmail) {
@@ -4421,7 +4571,16 @@ async function handleAdminDeleteDocRequest(request, env, cors, id) {
 async function handleGetDocRequests(request, env, cors) {
   const email = await getSessionEmail(request, env);
   if (!email) return json({ error: 'Not authenticated' }, 401, cors);
-  const { items } = await readAllEncrypted(env, `docreq:${email}:`);
+  const { members } = await householdPortalMembers(env, email);
+  const names = await memberDisplayNames(env, members);
+  const items = [];
+  for (const m of members) {
+    const { items: mine } = await readAllEncrypted(env, `docreq:${m}:`);
+    // forEmail/forName say who was actually asked, so a shared request reads as
+    // "asked of Jeannette" rather than looking like it was addressed to whoever
+    // happens to be logged in.
+    for (const r of mine) items.push({ ...r, forEmail: m, forName: names[m] });
+  }
   const requests = items
     .filter((r) => r.status !== 'cancelled')
     .sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')))
@@ -4429,8 +4588,9 @@ async function handleGetDocRequests(request, env, cors) {
       id: r.id, label: r.label, notes: r.notes || '', dueDate: r.dueDate || '',
       category: sanitizeDocCategory(r.category),
       status: r.status, requestedAt: r.requestedAt, fulfilledAt: r.fulfilledAt || null,
+      forEmail: r.forEmail, forName: r.forName,
     }));
-  return json({ requests, categories: DOC_CATEGORIES }, 200, cors);
+  return json({ requests, categories: DOC_CATEGORIES, you: email }, 200, cors);
 }
 
 // ONLY the client's own uploads. An advisor's attachment is filed in the same
@@ -4443,7 +4603,13 @@ async function handleGetDocRequests(request, env, cors) {
 async function handleGetClientDocuments(request, env, cors) {
   const email = await getSessionEmail(request, env);
   if (!email) return json({ error: 'Not authenticated' }, 401, cors);
-  const { items } = await readAllEncrypted(env, `clientdoc:${email}:`);
+  const { members } = await householdPortalMembers(env, email);
+  const names = await memberDisplayNames(env, members);
+  const items = [];
+  for (const m of members) {
+    const { items: mine } = await readAllEncrypted(env, `clientdoc:${m}:`);
+    for (const d of mine) items.push({ ...d, ownerEmail: m, ownerName: names[m] });
+  }
   const documents = items
     .filter((d) => d.source === 'client')
     .sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')))
@@ -4452,10 +4618,14 @@ async function handleGetClientDocuments(request, env, cors) {
       // Anything filed before categories existed reads as Miscellaneous rather
       // than vanishing from a tab that now only renders known sections.
       category: sanitizeDocCategory(d.category),
+      // Whose upload this is. The household shares the library, so a row has to
+      // say who sent it — otherwise a spouse's file is indistinguishable from
+      // your own.
+      ownerEmail: d.ownerEmail, ownerName: d.ownerName,
     }));
   // Sections travel with the data so the portal renders whatever the server
   // knows about, rather than keeping its own copy of the list to drift.
-  return json({ documents, categories: DOC_CATEGORIES }, 200, cors);
+  return json({ documents, categories: DOC_CATEGORIES, you: email }, 200, cors);
 }
 
 async function handleClientDocUploadStart(request, env, cors) {
@@ -4482,20 +4652,27 @@ async function handleClientDocUploadStart(request, env, cors) {
       error: `We can't accept ".${ext || 'unknown'}" files. Please upload a PDF, image, or Office document.`,
     }, 400, cors);
   }
+  // Counted against the CALLER, not the household. A household-wide cap would
+  // let one member exhaust it and block their spouse from uploading anything;
+  // per-account is also the right unit for the abuse this guards against, since
+  // that is what an attacker controls.
   const existing = await listKeys(env, `clientdoc:${email}:`);
   if (existing.length >= CLIENT_UPLOAD_COUNT_MAX) {
     return json({ error: 'You have reached the upload limit — please contact your advisor.' }, 400, cors);
   }
-  // A requestId is only honoured if it actually belongs to this client and is
-  // still open, so a client can't clear someone else's request by guessing an id.
+  // A requestId is only honoured if it belongs to someone in this client's
+  // household and is still open — so one member can clear a request addressed to
+  // another (the point of a shared portal), but nobody can clear a request
+  // belonging to an unrelated client by guessing an id.
   // The request's own category wins over anything the client sent: the advisor
   // said what they were asking for, so the answer files where they filed the ask.
+  const { members } = await householdPortalMembers(env, email);
   let validRequestId = '';
   let category = sanitizeDocCategory(body.category);
   if (requestId) {
     const raw = await env.PORTAL_KV.get(`docreq:${requestId}`);
     const req = raw ? await decryptToObject(env, raw) : null;
-    if (req && req.client === email && req.status === 'open') {
+    if (req && members.includes(req.client) && req.status === 'open') {
       validRequestId = requestId;
       category = sanitizeDocCategory(req.category);
     }
@@ -4542,10 +4719,17 @@ async function handleClientDocUploadChunk(request, env, cors) {
     if (ticket.requestId) {
       const raw = await env.PORTAL_KV.get(`docreq:${ticket.requestId}`);
       const req = raw ? await decryptToObject(env, raw) : null;
-      if (req && req.client === email && req.status === 'open') {
+      // Household-scoped, matching the check at upload-start: one member
+      // fulfilling another's request is the point of a shared portal, and
+      // comparing against the caller alone would leave a spouse's request
+      // sitting open even though the document arrived.
+      const { members } = await householdPortalMembers(env, email);
+      if (req && members.includes(req.client) && req.status === 'open') {
         const next = {
           ...req, status: 'fulfilled',
           fulfilledAt: new Date().toISOString(), fulfilledDocId: record.id,
+          // Who actually sent it, when that wasn't the person asked.
+          ...(req.client !== email ? { fulfilledBy: email } : {}),
         };
         await env.PORTAL_KV.put(`docreq:${ticket.requestId}`, await encryptJSON(env, next));
       }
@@ -6060,6 +6244,9 @@ export default {
       }
       if (url.pathname === '/api/portal-links' && request.method === 'GET') {
         return await handleGetPortalLinks(request, env, cors);
+      }
+      if (url.pathname === '/api/household' && request.method === 'GET') {
+        return await handleGetHousehold(request, env, cors);
       }
       if (url.pathname === '/api/document-requests' && request.method === 'GET') {
         return await handleGetDocRequests(request, env, cors);

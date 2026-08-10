@@ -112,10 +112,18 @@
     <section id="view-assignments" class="view hidden">
       <div class="dashboard-header">
         <div>
-          <h1>Your Assessments</h1>
-          <p class="subtitle">The assessments and workflows your advisor has assigned to you.</p>
+          <h1 id="assignments-title">Your Assessments</h1>
+          <p class="subtitle" id="assignments-subtitle">The assessments and workflows your advisor has assigned to you.</p>
           <p class="form-error" id="assignments-error"></p>
         </div>
+      </div>
+
+      <!-- Household member switcher. Only rendered when this client shares a
+           portal with someone; assessments are per-person (see
+           handleGetAssessments), so this picks whose you're looking at. -->
+      <div class="member-switch hidden" id="member-switch">
+        <span class="member-switch-label">Whose assessments:</span>
+        <div class="member-switch-btns" id="member-switch-btns"></div>
       </div>
 
       <p class="empty hidden" id="assignments-empty">Nothing is assigned to you right now. Your advisor will

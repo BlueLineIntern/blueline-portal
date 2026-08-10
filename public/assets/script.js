@@ -132,6 +132,18 @@ function updateNav() {
 
 let assignedKeys = null;
 
+// Household sharing. Everyone in a family sees one portal: the same documents
+// and requests, and each other's assessments. `viewingMember` is whose
+// assessments are on screen — documents and requests are always the whole
+// household's, since those are shared outright.
+//
+// Assessments are per-member rather than merged: two people can't both answer
+// "my risk tolerance" in one record without the second save wiping the first.
+let household = { shared: false, householdName: "", you: "", members: [] };
+let modulesByMember = {};
+let assignmentsByMember = {};
+let viewingMember = "";
+
 function isAssigned(key) {
   // Anything that isn't an array is treated as "no assignment record", i.e.
   // everything visible — the same meaning as null. Previously this called
@@ -151,17 +163,53 @@ async function refreshState() {
   // without a second round trip. A links failure must not take down the
   // assessment state the rest of the portal depends on, so it degrades to an
   // empty list rather than rejecting the whole Promise.all.
-  const [assessments, assignments, links, reqs] = await Promise.all([
+  const [assessments, assignments, links, reqs, hh] = await Promise.all([
     apiRequest("/api/assessments", { auth: true }),
     apiRequest("/api/assignments", { auth: true }),
     apiRequest("/api/portal-links", { auth: true }).catch(() => ({ links: [] })),
     apiRequest("/api/document-requests", { auth: true }).catch(() => ({ requests: [] })),
+    apiRequest("/api/household", { auth: true }).catch(() => null),
   ]);
-  currentModules = assessments.modules || {};
-  assignedKeys = assignments.assignments;
   portalLinks = links.links || [];
   docRequests = reqs.requests || [];
+
+  // Household. A failure here degrades to "just me", which is the pre-sharing
+  // behaviour — it must never widen access, and it must never break the portal.
+  const you = assessments.you || (getSession() || {}).email || "";
+  household = hh && Array.isArray(hh.members) && hh.members.length
+    ? hh
+    : { shared: false, householdName: "", you, members: [{ email: you, name: "You", role: "" }] };
+
+  // Per-member maps, with the caller's own set as the fallback so an older
+  // worker that returns only `modules`/`assignments` still works.
+  modulesByMember = assessments.byMember || { [you]: assessments.modules || {} };
+  assignmentsByMember = assignments.byMember || { [you]: assignments.assignments };
+
+  // Keep looking at whoever was selected, unless they've left the household.
+  const stillThere = household.members.some((m) => m.email === viewingMember);
+  setViewingMember(stillThere ? viewingMember : household.you || you);
 }
+
+// currentModules/assignedKeys stay "the member currently being viewed", so every
+// existing render function (the FPA grid, the category grids, the form
+// populators) works unchanged — switching member just repoints them.
+function setViewingMember(email) {
+  viewingMember = email;
+  currentModules = modulesByMember[email] || {};
+  assignedKeys = Object.prototype.hasOwnProperty.call(assignmentsByMember, email)
+    ? assignmentsByMember[email]
+    : null;
+}
+
+const memberName = (email) => {
+  const m = (household.members || []).find((x) => x.email === email);
+  return (m && m.name) || email;
+};
+const isYou = (email) => email === household.you;
+// "You" for the caller's own rows, first name for anyone else — a full name on
+// every row of a shared list is noise.
+const shortMemberName = (email) =>
+  isYou(email) ? "You" : String(memberName(email)).split(" ")[0] || memberName(email);
 
 // ---------- Auth ----------
 
@@ -230,9 +278,25 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
 // Counts what the client still owes across everything assigned to them, so Home
 // can lead with a number instead of restating the module grid that Assignments
 // already shows.
+// Counted across the WHOLE household, not just the member on screen: Home must
+// not say "all caught up" while a spouse still has three assessments open in the
+// portal they share.
 function outstandingCount() {
-  const assigned = MODULES.concat(CATEGORY_MODULES).filter((mod) => isAssigned(mod.key));
-  return assigned.filter((mod) => !currentModules[mod.key]).length;
+  const all = MODULES.concat(CATEGORY_MODULES);
+  const members = (household.members || []).map((m) => m.email);
+  if (!members.length) {
+    return all.filter((mod) => isAssigned(mod.key) && !currentModules[mod.key]).length;
+  }
+  let n = 0;
+  for (const m of members) {
+    const asg = Object.prototype.hasOwnProperty.call(assignmentsByMember, m) ? assignmentsByMember[m] : null;
+    const done = modulesByMember[m] || {};
+    for (const mod of all) {
+      const assigned = !Array.isArray(asg) || asg.includes(mod.key);
+      if (assigned && !done[mod.key]) n += 1;
+    }
+  }
+  return n;
 }
 
 function renderHomeLanding() {
@@ -438,7 +502,10 @@ function renderDocuments() {
       open.map((r) => `
         <div class="doc-req" data-req="${escapeHtml(r.id)}">
           <div class="doc-req-main">
-            <div class="doc-req-label">${escapeHtml(r.label)}</div>
+            <div class="doc-req-label">${escapeHtml(r.label)}${
+              household.shared && r.forEmail
+                ? ` <span class="doc-who">for ${escapeHtml(shortMemberName(r.forEmail))}</span>`
+                : ""}</div>
             ${r.notes ? `<div class="doc-req-notes">${escapeHtml(r.notes)}</div>` : ""}
             ${r.dueDate ? `<div class="doc-req-notes">Needed by ${escapeHtml(r.dueDate)}</div>` : ""}
           </div>
@@ -452,7 +519,10 @@ function renderDocuments() {
       done.map((r) => `
         <div class="doc-req doc-req-done">
           <div class="doc-req-main">
-            <div class="doc-req-label">${escapeHtml(r.label)}</div>
+            <div class="doc-req-label">${escapeHtml(r.label)}${
+              household.shared && r.forEmail
+                ? ` <span class="doc-who">for ${escapeHtml(shortMemberName(r.forEmail))}</span>`
+                : ""}</div>
             <div class="doc-req-notes">Received${r.fulfilledAt ? ` ${new Date(r.fulfilledAt).toLocaleDateString()}` : ""} — thank you.</div>
           </div>
           <span class="status-badge status-done">Received</span>
@@ -472,7 +542,10 @@ function renderDocuments() {
           ${mine.length
             ? mine.map((d) => `
               <div class="doc-sent">
-                <div class="doc-req-label">${escapeHtml(d.name)}</div>
+                <div class="doc-req-label">${escapeHtml(d.name)}${
+                  household.shared && d.ownerEmail
+                    ? ` <span class="doc-who">${escapeHtml(shortMemberName(d.ownerEmail))}</span>`
+                    : ""}</div>
                 <div class="doc-req-notes">${escapeHtml(d.filename)} · ${fmtBytes(d.size)} ·
                   ${d.uploadedAt ? escapeHtml(new Date(d.uploadedAt).toLocaleString()) : ""}</div>
               </div>`).join("")
@@ -689,11 +762,53 @@ async function loadAssignments() {
     if (err.message.includes("authenticated")) return bounceToAuth();
     errorEl.textContent = "We couldn't load your latest progress — refresh to try again.";
   }
+  renderMemberSwitch();
+  renderAssignmentsHeader();
   renderHome();
   const anyAssigned = MODULES.concat(CATEGORY_MODULES).some((mod) => isAssigned(mod.key))
     || isAssigned("onboardingWizard");
   document.getElementById("assignments-empty").classList.toggle("hidden", anyAssigned);
   showView("assignments");
+}
+
+// Hidden entirely for a client who shares with nobody, so a single client's
+// portal looks exactly as it did before household sharing existed.
+function renderMemberSwitch() {
+  const wrap = document.getElementById("member-switch");
+  if (!household.shared) { wrap.classList.add("hidden"); return; }
+  wrap.classList.remove("hidden");
+  document.getElementById("member-switch-btns").innerHTML = household.members
+    .map((m) => {
+      const done = Object.keys(modulesByMember[m.email] || {}).length;
+      return `<button type="button" class="member-btn${m.email === viewingMember ? " active" : ""}"
+        data-member="${escapeHtml(m.email)}">${escapeHtml(isYou(m.email) ? "You" : m.name)}
+        <span class="member-btn-count">${done}</span></button>`;
+    })
+    .join("");
+  wrap.querySelectorAll(".member-btn").forEach((b) =>
+    b.addEventListener("click", () => {
+      setViewingMember(b.dataset.member);
+      // Re-render in place rather than refetching: the maps are already loaded,
+      // and a round trip here would make switching feel laggy.
+      renderMemberSwitch();
+      renderAssignmentsHeader();
+      renderHome();
+      const any = MODULES.concat(CATEGORY_MODULES).some((mod) => isAssigned(mod.key))
+        || isAssigned("onboardingWizard");
+      document.getElementById("assignments-empty").classList.toggle("hidden", any);
+    })
+  );
+}
+
+// Says whose assessments are on screen, so someone filling in a spouse's forms
+// can see that's what they're doing.
+function renderAssignmentsHeader() {
+  const own = !household.shared || viewingMember === household.you;
+  document.getElementById("assignments-title").textContent =
+    own ? "Your Assessments" : `${memberName(viewingMember)}'s Assessments`;
+  document.getElementById("assignments-subtitle").textContent = own
+    ? "The assessments and workflows your advisor has assigned to you."
+    : `You're viewing ${memberName(viewingMember)}'s assessments. Anything you submit is saved as theirs.`;
 }
 
 document.getElementById("home-open-fpa").addEventListener("click", () => loadDashboard());
@@ -965,8 +1080,21 @@ async function saveModule(key, payload, errorElId) {
   const errorEl = document.getElementById(errorElId);
   errorEl.textContent = "";
   try {
-    const data = await apiRequest(`/api/assessments/${key}`, { method: "POST", body: payload, auth: true });
-    currentModules = data.modules || currentModules;
+    // `owner` is whose assessment this is — filling in a spouse's form must save
+    // to THEIR record, not fork a copy onto the person doing the typing. The
+    // server validates it against the household and rejects anything outside it.
+    const data = await apiRequest(`/api/assessments/${key}`, {
+      method: "POST",
+      body: { ...payload, owner: viewingMember || undefined },
+      auth: true,
+    });
+    // Patch the map for whoever the server says it saved, then repoint the
+    // derived view — otherwise the switcher's counts and the grid would keep
+    // showing pre-save state until the next full refresh.
+    const savedFor = data.owner || viewingMember;
+    if (savedFor) modulesByMember[savedFor] = data.modules || modulesByMember[savedFor] || {};
+    setViewingMember(viewingMember);
+    if (household.shared) renderMemberSwitch();
     const catMod = CATEGORY_MODULES.find((mod) => mod.key === key);
     if (catMod) {
       showCategory(catMod.category);
