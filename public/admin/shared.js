@@ -23,6 +23,10 @@ if (!SESSION) {
 
 const ADMIN_WORKSPACE_KEY = `blueline_admin_workspace:${(SESSION && SESSION.email) || ''}`;
 const EMPLOYEE_FILTER_PAGES = new Set(['contacts', 'operations', 'calendar']);
+const ALL_ADMIN_WORKSPACES = '__all__';
+let SHARED_ADMIN_WORKSPACE = 'fsabin@blueline-advisors.com';
+const CONTACT_WORKSPACES = new Map();
+const TASK_WORKSPACES = new Map();
 let ACTIVE_ADMIN_WORKSPACE = (() => {
   try { return localStorage.getItem(ADMIN_WORKSPACE_KEY) || (SESSION && SESSION.email) || ''; }
   catch { return (SESSION && SESSION.email) || ''; }
@@ -40,9 +44,23 @@ function logoutLocal() {
 // Authenticated JSON fetch. Any 401 means the server session died (expired,
 // revoked) — clear the stale local copy and return to login.
 async function api(path, opts = {}) {
+  let requestWorkspace = ACTIVE_ADMIN_WORKSPACE;
+  // The combined supervisor view is read-only as a scope, not a real owner.
+  // Route edits back to the workspace carried by the listed record. New items
+  // created from All employees intentionally land in Frank's shared workspace.
+  if (requestWorkspace === ALL_ADMIN_WORKSPACES) {
+    const taskMatch = path.match(/^\/api\/admin\/tasks\/([^/?]+)/);
+    const contactMatch = path.match(/^\/api\/admin\/contacts\/([^/?]+)/);
+    const cleanPath = path.split('?')[0];
+    const combinedList = (opts.method || 'GET').toUpperCase() === 'GET'
+      && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/tasks'].includes(cleanPath);
+    if (taskMatch) requestWorkspace = TASK_WORKSPACES.get(decodeURIComponent(taskMatch[1])) || SHARED_ADMIN_WORKSPACE;
+    else if (contactMatch) requestWorkspace = CONTACT_WORKSPACES.get(decodeURIComponent(contactMatch[1]).toLowerCase()) || SHARED_ADMIN_WORKSPACE;
+    else if (!combinedList) requestWorkspace = SHARED_ADMIN_WORKSPACE;
+  }
   const headers = {
     Authorization: `Bearer ${SESSION.token}`,
-    'X-Admin-Workspace': ACTIVE_ADMIN_WORKSPACE,
+    'X-Admin-Workspace': requestWorkspace,
     ...(opts.headers || {}),
   };
   // FormData must set its own Content-Type: the header carries the multipart
@@ -63,6 +81,16 @@ async function api(path, opts = {}) {
     err.status = res.status;
     err.data = data;
     throw err;
+  }
+  if (Array.isArray(data.contacts)) {
+    data.contacts.forEach((contact) => {
+      if (contact && contact.email && contact.workspace) CONTACT_WORKSPACES.set(String(contact.email).toLowerCase(), contact.workspace);
+    });
+  }
+  if (Array.isArray(data.tasks)) {
+    data.tasks.forEach((task) => {
+      if (task && task.id && task.workspace) TASK_WORKSPACES.set(String(task.id), task.workspace);
+    });
   }
   return data;
 }
@@ -631,8 +659,10 @@ async function loadWorkspaceContext(activePage) {
     const workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
     const allowed = workspaces.map((w) => w.owner);
     const sharedOwner = data.sharedOwner || 'fsabin@blueline-advisors.com';
+    SHARED_ADMIN_WORKSPACE = sharedOwner;
     const filterPage = EMPLOYEE_FILTER_PAGES.has(activePage);
-    let desired = allowed.includes(ACTIVE_ADMIN_WORKSPACE) ? ACTIVE_ADMIN_WORKSPACE : (data.active || allowed[0]);
+    const isAllowedFilter = (value) => allowed.includes(value) || (data.boss && filterPage && value === ALL_ADMIN_WORKSPACES);
+    let desired = isAllowedFilter(ACTIVE_ADMIN_WORKSPACE) ? ACTIVE_ADMIN_WORKSPACE : (data.active || allowed[0]);
 
     // Supervisors use employee filters only on the three operational pages.
     // Every other page stays in the shared firm view. Regular employees always
@@ -640,7 +670,7 @@ async function loadWorkspaceContext(activePage) {
     if (data.boss && filterPage) {
       let savedFilter = '';
       try { savedFilter = localStorage.getItem(`${ADMIN_WORKSPACE_KEY}:${activePage}`) || ''; } catch {}
-      desired = allowed.includes(savedFilter) ? savedFilter : sharedOwner;
+      desired = isAllowedFilter(savedFilter) ? savedFilter : sharedOwner;
     }
     if (data.boss && !filterPage) desired = sharedOwner;
     if (!data.boss) desired = allowed[0];
@@ -676,7 +706,7 @@ async function loadWorkspaceContext(activePage) {
       if (!pageHead) return;
       const filter = document.createElement('label');
       filter.className = 'admin-employee-filter';
-      filter.innerHTML = `<span>Employee</span><select aria-label="Filter by employee">${workspaces.map((w) =>
+      filter.innerHTML = `<span>Employee</span><select aria-label="Filter by employee"><option value="${ALL_ADMIN_WORKSPACES}">All employees</option>${workspaces.map((w) =>
         `<option value="${escapeHtml(w.owner)}">${escapeHtml(w.name)}${w.owner === sharedOwner ? ' (shared)' : ''}</option>`
       ).join('')}</select>`;
       const select = filter.querySelector('select');

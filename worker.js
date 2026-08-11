@@ -73,6 +73,7 @@ const ADMIN_ACCOUNTS = [
 const FRANK_ADMIN_EMAIL = 'fsabin@blueline-advisors.com';
 const JENN_ADMIN_EMAIL = 'jyoung@blueline-advisors.com';
 const INTERN_ADMIN_EMAIL = 'intern@blueline-advisors.com';
+const ALL_ADMIN_WORKSPACES = '__all__';
 const SUPERVISOR_ADMIN_EMAILS = new Set([FRANK_ADMIN_EMAIL, JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL]);
 const isSupervisorAdmin = (email) => SUPERVISOR_ADMIN_EMAILS.has(String(email || '').trim().toLowerCase());
 const DEFAULT_FRANK_WORKSPACE_MEMBERS = [
@@ -220,6 +221,9 @@ async function accessibleWorkspaceOwners(env, adminEmail) {
 async function requestedAdminWorkspace(request, env, adminEmail) {
   const allowed = await accessibleWorkspaceOwners(env, adminEmail);
   const requested = String(request.headers.get('X-Admin-Workspace') || allowed[0]).trim().toLowerCase();
+  const path = new URL(request.url).pathname;
+  const combinedList = request.method === 'GET' && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/tasks'].includes(path);
+  if (requested === ALL_ADMIN_WORKSPACES && isSupervisorAdmin(adminEmail) && combinedList) return ALL_ADMIN_WORKSPACES;
   return allowed.includes(requested) ? requested : null;
 }
 
@@ -4009,8 +4013,11 @@ async function handleAdminContacts(request, env, cors) {
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const workspace = await requestedAdminWorkspace(request, env, adminEmail);
   if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
+  const visibleWorkspaces = workspace === ALL_ADMIN_WORKSPACES
+    ? await accessibleWorkspaceOwners(env, adminEmail)
+    : workspace;
   return json(
-    { contacts: await buildContactList(env, workspace), admins: await allAdminEmails(env), adminNames: await addedAdminNames(env), workspace },
+    { contacts: await buildContactList(env, visibleWorkspaces), admins: await allAdminEmails(env), adminNames: await addedAdminNames(env), workspace },
     200,
     cors
   );
@@ -4020,12 +4027,14 @@ async function handleAdminContacts(request, env, cors) {
 // same shape the CRM UI does rather than re-deriving it from KV.
 async function buildContactList(env, workspace = FRANK_ADMIN_EMAIL) {
   const merged = new Map(); // email -> entry
+  const visibleWorkspaces = new Set(Array.isArray(workspace) ? workspace : [workspace]);
 
   // CRM contact records first (decrypt failure fails closed like elsewhere).
   for (const keyName of await listKeys(env, 'contact:')) {
     const rec = await decryptToObject(env, await env.PORTAL_KV.get(keyName));
     if (!rec || !rec.email) continue;
-    if (recordWorkspace(rec) !== workspace) continue;
+    const owner = recordWorkspace(rec);
+    if (!visibleWorkspaces.has(owner)) continue;
     merged.set(rec.email, {
       email: rec.email,
       name: rec.name || '',
@@ -4047,7 +4056,7 @@ async function buildContactList(env, workspace = FRANK_ADMIN_EMAIL) {
       modules: {},
       modulesError: false,
       assignments: null,
-      workspace,
+      workspace: owner,
     });
   }
 
@@ -4060,7 +4069,7 @@ async function buildContactList(env, workspace = FRANK_ADMIN_EMAIL) {
     const existing = merged.get(email);
     // A portal account without a CRM contact predates workspace ownership and
     // therefore belongs to Frank until an employee creates its contact record.
-    if (!existing && workspace !== FRANK_ADMIN_EMAIL) continue;
+    if (!existing && !visibleWorkspaces.has(FRANK_ADMIN_EMAIL)) continue;
     const entry = existing || {
       email,
       name: '',
@@ -5922,7 +5931,10 @@ async function handleAdminListTasks(request, env, cors) {
   const workspace = await requestedAdminWorkspace(request, env, adminEmail);
   if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const { items, errors } = await readAllEncrypted(env, 'task:');
-  return json({ tasks: items.filter((task) => recordWorkspace(task) === workspace), decryptErrors: errors, workspace }, 200, cors);
+  const visibleWorkspaces = workspace === ALL_ADMIN_WORKSPACES
+    ? new Set(await accessibleWorkspaceOwners(env, adminEmail))
+    : new Set([workspace]);
+  return json({ tasks: items.filter((task) => visibleWorkspaces.has(recordWorkspace(task))), decryptErrors: errors, workspace }, 200, cors);
 }
 
 // allowedAssignees is a Set of assignable identifiers (admin account emails).

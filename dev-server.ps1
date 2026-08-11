@@ -42,6 +42,7 @@ $adminPasswords = @{
 $frankAdminEmail = 'fsabin@blueline-advisors.com'
 $jennAdminEmail = 'jyoung@blueline-advisors.com'
 $internAdminEmail = 'intern@blueline-advisors.com'
+$allAdminWorkspaces = '__all__'
 $adminWorkspaceAccess = @{
     $frankAdminEmail = @('jyoung@blueline-advisors.com', 'intern@blueline-advisors.com')
 }
@@ -877,6 +878,10 @@ function Get-AdminWorkspace($ctx, $adminEmail) {
     $allowed = @(Get-AccessibleWorkspaces $adminEmail)
     $requested = ([string]$ctx.Request.Headers['X-Admin-Workspace']).Trim().ToLower()
     if (-not $requested) { $requested = $allowed[0] }
+    $combinedPath = @('/api/admin/workspaces', '/api/admin/contacts', '/api/admin/tasks') -contains $ctx.Request.Url.AbsolutePath
+    if ($requested -eq $allAdminWorkspaces -and (Test-SupervisorAdmin $adminEmail) -and $ctx.Request.HttpMethod -eq 'GET' -and $combinedPath) {
+        return $allAdminWorkspaces
+    }
     if ($allowed -contains $requested) { return $requested }
     return $null
 }
@@ -1280,7 +1285,8 @@ while ($listener.IsListening) {
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $workspace = Get-AdminWorkspace $ctx $adminEmail
             if (-not $workspace) { Send-Json $ctx 403 @{ error = 'You do not have access to that workspace' }; continue }
-            $sorted = @($tasks.Values | Where-Object { (Get-RecordWorkspace $_) -eq $workspace } | Sort-Object -Property createdAt -Descending)
+            $visibleWorkspaces = if ($workspace -eq $allAdminWorkspaces) { @(Get-AccessibleWorkspaces $adminEmail) } else { @($workspace) }
+            $sorted = @($tasks.Values | Where-Object { $visibleWorkspaces -contains (Get-RecordWorkspace $_) } | Sort-Object -Property createdAt -Descending)
             Send-Json $ctx 200 @{ tasks = $sorted; decryptErrors = 0; workspace = $workspace }
         }
         elseif ($path -eq '/api/admin/tasks' -and $method -eq 'POST') {
@@ -1901,9 +1907,11 @@ while ($listener.IsListening) {
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $workspace = Get-AdminWorkspace $ctx $adminEmail
             if (-not $workspace) { Send-Json $ctx 403 @{ error = 'You do not have access to that workspace' }; continue }
+            $visibleWorkspaces = if ($workspace -eq $allAdminWorkspaces) { @(Get-AccessibleWorkspaces $adminEmail) } else { @($workspace) }
             $merged = @{}
             foreach ($rec in $contacts.Values) {
-                if ((Get-RecordWorkspace $rec) -ne $workspace) { continue }
+                $owner = Get-RecordWorkspace $rec
+                if ($visibleWorkspaces -notcontains $owner) { continue }
                 $merged[$rec.email] = [ordered]@{
                     email = $rec.email; name = $rec.name; preferredName = $rec.preferredName; status = $rec.status
                     archived = [bool]$rec.archived
@@ -1912,12 +1920,12 @@ while ($listener.IsListening) {
                     tags = @($rec.tags); importantDates = @($rec.importantDates)
                     createdAt = $rec.createdAt; updatedAt = $rec.updatedAt
                     hasAccount = $false; modules = @{}; modulesError = $false; assignments = $null
-                    workspace = $workspace
+                    workspace = $owner
                 }
             }
             foreach ($u in $users.Values) {
                 $entry = $merged[$u.email]
-                if (-not $entry -and $workspace -ne $frankAdminEmail) { continue }
+                if (-not $entry -and $visibleWorkspaces -notcontains $frankAdminEmail) { continue }
                 if (-not $entry) {
                     $entry = [ordered]@{
                         email = $u.email; name = ''; preferredName = ''; status = 'active'
