@@ -27,6 +27,7 @@ const ALL_ADMIN_WORKSPACES = '__all__';
 let SHARED_ADMIN_WORKSPACE = 'fsabin@blueline-advisors.com';
 const CONTACT_WORKSPACES = new Map();
 const TASK_WORKSPACES = new Map();
+const HOUSEHOLD_WORKSPACES = new Map();
 let ACTIVE_ADMIN_WORKSPACE = (() => {
   try { return localStorage.getItem(ADMIN_WORKSPACE_KEY) || (SESSION && SESSION.email) || ''; }
   catch { return (SESSION && SESSION.email) || ''; }
@@ -51,11 +52,13 @@ async function api(path, opts = {}) {
   if (requestWorkspace === ALL_ADMIN_WORKSPACES) {
     const taskMatch = path.match(/^\/api\/admin\/tasks\/([^/?]+)/);
     const contactMatch = path.match(/^\/api\/admin\/contacts\/([^/?]+)/);
+    const householdMatch = path.match(/^\/api\/admin\/households\/([^/?]+)/);
     const cleanPath = path.split('?')[0];
     const combinedList = (opts.method || 'GET').toUpperCase() === 'GET'
-      && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/tasks'].includes(cleanPath);
+      && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/households', '/api/admin/tasks'].includes(cleanPath);
     if (taskMatch) requestWorkspace = TASK_WORKSPACES.get(decodeURIComponent(taskMatch[1])) || SHARED_ADMIN_WORKSPACE;
     else if (contactMatch) requestWorkspace = CONTACT_WORKSPACES.get(decodeURIComponent(contactMatch[1]).toLowerCase()) || SHARED_ADMIN_WORKSPACE;
+    else if (householdMatch) requestWorkspace = HOUSEHOLD_WORKSPACES.get(decodeURIComponent(householdMatch[1])) || SHARED_ADMIN_WORKSPACE;
     else if (!combinedList) requestWorkspace = SHARED_ADMIN_WORKSPACE;
   }
   const headers = {
@@ -90,6 +93,11 @@ async function api(path, opts = {}) {
   if (Array.isArray(data.tasks)) {
     data.tasks.forEach((task) => {
       if (task && task.id && task.workspace) TASK_WORKSPACES.set(String(task.id), task.workspace);
+    });
+  }
+  if (Array.isArray(data.households)) {
+    data.households.forEach((household) => {
+      if (household && household.id && household.workspace) HOUSEHOLD_WORKSPACES.set(String(household.id), household.workspace);
     });
   }
   return data;

@@ -222,7 +222,8 @@ async function requestedAdminWorkspace(request, env, adminEmail) {
   const allowed = await accessibleWorkspaceOwners(env, adminEmail);
   const requested = String(request.headers.get('X-Admin-Workspace') || allowed[0]).trim().toLowerCase();
   const path = new URL(request.url).pathname;
-  const combinedList = request.method === 'GET' && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/tasks'].includes(path);
+  const combinedList = request.method === 'GET'
+    && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/households', '/api/admin/tasks'].includes(path);
   if (requested === ALL_ADMIN_WORKSPACES && isSupervisorAdmin(adminEmail) && combinedList) return ALL_ADMIN_WORKSPACES;
   return allowed.includes(requested) ? requested : null;
 }
@@ -2313,6 +2314,153 @@ function contactFieldsToSharePoint(record) {
   };
 }
 
+function normalizedHouseholdName(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+const contactHouseholdKey = (workspace, name) => `${workspace}\n${normalizedHouseholdName(name)}`;
+
+function householdNameQuality(value) {
+  const letters = String(value || '').replace(/[^A-Za-z]/g, '');
+  if (!letters || letters === letters.toLowerCase()) return 0;
+  if (letters === letters.toUpperCase()) return 1;
+  return 2;
+}
+
+// Turn the Contacts list's free-text Household column into the first-class
+// household records the Contacts page renders as expandable folders. The sync
+// only owns memberships it added: manually-added people and their roles survive
+// reconciliation, while a SharePoint contact that moves household is removed
+// from the old generated membership on the next run.
+async function syncContactHouseholdMemberships(env) {
+  const { items: contacts, errors: contactErrors } = await readAllEncrypted(env, 'contact:');
+  const { items: households, errors: householdErrors } = await readAllEncrypted(env, 'household:');
+  const desired = new Map();
+
+  for (const contact of contacts) {
+    if (!contact || !isValidEmail(contact.email)) continue;
+    const name = String(contact.household || '').trim().replace(/\s+/g, ' ').slice(0, 200);
+    if (!name) continue;
+    const workspace = recordWorkspace(contact);
+    const key = contactHouseholdKey(workspace, name);
+    if (!desired.has(key)) desired.set(key, { key, name, workspace, emails: new Set() });
+    const group = desired.get(key);
+    if (householdNameQuality(name) > householdNameQuality(group.name)) group.name = name;
+    group.emails.add(String(contact.email).trim().toLowerCase());
+  }
+
+  const existingByKey = new Map();
+  for (const household of households) {
+    if (!household || groupKindOf(household) !== 'family') continue;
+    const workspace = recordWorkspace(household);
+    const key = String(household.sharePointHouseholdKey || '').trim()
+      || contactHouseholdKey(workspace, household.name);
+    const prior = existingByKey.get(key);
+    // Prefer a generated household when a legacy duplicate exists: it carries
+    // the ownership metadata needed to remove stale synced memberships.
+    if (!prior || (!prior.sharePointContactGrouping && household.sharePointContactGrouping)) {
+      existingByKey.set(key, household);
+    }
+  }
+
+  let created = 0;
+  let updated = 0;
+  let removed = 0;
+  const touchedIds = new Set();
+  for (const group of desired.values()) {
+    let household = existingByKey.get(group.key) || null;
+    const isNew = !household;
+    if (isNew) {
+      household = {
+        id: `hh-${(await sha256Hex(group.key)).slice(0, 12)}`,
+        workspace: group.workspace,
+        type: 'household',
+        kind: 'family',
+        name: group.name,
+        members: [],
+        email: '',
+        emailType: '',
+        emailPrimary: true,
+        assignedTo: '',
+        advisorRep: '',
+        contactType: '',
+        background: '',
+        tags: [],
+        status: 'active',
+        archived: false,
+        sharePointItemId: null,
+        sharePointContactGrouping: true,
+        createdBy: 'sharepoint-contact-sync',
+        createdAt: new Date().toISOString(),
+        updatedAt: null,
+      };
+    }
+
+    const oldManaged = new Set((household.sharePointManagedMembers || []).map((email) => String(email).toLowerCase()));
+    const oldRoles = new Map((household.members || []).map((member) => [String(member.email).toLowerCase(), member.role]));
+    const members = (household.members || [])
+      .filter((member) => !oldManaged.has(String(member.email).toLowerCase()))
+      .map((member) => ({ email: String(member.email).toLowerCase(), role: member.role || 'other' }));
+    const present = new Set(members.map((member) => member.email));
+    const managed = [];
+    for (const email of [...group.emails].sort()) {
+      if (members.length >= 20) break;
+      if (!present.has(email)) {
+        members.push({ email, role: oldRoles.get(email) || 'other' });
+        present.add(email);
+        managed.push(email);
+      } else if (oldManaged.has(email)) {
+        managed.push(email);
+      }
+    }
+
+    const next = {
+      ...household,
+      workspace: group.workspace,
+      type: 'household',
+      kind: 'family',
+      name: household.sharePointContactGrouping ? group.name : household.name,
+      members,
+      sharePointHouseholdKey: group.key,
+      sharePointManagedMembers: managed,
+      updatedAt: new Date().toISOString(),
+    };
+    const changed = isNew
+      || next.name !== household.name
+      || JSON.stringify(next.members) !== JSON.stringify(household.members || [])
+      || JSON.stringify(next.sharePointManagedMembers) !== JSON.stringify(household.sharePointManagedMembers || [])
+      || next.sharePointHouseholdKey !== household.sharePointHouseholdKey;
+    if (changed) {
+      await env.PORTAL_KV.put(`household:${next.id}`, await encryptJSON(env, next));
+      if (isNew) created += 1;
+      else updated += 1;
+    }
+    touchedIds.add(next.id);
+  }
+
+  // Clear memberships that SharePoint no longer claims. A completely empty
+  // auto-generated folder is removed; a pre-existing/manual household remains.
+  for (const household of households) {
+    const managed = new Set((household.sharePointManagedMembers || []).map((email) => String(email).toLowerCase()));
+    if (!managed.size || touchedIds.has(household.id)) continue;
+    const members = (household.members || []).filter((member) => !managed.has(String(member.email).toLowerCase()));
+    if (household.sharePointContactGrouping && members.length === 0) {
+      await env.PORTAL_KV.delete(`household:${household.id}`);
+      removed += 1;
+      continue;
+    }
+    await env.PORTAL_KV.put(`household:${household.id}`, await encryptJSON(env, {
+      ...household,
+      members,
+      sharePointManagedMembers: [],
+      updatedAt: new Date().toISOString(),
+    }));
+    updated += 1;
+  }
+
+  return { created, updated, removed, contactErrors, householdErrors };
+}
+
 // Pull-with-merge, both ways per record: whichever side has the newer
 // Modified/updatedAt wins for the SharePoint-owned scalar fields. This used
 // to be an unconditional replace with a bare object literal that had no
@@ -2368,7 +2516,8 @@ async function syncSharePointContacts(env) {
     }
   }
 
-  return { synced, skippedNewerLocal, timestamp: new Date().toISOString() };
+  const householdMemberships = await syncContactHouseholdMemberships(env);
+  return { synced, skippedNewerLocal, householdMemberships, timestamp: new Date().toISOString() };
 }
 
 // Push a locally-edited contact out to SharePoint, with the same "most recent
@@ -5263,8 +5412,9 @@ async function handleAdminListClientEmails(request, env, cors, email) {
 // A household groups people who are advised together (a couple, a family).
 // It is a first-class record rather than the free-text `household` tag that
 // rides along on a contact: it holds its own name, members with roles, and its
-// own status, and it is owned by this app rather than SharePoint — the sync has
-// no household entity to overwrite it from.
+// own status. Staff can manage these records directly; additionally, the
+// SharePoint Contacts sync reconciles family membership from each contact's
+// Household column so imported people appear inside these groupings.
 //
 // Keyed by generated id, NOT by email: a household has no mailbox of its own,
 // and its members' addresses already key their own contact records. The
@@ -5379,7 +5529,10 @@ async function handleAdminListHouseholds(request, env, cors) {
   const { items, errors } = await readAllEncrypted(env, 'household:');
   // Normalized here rather than in the page: records predate `kind`, and every
   // consumer would otherwise need the same `kind || 'family'` fallback.
-  const households = items.filter((h) => recordWorkspace(h) === workspace).map((h) => ({ ...h, kind: groupKindOf(h) }));
+  const visibleWorkspaces = workspace === ALL_ADMIN_WORKSPACES
+    ? new Set(await accessibleWorkspaceOwners(env, adminEmail))
+    : new Set([workspace]);
+  const households = items.filter((h) => visibleWorkspaces.has(recordWorkspace(h))).map((h) => ({ ...h, kind: groupKindOf(h) }));
   return json({ households, decryptErrors: errors, workspace }, 200, cors);
 }
 

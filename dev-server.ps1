@@ -878,7 +878,7 @@ function Get-AdminWorkspace($ctx, $adminEmail) {
     $allowed = @(Get-AccessibleWorkspaces $adminEmail)
     $requested = ([string]$ctx.Request.Headers['X-Admin-Workspace']).Trim().ToLower()
     if (-not $requested) { $requested = $allowed[0] }
-    $combinedPath = @('/api/admin/workspaces', '/api/admin/contacts', '/api/admin/tasks') -contains $ctx.Request.Url.AbsolutePath
+    $combinedPath = @('/api/admin/workspaces', '/api/admin/contacts', '/api/admin/households', '/api/admin/tasks') -contains $ctx.Request.Url.AbsolutePath
     if ($requested -eq $allAdminWorkspaces -and (Test-SupervisorAdmin $adminEmail) -and $ctx.Request.HttpMethod -eq 'GET' -and $combinedPath) {
         return $allAdminWorkspaces
     }
@@ -1796,14 +1796,19 @@ while ($listener.IsListening) {
         }
         # ---- Households (mirror of worker.js handleAdminListHouseholds etc.) ----
         elseif ($path -eq '/api/admin/households' -and $method -eq 'GET') {
-            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $workspace = Get-AdminWorkspace $ctx $adminEmail
+            if (-not $workspace) { Send-Json $ctx 403 @{ error = 'You do not have access to that workspace' }; continue }
+            $visibleWorkspaces = if ($workspace -eq $allAdminWorkspaces) { @(Get-AccessibleWorkspaces $adminEmail) } else { @($workspace) }
             # kind is normalised on the way out, matching worker.js - a record
             # written before kind existed reads as a family. Written back onto
             # the stored record rather than a copy: OrderedDictionary has no
             # Clone() through PowerShell's adapter, and the normalised value is
             # the same one the record would have been saved with anyway.
-            foreach ($h in @($households.Values)) { $h.kind = (Get-GroupKind $h) }
-            Send-Json $ctx 200 @{ households = @($households.Values) }
+            $visibleHouseholds = @($households.Values | Where-Object { $visibleWorkspaces -contains (Get-RecordWorkspace $_) })
+            foreach ($h in $visibleHouseholds) { $h.kind = (Get-GroupKind $h) }
+            Send-Json $ctx 200 @{ households = $visibleHouseholds; workspace = $workspace }
         }
         elseif ($path -eq '/api/admin/households' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
