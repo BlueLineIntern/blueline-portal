@@ -114,6 +114,11 @@
      One panel per message, newest first — same visual weight as the signed
      agreement panels on Documents, since this is likewise a fixed record of a
      past exchange rather than something edited in place. */
+  /* Two actions in one panel head (a signed agreement on Documents has both a
+     PDF download and a link to the full record). Without grouping them, the
+     head's justify-content:space-between spreads the two apart across the row
+     instead of keeping them together at the right. */
+  .panel-head-actions { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
   .email-row .panel-head { align-items: flex-start; }
   .email-meta { color: var(--muted); font-size: var(--fs-xs); margin: 2px 0 0; }
   .email-preview { color: var(--text); font-size: var(--fs-sm); margin: var(--sp-2) 0 0; white-space: pre-wrap; }
@@ -591,6 +596,7 @@
 
 <script src="/assets/render.js"></script>
 <script src="/admin/shared.js"></script>
+<script src="/assets/sign-agreement.js"></script>
 <script>
   initShell('contacts');
 
@@ -2153,17 +2159,24 @@
         const sig = a.signatureDataUrl
           ? `<div class="onb-signature"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Client signature" /></div>`
           : '<p class="empty">No signature captured.</p>';
+        // Offered only when there is actually a signature to stamp — a button
+        // that can only ever error is worse than no button.
+        const pdfBtn = a.signatureDataUrl
+          ? `<button type="button" class="panel-link onb-signed-pdf" data-onb="${escapeHtml(r.onboardingId)}">Download signed PDF</button>`
+          : '';
         return `<div class="panel">
           <div class="panel-head"><h2>Advisory Agreement — ${escapeHtml(r.onboardingId)}</h2>
+            <span class="panel-head-actions">${pdfBtn}
             ${SHOW_ONBOARDING_TAB
               ? '<button type="button" class="panel-link onb-goto-tab">Full record →</button>'
-              : `<a class="panel-link" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">Full record →</a>`}</div>
+              : `<a class="panel-link" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">Full record →</a>`}</span></div>
           <div class="kv-rows">
             ${kvRow('Typed name', a.typedName ? escapeHtml(a.typedName) : '—')}
             ${kvRow('Signed at', a.signedAt ? escapeHtml(fmtDateTime(a.signedAt)) : '—')}
             ${kvRow('Acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No')}
           </div>
           ${sig}
+          <p class="form-error onb-pdf-error"></p>
         </div>`;
       });
     // The new-request fields are the only unsaved state on this tab, and the
@@ -2185,6 +2198,45 @@
     });
     wireDocRequestActions();
     wireDocActions();
+    wireSignedPdfButtons(linked);
+  }
+
+  // Regenerates the signed agreement PDF from the signature already stored on
+  // the onboarding record, via the same assets/sign-agreement.js the client's
+  // own download uses — same template, same coordinates, so the firm's copy and
+  // the client's copy cannot disagree. Nothing is persisted: the PDF is built on
+  // click, so there is no signed agreement in KV or SharePoint to go stale.
+  // Re-wired on every render because the 20s poll rebuilds this tab.
+  function wireSignedPdfButtons(records) {
+    document.querySelectorAll('#tab-documents .onb-signed-pdf').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const panel = btn.closest('.panel');
+        const errEl = panel ? panel.querySelector('.onb-pdf-error') : null;
+        const setErr = (msg) => { if (errEl) errEl.textContent = msg; };
+        setErr('');
+
+        const rec = (records || []).find((r) => r.onboardingId === btn.dataset.onb);
+        const agreement = rec && rec.data && rec.data.agreement;
+        if (!agreement || !agreement.signatureDataUrl) {
+          setErr('No signature is stored on this record.');
+          return;
+        }
+
+        const label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Preparing…';
+        window.BlueLineAgreementPdf.download({
+          signatureDataUrl: agreement.signatureDataUrl,
+          signedAt: agreement.signedAt,
+          onboardingId: btn.dataset.onb,
+        })
+          .catch((err) => setErr((err && err.message) || 'Could not build the signed PDF.'))
+          .finally(() => {
+            btn.disabled = false;
+            btn.textContent = label;
+          });
+      });
+    });
   }
 
   // ---------- Emails tab ----------

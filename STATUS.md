@@ -122,6 +122,58 @@ labeled "not a legally binding signature." NOTE: the coordinate math divides by
 the canvas's displayed width, so it only works when the canvas has non-zero
 layout size (a normal browser); a 0×0 viewport yields a blank pad.
 
+**Signed agreement PDF** (`public/assets/sign-agreement.js`): the captured
+signature is stamped onto the real agreement document
+(`public/onboarding/advisory-agreement.pdf` — 2 pages, US Letter 612×792) and
+offered as a download in two places: the wizard's confirmation step (the client's
+own copy) and each Advisory Agreement panel on a contact's **Documents** tab in
+admin (the firm's copy). One module drives both, so the two cannot disagree.
+- **Generated on demand, never stored.** Built in the browser from the signature
+  already on the onboarding record, so there is no second copy of a signed
+  agreement in KV or SharePoint to go stale when a template or a signature
+  changes. Not *byte*-identical between the two callers — pdf-lib names its
+  XObjects with a random suffix — but the same template, placement and rendering.
+- **The coordinates come from the template's own content stream**, not from
+  measuring a screenshot: page 2 draws the grey signature box with
+  `50.8 158.35 496.75 120.05 re f*`, and its text baselines are 257.15 (the
+  printed client name), 223.75 (`Signature: ____`) and 184.35 (`Date: ____`).
+  pdf-lib uses a bottom-left origin, so the signature is placed at (125, 226)
+  contained to 240×26pt and the date at (100, 187.35). **The 26pt height cap is
+  the binding constraint** — it is the only thing keeping the signature from
+  colliding with the printed name 33pt above the rule, which is why it is a cap
+  and not a target. **Re-exporting the agreement PDF invalidates every one of
+  these numbers**; they are specific to this file.
+- **The signature is cropped to its ink bounding box before stamping.** The pad is
+  a fixed 600×180 bitmap that the ink rarely fills, and stamping it untrimmed
+  scales the real signature down to an illegible sliver. Alpha is a sound ink test
+  because the pad only ever `clearRect()`s its background — which is also why the
+  stamp doesn't paint a white box over the underscore rule. Antialiasing is
+  excluded with an alpha > 8 threshold; > 0 would defeat the crop.
+- **pdf-lib 1.17.1 is vendored** at `public/assets/vendor/pdf-lib.min.js` (512KB)
+  rather than installed: there is no `package.json` here and `worker.js` deploys as
+  a plain ES module with no bundling step, so an npm import would mean introducing
+  a build pipeline that cannot be tested on this machine (no Node, and workerd has
+  no win32-arm64 build). It is a static asset under `public/`, so it does **not**
+  count against the Worker script-size limit, and it is lazy-loaded on first click
+  rather than on every page load of the wizard and the contact profile.
+- `dev-server.ps1` needed `.pdf` added to its MIME map; prod already handled it,
+  since `serveAsset` delegates to `env.ASSETS.fetch`.
+- **The template hard-codes "Jeannette Smith"** above the signature line, so the
+  PDF shows that name whatever the client typed in step 4. Fine for a sample
+  document, wrong for a live demo to a prospect — needs a second template or a
+  stamped name before it is shown to anyone real.
+- Still a **proof of concept, deliberately**: the onboarding endpoints are
+  unauthenticated by design (see above), so a signature here has **no signer
+  attribution**, and the stamped PDF carries no tamper evidence — a PNG in a PDF
+  can be swapped by anyone holding the file. It is not a legally binding
+  signature and must not be relied on as an executed agreement. Making it real
+  means either a proper e-sign provider (DocuSign/Adobe Sign, which is what the
+  certificate and audit trail are actually bought for) or moving the agreement
+  step behind the **existing authenticated client login**, which would take
+  attribution from nothing to session + account + timestamp. Under Advisers Act
+  Rule 204-2 an executed advisory agreement is a books-and-records item, so this
+  needs compliance sign-off, not just code.
+
 **Legacy data:** records saved before the module rework (top-level
 `budget`/`riskAnswers`) are ignored by `loadModules()` — those were test data.
 Clients from that era just see an empty dashboard.

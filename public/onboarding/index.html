@@ -320,6 +320,16 @@
       <div class="card">
         <h1>Onboarding Complete</h1>
         <div id="confirm-summary"></div>
+
+        <h2 class="section-heading">Your Signed Advisory Agreement</h2>
+        <p>Download the advisory agreement with your signature placed on it.</p>
+        <div class="export-row">
+          <button class="btn btn-primary" id="export-signed-pdf">Download signed agreement (PDF)</button>
+        </div>
+        <p class="poc-note">Sample document. The signature is captured to demonstrate the workflow and is
+        <strong>not a legally binding signature</strong>.</p>
+        <p class="form-error" id="signed-pdf-error"></p>
+
         <h2 class="section-heading">Exports (sample data)</h2>
         <p>Download the internal records generated from this onboarding:</p>
         <div class="export-row">
@@ -358,6 +368,7 @@
     <p>&copy; 2026 BlueLine Advisors. Proof of concept — sample data only. This tool does not onboard real clients.</p>
   </footer>
 
+  <script src="/assets/sign-agreement.js"></script>
   <script src="onboarding.js"></script>
 </body>
 </html>

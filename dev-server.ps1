@@ -805,7 +805,7 @@ function Send-Json($ctx, $code, $obj) {
 }
 
 function Send-File($ctx, $path) {
-    $types = @{ '.html'='text/html'; '.css'='text/css'; '.js'='application/javascript'; '.png'='image/png'; '.svg'='image/svg+xml' }
+    $types = @{ '.html'='text/html'; '.css'='text/css'; '.js'='application/javascript'; '.png'='image/png'; '.svg'='image/svg+xml'; '.pdf'='application/pdf' }
     $ext = [IO.Path]::GetExtension($path).ToLower()
     $ctx.Response.ContentType = if ($types[$ext]) { $types[$ext] } else { 'application/octet-stream' }
     # Mirrors serveAsset in worker.js. Without this the mock sent no
