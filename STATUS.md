@@ -228,6 +228,101 @@ exactly as it already does for everything else on that tab.
   move, matching the documented "a folder is never renamed after the fact" rule
   above.
 
+**Auto-filing at the moment of signing (no admin click at all)**: the instant a
+client's signature transitions from absent to present — the same
+`nowSigned && !prevSigned` check `agreement-signed` already used — the server
+itself generates the signed PDF and pushes it to SharePoint, before any admin
+ever opens anything. `autoFileSignedAgreement()` in `worker.js`, wired into
+`handleOnboardingSave` via `ctx.waitUntil()` so it runs in the background and
+can never delay or fail the client's own save request.
+- **This repo's first-ever npm-sourced import into `worker.js`.** Every previous
+  feature here was either handwritten or (for browser code) a vendored UMD
+  script tag — `worker.js` itself has never imported a package. `pdf-lib`'s real
+  **ESM** build (`vendor/pdf-lib.esm.min.js`, confirmed zero imports of its own —
+  every dependency already inlined) is imported by a **relative path**
+  (`./agreement-pdf-worker.js` → `./vendor/pdf-lib.esm.min.js`), deliberately
+  never a bare specifier like `'pdf-lib'`. A relative import needs no
+  `package.json`, no `node_modules`, no npm install step — Cloudflare's bundler
+  walks it from disk the same way it walks any other relative import in this
+  file. A bare specifier would need dependency resolution this repo has no
+  mechanism for.
+- **Separate implementation from `public/assets/sign-agreement.js`, not a
+  shared one** (`agreement-pdf-worker.js`, repo root, outside `public/` so it's
+  never served to a browser). The browser file uses `Image`/`canvas`/`document`;
+  none of that exists in the Workers runtime. The GEOMETRY constants and the
+  name-sanitization table (`LETTER_SWAPS`, punctuation transliteration) are
+  copied verbatim between the two files, each with a comment pointing at the
+  other — **a template layout change has to be applied by hand in both
+  places**, or the client's own download and the auto-filed copy will silently
+  drift apart.
+- **Known, deliberate gap: no ink-crop server-side.** The browser version crops
+  the signature to its ink bounding box by reading canvas pixel alpha; nothing
+  in the Workers runtime can decode a PNG's pixels without a hand-rolled
+  decoder, which would have been a second unverifiable risk stacked on top of
+  the first (this repo's first bundled import) in the same deploy. The
+  auto-filed copy therefore embeds the full untrimmed 600×180 signature pad,
+  contain-fit into the same box — legible in every case tested, but a
+  signature occupying only a small part of the pad renders smaller in the
+  auto-filed copy than in a manually-downloaded one. Real fix, not done here:
+  either move the crop to capture time (store an already-cropped image so every
+  consumer, including this one, needs no cropping logic at all) or write a real
+  PNG alpha decoder — flagged here as a follow-up, not silently accepted.
+- **Cannot be bundled or executed locally before deploy.** Node itself DOES run
+  on this machine (`node --check` genuinely parsed both `worker.js` and
+  `agreement-pdf-worker.js` clean — real verification, not visual inspection),
+  but `wrangler`/`workerd` cannot install: the shell layer reports `x86_64`, but
+  the actual Node install underneath is `win32 arm64`, and workerd has no
+  win32-arm64 build (confirmed directly — `npm install wrangler` fails with
+  `Unsupported platform: win32 arm64 LE` inside workerd's own installer). So the
+  syntax is genuinely confirmed correct; the actual Cloudflare bundling step
+  (resolving the relative imports, producing a working Worker) is not, and
+  cannot be locally. The Cloudflare fact that makes shipping this without that
+  survivable: **Workers Builds does not roll forward on a failed build** — a
+  bundler error fails the *build*, and the previous deployment keeps serving.
+  That claim is a documented characteristic of the platform, not something
+  confirmed against this repo's specific dashboard config, and there is no
+  dashboard access from here to read the actual build log if it ever does fail
+  — only the live site's behavior is checkable, which proves a deploy landed,
+  never *why* one didn't.
+- **Idempotent by filename, not by event count.** The filename is deterministic
+  from the onboarding id, so a client who clears and re-signs re-fires this
+  whole function — and the existing `clientdoc:` KV record is **updated in
+  place** (same id, `uploadedAt` preserved, `updatedAt` advanced), never
+  duplicated; Graph's `conflictBehavior=replace` does the equivalent on the
+  SharePoint side. Verified against the mock: a clear-then-resign on one record
+  produced exactly one document, and a second record's document was untouched.
+  (Timeline entries are a separate matter — `logTimeline`/`Write-Timeline` never
+  dedupes, by existing design, same as the pre-existing `agreement-signed`
+  entry it sits beside; multiple timeline entries for one document is expected,
+  not a bug.)
+- **A third document source, `system`** (distinct from `admin`/`client`) — the
+  existing manual attach flow credits an admin, a client send-in credits the
+  client; this credits neither, since nobody picked a file. Documents tab shows
+  it with a green "auto-filed at signing" badge and "auto-filed \<date\>" instead
+  of "attached by \<admin\>"; the Timeline tab's actor-suppression already
+  excluded `'system'` before this feature existed, so "by system" never leaks
+  into either view.
+- **The manual "File to Client Documents" button still exists, deliberately.**
+  It is the fallback for every agreement signed before this feature shipped
+  (their `nowSigned && !prevSigned` transition already happened, so auto-filing
+  never fires for them) and the retry path if the automatic filing ever fails
+  silently in the background.
+- Guarded the same way the manual button is: skips entirely, no error, when
+  `SHAREPOINT_CLIENT_DOCS_LIST_ID` isn't set.
+- **Real-Graph-unverified**, same category as Emails/Meetings/Learning above:
+  no Azure credentials in this environment to run the actual Graph PUT against
+  a live SharePoint drive. Verified here: the trigger condition, the
+  find-or-update dedup logic, and the frontend rendering — all against the
+  mock's simulated *outcome* (`Invoke-MockAutoFileAgreement` in
+  `dev-server.ps1`, which fabricates a plausible record rather than running any
+  real PDF/Graph code — PowerShell cannot execute `agreement-pdf-worker.js` or
+  `pdf-lib` at all). NOT verified: that `PDFDocument.load()`/`embedPng()`/
+  `embedFont()` actually succeed against the real template in the real Workers
+  runtime, and that the Graph PUT's URL/query-param shape
+  (`.../content?@microsoft.graph.conflictBehavior=replace`) is accepted as
+  written — first real signature against a live, Graph-connected deployment is
+  the actual test.
+
 **Legacy data:** records saved before the module rework (top-level
 `budget`/`riskAnswers`) are ignored by `loadModules()` — those were test data.
 Clients from that era just see an empty dashboard.

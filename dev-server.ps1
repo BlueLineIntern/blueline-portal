@@ -537,6 +537,34 @@ function Resolve-ClientDocFolder($email) {
     return Get-UniqueDocFolder $folder $addr $peopleHolders
 }
 
+# Mirrors worker.js's autoFileSignedAgreement — but only its OBSERVABLE
+# behavior (the clientdoc record and timeline entry), not the PDF generation or
+# Graph call. There is no Node here and this mock is PowerShell, so it cannot
+# run pdf-lib or agreement-pdf-worker.js; a fake webUrl stands in for a real
+# SharePoint one. What this DOES let a local test confirm: the find-or-update
+# idempotency (a re-sign updates the same record instead of duplicating it),
+# and the frontend's rendering of a source:'system' document.
+function Invoke-MockAutoFileAgreement($id, $clientEmail, $onboardingData) {
+    $filename = "Advisory_Agreement_$($id -replace '[^A-Za-z0-9._-]+','_')_signed.pdf"
+    $folder = Resolve-ClientDocFolder $clientEmail
+    $existing = @($clientDocs.Values | Where-Object { $_.client -eq $clientEmail -and $_.filename -eq $filename }) | Select-Object -First 1
+    $script:docCounter++
+    $docId = if ($existing) { $existing.id } else { "$($clientEmail):$($script:docCounter)" }
+    $nowIso = (Get-Date).ToString('o')
+    $rec = [ordered]@{
+        id = $docId; client = $clientEmail
+        name = "Advisory Agreement (Signed) - $id"
+        filename = $filename; folder = $folder
+        webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/ClientDocuments/$folder/$filename"
+        driveId = 'mock-drive'; driveItemId = "item-$($script:docCounter)"
+        size = 63000; uploadedBy = 'system'; source = 'system'
+        uploadedAt = if ($existing) { $existing.uploadedAt } else { $nowIso }
+        updatedAt = $nowIso
+    }
+    $clientDocs[$docId] = $rec
+    Write-Timeline $clientEmail 'agreement-filed' 'system' @{ onboardingId = $id; webUrl = $rec.webUrl }
+}
+
 # Assignees are admin accounts only (board lists are a separate grouping).
 function Test-AssigneeAllowed($a) {
     $a = ([string]$a).Trim().ToLower()
@@ -2297,6 +2325,7 @@ while ($listener.IsListening) {
                         description = "$clientEmail signed the advisory agreement. Begin account opening."
                         category = 'onboarding'
                     }
+                    Invoke-MockAutoFileAgreement $id $clientEmail $body.data
                 }
                 Sync-OnboardingContact $clientEmail $rec
             }

@@ -1916,14 +1916,22 @@
     const rows = clientDocs.map((d) => {
       // A client send-in reads differently from an advisor attachment — "sent by
       // the client" is the fact worth surfacing, and staffLabel would render
-      // their email as if they were staff.
+      // their email as if they were staff. A 'system' record (the signed
+      // agreement auto-filed at signing — see autoFileSignedAgreement in
+      // worker.js) is a THIRD case: staffLabel('system') would be equally
+      // wrong, since nobody attached it, it filed itself.
       const fromClient = d.source === 'client';
+      const fromSystem = d.source === 'system';
+      const attachedWord = fromClient ? 'sent' : fromSystem ? 'auto-filed' : 'attached';
+      const byWhom = fromClient ? 'by the client' : fromSystem ? '' : `by ${staffLabel(d.uploadedBy)}`;
       const meta = [d.filename !== d.name ? d.filename : '', formatBytes(d.size),
         // Only client send-ins carry a section; an advisor attachment has none.
         fromClient ? docCategoryLabel(d.category) : '',
-        d.uploadedAt ? `${fromClient ? 'sent' : 'attached'} ${fmtDate(d.uploadedAt)}` : '',
-        d.uploadedBy ? (fromClient ? 'by the client' : `by ${staffLabel(d.uploadedBy)}`) : '']
+        d.uploadedAt ? `${attachedWord} ${fmtDate(d.uploadedAt)}` : '',
+        d.uploadedBy && byWhom ? byWhom : '']
         .filter(Boolean).map(escapeHtml).join(' · ');
+      const badge = fromClient ? ' <span class="badge badge-sky">from client</span>'
+        : fromSystem ? ' <span class="badge badge-green">auto-filed at signing</span>' : '';
       // The name links to SharePoint's own viewer rather than streaming the file
       // back through the Worker — SharePoint already handles preview, range
       // requests and permissions for every format the library accepts.
@@ -1932,7 +1940,7 @@
         : escapeHtml(d.name);
       return `<div class="row-item doc-row">
         <div class="doc-main">
-          <div class="row-title">${link}${fromClient ? ' <span class="badge badge-sky">from client</span>' : ''}</div>
+          <div class="row-title">${link}${badge}</div>
           ${meta ? `<div class="doc-meta">${meta}</div>` : ''}
         </div>
         <div class="doc-actions">
@@ -3233,6 +3241,7 @@
     'assessment-updated': 'Updated an assessment',
     'onboarding-completed': 'Completed the onboarding workflow',
     'agreement-signed': 'Signed the advisory agreement',
+    'agreement-filed': 'Signed agreement auto-filed to Client Documents',
     'assignments-changed': 'Module assignments changed',
   };
 

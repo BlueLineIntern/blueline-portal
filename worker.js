@@ -1,3 +1,13 @@
+// This repo has no package.json/build pipeline (see STATUS.md), so this MUST
+// stay a relative-path import of a file already committed to the repo, never a
+// bare specifier like `import ... from 'pdf-lib'` — a bare specifier needs npm
+// dependency resolution at build time, which nothing here provides. The
+// vendored file has zero imports of its own (`vendor/pdf-lib.esm.min.js`, a
+// real ESM build with all its dependencies already inlined), so this needs no
+// node_modules to resolve — just esbuild walking a relative path on disk,
+// which Cloudflare's bundler does regardless of package.json.
+import { buildSignedAgreementServer, resolveClientNameServer } from './agreement-pdf-worker.js';
+
 /**
  * BlueLine Advisors Client Onboarding Portal — Cloudflare Worker API
  *
@@ -1863,7 +1873,7 @@ async function handleOnboardingStart(request, env, cors) {
   return json({ onboardingId, writeToken, startTime: record.startTime }, 201, cors);
 }
 
-async function handleOnboardingSave(request, env, cors, onboardingId) {
+async function handleOnboardingSave(request, env, cors, onboardingId, ctx) {
   if (!ONBOARDING_ID_PATTERN.test(onboardingId)) {
     return json({ error: 'Invalid onboarding id' }, 400, cors);
   }
@@ -1932,6 +1942,14 @@ async function handleOnboardingSave(request, env, cors, onboardingId) {
         description: `${clientEmail} signed the advisory agreement. Begin account opening.`,
         category: 'onboarding',
       });
+      // Best-effort, in the background: must never delay or fail the client's
+      // save request, which is what THEY are waiting on right now. If this
+      // throws, the admin's manual "File to Client Documents" button on the
+      // Documents tab is still there as a fallback — nothing here is the only
+      // way this ever gets filed.
+      const filingTask = autoFileSignedAgreement(env, onboardingId, clientEmail, record.data)
+        .catch((err) => console.error('Auto-file to SharePoint failed for', onboardingId, err));
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(filingTask);
     }
     // The CRM follows the wizard: mid-workflow the person is 'onboarding', and
     // finishing hands them to Contacts as a live client. Runs on every save so
@@ -4307,6 +4325,85 @@ async function getClientDocsDriveId(env, token) {
   return drive.id;
 }
 
+// Fires once, automatically, the instant a client's signature transitions from
+// absent to present (see the nowSigned && !prevSigned check in
+// handleOnboardingSave) — no admin click involved. Uses the SAME Graph
+// plumbing as the manual "File to Client Documents" button
+// (resolveClientDocFolder, getGraphToken, getClientDocsDriveId) so a signature
+// filed automatically lands in exactly the folder a manual attach would have
+// used. Skips silently (not an error) when SharePoint isn't configured — same
+// rule the manual button already follows.
+async function autoFileSignedAgreement(env, onboardingId, clientEmail, data) {
+  if (!env.SHAREPOINT_CLIENT_DOCS_LIST_ID) return;
+  const agreement = data && data.agreement;
+  if (!agreement || !agreement.signatureDataUrl) return;
+
+  const templateRes = await env.ASSETS.fetch(new Request('https://assets.local/onboarding/advisory-agreement.pdf'));
+  if (!templateRes.ok) throw new Error('Could not read the agreement template asset');
+  const templateBytes = await templateRes.arrayBuffer();
+
+  const pdfBytes = await buildSignedAgreementServer(templateBytes, {
+    signatureDataUrl: agreement.signatureDataUrl,
+    signedAt: agreement.signedAt,
+    clientName: resolveClientNameServer(data),
+  });
+
+  const filename = `Advisory_Agreement_${onboardingId.replace(/[^A-Za-z0-9._-]+/g, '_')}_signed.pdf`;
+  const token = await getGraphToken(env);
+  const driveId = await getClientDocsDriveId(env, token);
+  const folder = await resolveClientDocFolder(env, clientEmail);
+  const path = `${folder}/${filename}`;
+  const uploadUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/`
+    + `${path.split('/').map(encodeURIComponent).join('/')}:/content`
+    // `replace`, not `rename`: the filename is fully deterministic from
+    // onboardingId, so a name collision on this exact path is always the SAME
+    // logical document (a re-sign after Clear), never an unrelated file. A
+    // client can clear and re-sign, which re-fires this whole function; the
+    // filed copy should reflect the latest signature, not accumulate
+    // "(1)", "(2)" copies of a superseded one.
+    + `?@microsoft.graph.conflictBehavior=replace`;
+  const uploadRes = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/pdf' },
+    body: pdfBytes,
+  });
+  if (!uploadRes.ok) {
+    throw new Error('Graph rejected the auto-filed agreement (' + uploadRes.status + '): '
+      + (await uploadRes.text()).slice(0, 300));
+  }
+  const item = await uploadRes.json();
+
+  // Find-or-update by filename (not create-always): the filename is
+  // deterministic, so a re-sign must UPDATE the existing clientdoc record in
+  // place, or the Documents tab would show two rows for what Graph just
+  // replaced as one file.
+  const { items: existingDocs } = await readAllEncrypted(env, `clientdoc:${clientEmail}:`);
+  const existing = existingDocs.find((d) => d.filename === filename);
+  const nowIso = new Date().toISOString();
+  const docRecord = {
+    id: existing ? existing.id : `${clientEmail}:${invTs()}-${randomHex(4)}`,
+    client: clientEmail,
+    name: `Advisory Agreement (Signed) — ${onboardingId}`,
+    filename,
+    folder,
+    webUrl: item.webUrl || '',
+    driveId,
+    driveItemId: item.id || '',
+    size: typeof item.size === 'number' ? item.size : pdfBytes.byteLength,
+    // Distinct from 'admin' (a staff attachment) and 'client' (a client send-in)
+    // — this was neither; nobody picked a file, the record filed itself. The
+    // Documents tab must render this source distinctly rather than crediting an
+    // admin who didn't do it.
+    uploadedBy: 'system',
+    source: 'system',
+    category: 'miscellaneous',
+    uploadedAt: existing ? existing.uploadedAt : nowIso,
+    updatedAt: nowIso,
+  };
+  await env.PORTAL_KV.put(`clientdoc:${docRecord.id}`, await encryptJSON(env, docRecord));
+  await logTimeline(env, clientEmail, 'agreement-filed', 'system', { onboardingId, webUrl: docRecord.webUrl });
+}
+
 async function handleAdminListClientDocs(request, env, cors, email) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -6356,7 +6453,7 @@ async function serveAsset(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const cors = resolveCorsOrigin(request, url, env);
 
@@ -6407,7 +6504,7 @@ export default {
       }
       const onbMatch = url.pathname.match(/^\/api\/onboarding\/(BLA-ONB-\d{4}-\d{4})$/);
       if (onbMatch && request.method === 'POST') {
-        return await handleOnboardingSave(request, env, cors, onbMatch[1]);
+        return await handleOnboardingSave(request, env, cors, onbMatch[1], ctx);
       }
       if (url.pathname === '/api/admin/login' && request.method === 'POST') {
         return await handleAdminLogin(request, env, cors);
