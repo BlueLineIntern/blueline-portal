@@ -119,6 +119,7 @@
      head's justify-content:space-between spreads the two apart across the row
      instead of keeping them together at the right. */
   .panel-head-actions { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
+  .onb-filed-note { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--green); }
   .email-row .panel-head { align-items: flex-start; }
   .email-meta { color: var(--muted); font-size: var(--fs-xs); margin: 2px 0 0; }
   .email-preview { color: var(--text); font-size: var(--fs-sm); margin: var(--sp-2) 0 0; white-space: pre-wrap; }
@@ -2164,9 +2165,20 @@
         const pdfBtn = a.signatureDataUrl
           ? `<button type="button" class="panel-link onb-signed-pdf" data-onb="${escapeHtml(r.onboardingId)}">Download signed PDF</button>`
           : '';
+        // Filed by filename, not by name: the display name can be edited later
+        // (renameClientDoc), but the filename is deterministic from the
+        // onboarding id (suggestFilename), so this check survives a rename.
+        const expectedFilename = a.signatureDataUrl && window.BlueLineAgreementPdf
+          ? window.BlueLineAgreementPdf.suggestFilename(r.onboardingId) : '';
+        const alreadyFiled = expectedFilename && clientDocs.some((d) => d.filename === expectedFilename);
+        // Hidden rather than shown-and-erroring when SharePoint isn't wired up —
+        // the "Not connected yet" panel above already explains why.
+        const fileBtn = !a.signatureDataUrl || !clientDocsConfigured ? '' : alreadyFiled
+          ? '<span class="onb-filed-note">Filed to Client Documents ✓</span>'
+          : `<button type="button" class="panel-link onb-file-to-docs" data-onb="${escapeHtml(r.onboardingId)}">File to Client Documents</button>`;
         return `<div class="panel">
           <div class="panel-head"><h2>Advisory Agreement — ${escapeHtml(r.onboardingId)}</h2>
-            <span class="panel-head-actions">${pdfBtn}
+            <span class="panel-head-actions">${pdfBtn}${fileBtn}
             ${SHOW_ONBOARDING_TAB
               ? '<button type="button" class="panel-link onb-goto-tab">Full record →</button>'
               : `<a class="panel-link" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">Full record →</a>`}</span></div>
@@ -2199,6 +2211,79 @@
     wireDocRequestActions();
     wireDocActions();
     wireSignedPdfButtons(linked);
+    wireFileToDocsButtons(linked, c.email);
+  }
+
+  // Pushes the signed agreement into the SAME SharePoint library and chunked-
+  // upload endpoints the manual "Attach" flow uses — a Blob wrapping the
+  // generated PDF stands in for a File, since Blob has the same .size/.slice()
+  // a real file upload chunks over. No new server-side code: this only ever
+  // calls the two endpoints handleAdminClientDocUploadStart/Chunk already serve.
+  // A deliberate click, not automatic on every save — an autosave storm hitting
+  // this would file duplicate copies for one signature.
+  function wireFileToDocsButtons(records, email) {
+    document.querySelectorAll('#tab-documents .onb-file-to-docs').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const panel = btn.closest('.panel');
+        const errEl = panel ? panel.querySelector('.onb-pdf-error') : null;
+        const setErr = (msg) => { if (errEl) errEl.textContent = msg; };
+        setErr('');
+
+        const rec = (records || []).find((r) => r.onboardingId === btn.dataset.onb);
+        const agreement = rec && rec.data && rec.data.agreement;
+        if (!agreement || !agreement.signatureDataUrl) {
+          setErr('No signature is stored on this record.');
+          return;
+        }
+
+        const A = window.BlueLineAgreementPdf;
+        const label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Filing…';
+        try {
+          const bytes = await A.build({
+            signatureDataUrl: agreement.signatureDataUrl,
+            signedAt: agreement.signedAt,
+            clientName: A.resolveClientName(rec.data),
+          });
+          const blob = new Blob([bytes], { type: 'application/pdf' });
+          const filename = A.suggestFilename(rec.onboardingId);
+
+          const start = await api(`/api/admin/contacts/${encodeURIComponent(email)}/documents/upload`, {
+            method: 'POST',
+            body: JSON.stringify({
+              filename,
+              size: blob.size,
+              name: `Advisory Agreement (Signed) — ${rec.onboardingId}`,
+            }),
+          });
+          // Sequential, same as the manual attach flow: Graph tracks one
+          // expected byte range per upload session, so parallel PUTs would
+          // fight over it.
+          const chunkSize = start.chunkSize || 5 * 1024 * 1024;
+          let offset = 0;
+          while (offset < blob.size) {
+            const res = await api('/api/admin/client-documents/chunk', {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/octet-stream',
+                'X-Upload-Ticket': start.ticket,
+                'X-Upload-Offset': String(offset),
+              },
+              body: blob.slice(offset, Math.min(offset + chunkSize, blob.size)),
+            });
+            offset = res.done ? blob.size : res.nextOffset;
+          }
+          // Re-renders the whole tab, which is what turns this button into the
+          // "Filed ✓" note — no local button-state juggling needed on success.
+          await loadClientDocs(email, { force: true });
+        } catch (err) {
+          setErr((err && err.message) || 'Could not file the document to SharePoint.');
+          btn.disabled = false;
+          btn.textContent = label;
+        }
+      });
+    });
   }
 
   // Regenerates the signed agreement PDF from the signature already stored on

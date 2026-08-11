@@ -197,6 +197,37 @@ admin (the firm's copy). One module drives both, so the two cannot disagree.
   Rule 204-2 an executed advisory agreement is a books-and-records item, so this
   needs compliance sign-off, not just code.
 
+**Filing the signed agreement into SharePoint**: each Advisory Agreement panel
+on a contact's Documents tab also has a **"File to Client Documents"** button,
+which pushes the generated PDF into the same SharePoint library and family/
+person folder as a manual attachment — `resolveClientDocFolder` decides which,
+exactly as it already does for everything else on that tab.
+- **No new server-side code.** This calls the *same* two endpoints the manual
+  Attach flow already uses (`/api/admin/contacts/:email/documents/upload` then
+  `/api/admin/client-documents/chunk`), feeding a `Blob` wrapping the generated
+  PDF bytes through the identical chunking loop a `File` input already used —
+  `Blob` and `File` share `.size` and `.slice()`, so no new upload code was
+  needed, only a new caller.
+- **Filed by filename, not by name**, to detect "already filed": the display
+  name can be edited afterwards (rename is a KV-only op), but the filename is
+  deterministic from the onboarding id, so the check survives a rename. Once
+  filed, the button becomes a "Filed ✓" note instead of disappearing outright —
+  a click is deliberate, never automatic on every save, so an autosave storm
+  can't file duplicate copies of one signature.
+- Hidden entirely (not shown-and-erroring) when `SHAREPOINT_CLIENT_DOCS_LIST_ID`
+  isn't set — same rule as the Download button being absent with no signature.
+  **Not exercisable against the not-configured guard locally**: the mock has no
+  such check at all (always answers as configured), so that error path is
+  confirmed by reading the code on both ends (`shared.js`'s `api()` throws
+  `data.error` verbatim; the worker returns exactly `"SHAREPOINT_CLIENT_DOCS_LIST_ID
+  is not set"`), not by running it.
+- Verified against the mock end to end, including **both folder branches**: a
+  contact with no household files under their own name (`Smith, Jeannette`); the
+  same contact added to a household then files a second agreement under the
+  family name (`Smith Family`) — and the first file did **not** retroactively
+  move, matching the documented "a folder is never renamed after the fact" rule
+  above.
+
 **Legacy data:** records saved before the module rework (top-level
 `budget`/`riskAnswers`) are ignored by `loadModules()` — those were test data.
 Clients from that era just see an empty dashboard.
