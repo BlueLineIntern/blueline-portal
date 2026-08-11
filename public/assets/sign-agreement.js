@@ -37,6 +37,35 @@
   var GEOMETRY = {
     pageIndex: 1, // zero-based: page 2
 
+    // The template prints a SAMPLE client name ("Jeannette Smith") on its own
+    // line at baseline 257.15 in NotoSerif-Bold 10.5. Whatever the client typed
+    // has to replace it, or the document contradicts its own signature.
+    //
+    // It is covered with a rectangle in the signature box's own fill colour and
+    // the real name drawn on top. This works because that box is a FLAT
+    // #F7F7F7 fill and nothing else is drawn on that line — give the box a
+    // border, a pattern or a second column and the patch becomes visible.
+    //
+    // CAVEAT: covering is visual only. The sample name is still in the page's
+    // text layer, so copying text out of the PDF (or a text extractor) still
+    // yields "Jeannette Smith". Acceptable for a labelled proof of concept;
+    // for anything real, re-export the template without the name instead.
+    name: {
+      leftX: 60.85,
+      baselineY: 257.15,
+      size: 10.5,
+      minSize: 7,
+      maxWidth: 335,
+      // Cover spans the flat-grey run on that line only. It starts at 252.5 —
+      // just above the signature's own maximum top edge (226 + 26) — and the
+      // cover is drawn BEFORE the signature anyway, so it can never erase it.
+      coverX: 55,
+      coverY: 252.5,
+      coverW: 345,
+      coverH: 14,
+      coverGrey: 0.9686274509, // exactly the template's `0.9686... rg` box fill
+    },
+
     // Left edges clear the printed "Signature:" / "Date:" labels, which start
     // at x=60.85 and run ~58pt and ~31pt wide respectively at 10.5pt.
     sigLeftX: 125,
@@ -151,6 +180,88 @@
     });
   }
 
+  // The standard-14 fonts are WinAnsi-encoded and pdf-lib's drawText THROWS on
+  // any character outside that encoding, so a name has to be made safe before it
+  // is drawn — otherwise one autocorrected apostrophe fails the whole download.
+  //
+  // Deleting the offenders is not good enough: phones turn ' into U+2019, and
+  // dropping it silently renders O'Leary as "OLeary". So characters are
+  // TRANSLITERATED where there is a sensible ASCII equivalent, and only dropped
+  // when there genuinely isn't one. The 0x80-0x9F range counts as unsafe
+  // throughout: WinAnsi defines only part of it.
+  var PUNCTUATION_SWAPS = [
+    [/[‘’‚‛′]/g, "'"],  // curly single quotes, prime
+    [/[“”„‟″]/g, '"'],  // curly double quotes
+    [/[‐-―−]/g, '-'],             // hyphens, dashes, minus
+    [/…/g, '...'],
+    [/[     ]/g, ' '],  // non-breaking / thin spaces
+    [/[​‌‍﻿]/g, ''],         // zero-width junk
+  ];
+
+  // Latin letters with no NFD decomposition, so folding cannot reach them.
+  // Ø, Æ, Þ, Ð and ß are deliberately absent — WinAnsi encodes those already.
+  var LETTER_SWAPS = {
+    'Ł': 'L', 'ł': 'l', 'Đ': 'D', 'đ': 'd', 'Ħ': 'H', 'ħ': 'h',
+    'Ŋ': 'N', 'ŋ': 'n', 'Ŧ': 'T', 'ŧ': 't', 'Œ': 'OE', 'œ': 'oe',
+    'ı': 'i', 'İ': 'I', 'ĸ': 'k', 'ẞ': 'SS', 'Ə': 'E', 'ə': 'e',
+  };
+
+  function sanitizeName(value) {
+    if (!value) return '';
+    var s = String(value);
+    for (var i = 0; i < PUNCTUATION_SWAPS.length; i++) {
+      s = s.replace(PUNCTUATION_SWAPS[i][0], PUNCTUATION_SWAPS[i][1]);
+    }
+    // Per character, so an already-encodable accent (é, ü, ñ, ø, æ, þ, ß — all
+    // WinAnsi) is left intact, while one that isn't degrades to its base letter
+    // rather than vanishing.
+    var out = '';
+    for (var j = 0; j < s.length; j++) {
+      var ch = s[j];
+      if (/[\x20-\x7E\xA0-\xFF]/.test(ch)) { out += ch; continue; }
+      // Stroked and ligature letters do NOT decompose under NFD, so folding
+      // alone silently deletes them — turning Łukasz into "ukasz", i.e. losing
+      // the first letter of someone's name. Map them explicitly first.
+      if (LETTER_SWAPS[ch] !== undefined) { out += LETTER_SWAPS[ch]; continue; }
+      var folded = ch.normalize('NFD').replace(/[̀-ͯ]/g, '');
+      if (folded && /^[\x20-\x7E\xA0-\xFF]*$/.test(folded)) out += folded;
+    }
+    return out.replace(/\s+/g, ' ').trim();
+  }
+
+  // Both callers resolve the name through THIS function rather than each picking
+  // their own field order — otherwise the client's copy and the firm's copy could
+  // legitimately show different names for the same signature.
+  //
+  // `data` is an onboarding record's data object ({consent, profile, agreement}).
+  // Returns '' when nothing usable is on the record, which the caller must treat
+  // as "leave the template alone" rather than "print a blank".
+  function resolveClientName(data) {
+    data = data || {};
+    var agreement = data.agreement || {};
+    var profile = data.profile || {};
+    var consent = data.consent || {};
+    var candidates = [
+      agreement.typedName, // what they typed on the agreement step itself
+      [profile.firstName, profile.lastName].filter(Boolean).join(' '),
+      profile.name,
+      consent.name,
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      var clean = sanitizeName(candidates[i]);
+      if (clean) return clean;
+    }
+    return '';
+  }
+
+  // Shrink to fit rather than overflow the covered area. Names are short enough
+  // that this almost never triggers, but "almost never" is not never.
+  function fitTextSize(font, text, size, maxWidth, minSize) {
+    var s = size;
+    while (s > minSize && font.widthOfTextAtSize(text, s) > maxWidth) s -= 0.25;
+    return s;
+  }
+
   // signedAt is a full ISO timestamp (not a date-only string), so parsing it
   // carries no risk of the UTC-midnight-renders-as-yesterday bug.
   function formatSignedDate(signedAt) {
@@ -190,14 +301,42 @@
             '. Its signature coordinates need to be re-derived.'
           );
         }
+        // Times rather than Helvetica: the document is set in NotoSerif, and a
+        // sans-serif fill-in next to it reads as a different document.
         return Promise.all([
           doc.embedPng(ink.dataUrl),
-          doc.embedFont(PDFLib.StandardFonts.Helvetica),
+          doc.embedFont(PDFLib.StandardFonts.TimesRoman),
+          doc.embedFont(PDFLib.StandardFonts.TimesRomanBold),
         ]).then(function (embedded) {
           var png = embedded[0];
           var font = embedded[1];
+          var boldFont = embedded[2];
+          var ink0 = PDFLib.rgb(0.11, 0.145, 0.188);
+          var N = GEOMETRY.name;
 
-          // Contain-fit, so the signature keeps the proportions it was drawn in.
+          // --- Client name, FIRST so the cover cannot paint over the signature.
+          // An empty name deliberately leaves the template untouched: printing a
+          // blank where a name belongs is worse than the sample name being wrong.
+          var clientName = sanitizeName(opts.clientName);
+          if (clientName) {
+            page.drawRectangle({
+              x: N.coverX,
+              y: N.coverY,
+              width: N.coverW,
+              height: N.coverH,
+              color: PDFLib.rgb(N.coverGrey, N.coverGrey, N.coverGrey),
+              borderWidth: 0,
+            });
+            page.drawText(clientName, {
+              x: N.leftX,
+              y: N.baselineY,
+              size: fitTextSize(boldFont, clientName, N.size, N.maxWidth, N.minSize),
+              font: boldFont,
+              color: ink0,
+            });
+          }
+
+          // --- Signature. Contain-fit, so it keeps the proportions it was drawn in.
           var scale = Math.min(
             GEOMETRY.maxWidth / ink.width,
             GEOMETRY.maxHeight / ink.height
@@ -209,6 +348,7 @@
             height: ink.height * scale,
           });
 
+          // --- Date.
           var dateText = formatSignedDate(opts.signedAt);
           if (dateText) {
             page.drawText(dateText, {
@@ -216,7 +356,7 @@
               y: GEOMETRY.dateBaselineY + GEOMETRY.dateLift,
               size: GEOMETRY.dateSize,
               font: font,
-              color: PDFLib.rgb(0.11, 0.145, 0.188),
+              color: ink0,
             });
           }
           return doc.save();
@@ -252,6 +392,7 @@
     build: buildSignedAgreement,
     download: downloadSignedAgreement,
     suggestFilename: suggestFilename,
+    resolveClientName: resolveClientName,
     GEOMETRY: GEOMETRY,
   };
 })(window);

@@ -1036,6 +1036,9 @@ document.getElementById("export-signed-pdf").addEventListener("click", (e) => {
     signatureDataUrl: agreement.signatureDataUrl,
     signedAt: agreement.signedAt,
     onboardingId: state.onboardingId,
+    // Replaces the sample name printed on the template. Resolved by the shared
+    // module, not here, so admin's copy picks the same name from the same record.
+    clientName: window.BlueLineAgreementPdf.resolveClientName(state.data),
   })
     .catch((buildErr) => {
       err.textContent =

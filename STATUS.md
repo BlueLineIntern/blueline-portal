@@ -158,10 +158,33 @@ admin (the firm's copy). One module drives both, so the two cannot disagree.
   rather than on every page load of the wizard and the contact profile.
 - `dev-server.ps1` needed `.pdf` added to its MIME map; prod already handled it,
   since `serveAsset` delegates to `env.ASSETS.fetch`.
-- **The template hard-codes "Jeannette Smith"** above the signature line, so the
-  PDF shows that name whatever the client typed in step 4. Fine for a sample
-  document, wrong for a live demo to a prospect — needs a second template or a
-  stamped name before it is shown to anyone real.
+- **The client's typed name replaces the template's printed sample name.** The
+  template prints "Jeannette Smith" at baseline 257.15, which would otherwise
+  contradict the signature beneath it. A rectangle in the box's own `#F7F7F7`
+  fill covers it and the real name is drawn on top in Times-Bold 10.5 at the same
+  baseline, shrinking to fit (7pt floor) when long. Drawn **before** the
+  signature, so the patch can never erase it. Times, not Helvetica, throughout:
+  the document is set in NotoSerif and a sans-serif fill-in reads as a different
+  document. The name comes from `resolveClientName()` — `agreement.typedName`,
+  then profile first + last, then `profile.name`, then `consent.name` — and
+  **both callers go through that one function**, so the client's copy and the
+  firm's copy cannot show different names for one signature. An unresolvable name
+  leaves the template untouched rather than printing a blank.
+  - **The cover is visual only.** The sample name is still in the page's text
+    layer, so a text extractor (or copy-paste out of the PDF) still yields
+    "Jeannette Smith". Acceptable for a labelled proof of concept; for anything
+    real, re-export the template with no name rather than covering one.
+  - It assumes that line is flat grey with nothing else on it. Give the box a
+    border, a pattern or a second column and the patch becomes visible.
+  - Names are **sanitised for WinAnsi** first, because pdf-lib's standard-14 fonts
+    THROW on any character outside it — one autocorrected apostrophe would
+    otherwise fail the entire download. Typographic punctuation is transliterated
+    (’ → ', em dash → -), letters WinAnsi already covers are left intact (é, ü,
+    ñ, ø, æ, þ, ß), and stroked/ligature letters that do **not** decompose under
+    NFD are mapped explicitly (Ł → L, Đ → D, ı → i, Œ → OE). That last part is
+    not theoretical: NFD folding alone silently deleted them, turning Łukasz into
+    "ukasz" — losing the first letter of a client's name. Non-Latin scripts have
+    no ASCII equivalent and are dropped, since a standard font cannot render them.
 - Still a **proof of concept, deliberately**: the onboarding endpoints are
   unauthenticated by design (see above), so a signature here has **no signer
   attribution**, and the stamped PDF carries no tamper evidence — a PNG in a PDF

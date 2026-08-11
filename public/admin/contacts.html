@@ -2229,6 +2229,9 @@
           signatureDataUrl: agreement.signatureDataUrl,
           signedAt: agreement.signedAt,
           onboardingId: btn.dataset.onb,
+          // Same resolver the client's own download uses, so both copies of one
+          // signature can never show different names.
+          clientName: window.BlueLineAgreementPdf.resolveClientName(rec.data),
         })
           .catch((err) => setErr((err && err.message) || 'Could not build the signed PDF.'))
           .finally(() => {
