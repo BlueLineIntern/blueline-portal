@@ -118,8 +118,6 @@
      PDF download and a link to the full record). Without grouping them, the
      head's justify-content:space-between spreads the two apart across the row
      instead of keeping them together at the right. */
-  .panel-head-actions { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
-  .onb-filed-note { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--green); }
   .email-row .panel-head { align-items: flex-start; }
   .email-meta { color: var(--muted); font-size: var(--fs-xs); margin: 2px 0 0; }
   .email-preview { color: var(--text); font-size: var(--fs-sm); margin: var(--sp-2) 0 0; white-space: pre-wrap; }
@@ -597,7 +595,6 @@
 
 <script src="/assets/render.js"></script>
 <script src="/admin/shared.js"></script>
-<script src="/assets/sign-agreement.js"></script>
 <script>
   initShell('contacts');
 
@@ -2159,46 +2156,14 @@
     }
   }
 
+  // Two panels only: what you're still waiting on, and what has arrived. A
+  // signed advisory agreement is not a third category — it arrives in Attached
+  // Documents like anything else, filed automatically at signing by
+  // autoFileSignedAgreement (worker.js) and rendered from its `clientdoc:`
+  // record with an "auto-filed at signing" badge. There is deliberately no
+  // per-agreement panel: it duplicated what the row already says, and the
+  // signature it displayed is visible inside the filed PDF itself.
   function renderDocumentsTab(c) {
-    const linked = linkedOnboardings(c);
-    const agreements = linked
-      .filter((r) => r.data && r.data.agreement)
-      .map((r) => {
-        const a = r.data.agreement;
-        const sig = a.signatureDataUrl
-          ? `<div class="onb-signature"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Client signature" /></div>`
-          : '<p class="empty">No signature captured.</p>';
-        // Offered only when there is actually a signature to stamp — a button
-        // that can only ever error is worse than no button.
-        const pdfBtn = a.signatureDataUrl
-          ? `<button type="button" class="panel-link onb-signed-pdf" data-onb="${escapeHtml(r.onboardingId)}">Download signed PDF</button>`
-          : '';
-        // Filed by filename, not by name: the display name can be edited later
-        // (renameClientDoc), but the filename is deterministic from the
-        // onboarding id (suggestFilename), so this check survives a rename.
-        const expectedFilename = a.signatureDataUrl && window.BlueLineAgreementPdf
-          ? window.BlueLineAgreementPdf.suggestFilename(r.onboardingId) : '';
-        const alreadyFiled = expectedFilename && clientDocs.some((d) => d.filename === expectedFilename);
-        // Hidden rather than shown-and-erroring when SharePoint isn't wired up —
-        // the "Not connected yet" panel above already explains why.
-        const fileBtn = !a.signatureDataUrl || !clientDocsConfigured ? '' : alreadyFiled
-          ? '<span class="onb-filed-note">Filed to Client Documents ✓</span>'
-          : `<button type="button" class="panel-link onb-file-to-docs" data-onb="${escapeHtml(r.onboardingId)}">File to Client Documents</button>`;
-        return `<div class="panel">
-          <div class="panel-head"><h2>Advisory Agreement — ${escapeHtml(r.onboardingId)}</h2>
-            <span class="panel-head-actions">${pdfBtn}${fileBtn}
-            ${SHOW_ONBOARDING_TAB
-              ? '<button type="button" class="panel-link onb-goto-tab">Full record →</button>'
-              : `<a class="panel-link" href="/admin/onboarding.html?id=${encodeURIComponent(r.onboardingId)}">Full record →</a>`}</span></div>
-          <div class="kv-rows">
-            ${kvRow('Typed name', a.typedName ? escapeHtml(a.typedName) : '—')}
-            ${kvRow('Signed at', a.signedAt ? escapeHtml(fmtDateTime(a.signedAt)) : '—')}
-            ${kvRow('Acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No')}
-          </div>
-          ${sig}
-          <p class="form-error onb-pdf-error"></p>
-        </div>`;
-      });
     // The new-request fields are the only unsaved state on this tab, and the
     // 20s poll rebuilds it (see loadData) — so carry them across the rebuild.
     // Without this, typing a request slowly meant losing it mid-sentence.
@@ -2210,129 +2175,13 @@
     // already arrived.
     document.getElementById('tab-documents').innerHTML =
       docRequestsHtml() +
-      attachedDocsHtml() +
-      (agreements.length ? agreements.join('') : '<div class="panel"><p class="empty">No signed agreements on file for this contact.</p></div>');
+      attachedDocsHtml();
     keep.forEach((k) => {
       const el = document.getElementById(k.id);
       if (el && k.value) el.value = k.value;
     });
     wireDocRequestActions();
     wireDocActions();
-    wireSignedPdfButtons(linked);
-    wireFileToDocsButtons(linked, c.email);
-  }
-
-  // Pushes the signed agreement into the SAME SharePoint library and chunked-
-  // upload endpoints the manual "Attach" flow uses — a Blob wrapping the
-  // generated PDF stands in for a File, since Blob has the same .size/.slice()
-  // a real file upload chunks over. No new server-side code: this only ever
-  // calls the two endpoints handleAdminClientDocUploadStart/Chunk already serve.
-  // A deliberate click, not automatic on every save — an autosave storm hitting
-  // this would file duplicate copies for one signature.
-  function wireFileToDocsButtons(records, email) {
-    document.querySelectorAll('#tab-documents .onb-file-to-docs').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const panel = btn.closest('.panel');
-        const errEl = panel ? panel.querySelector('.onb-pdf-error') : null;
-        const setErr = (msg) => { if (errEl) errEl.textContent = msg; };
-        setErr('');
-
-        const rec = (records || []).find((r) => r.onboardingId === btn.dataset.onb);
-        const agreement = rec && rec.data && rec.data.agreement;
-        if (!agreement || !agreement.signatureDataUrl) {
-          setErr('No signature is stored on this record.');
-          return;
-        }
-
-        const A = window.BlueLineAgreementPdf;
-        const label = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = 'Filing…';
-        try {
-          const bytes = await A.build({
-            signatureDataUrl: agreement.signatureDataUrl,
-            signedAt: agreement.signedAt,
-            clientName: A.resolveClientName(rec.data),
-          });
-          const blob = new Blob([bytes], { type: 'application/pdf' });
-          const filename = A.suggestFilename(rec.onboardingId);
-
-          const start = await api(`/api/admin/contacts/${encodeURIComponent(email)}/documents/upload`, {
-            method: 'POST',
-            body: JSON.stringify({
-              filename,
-              size: blob.size,
-              name: `Advisory Agreement (Signed) — ${rec.onboardingId}`,
-            }),
-          });
-          // Sequential, same as the manual attach flow: Graph tracks one
-          // expected byte range per upload session, so parallel PUTs would
-          // fight over it.
-          const chunkSize = start.chunkSize || 5 * 1024 * 1024;
-          let offset = 0;
-          while (offset < blob.size) {
-            const res = await api('/api/admin/client-documents/chunk', {
-              method: 'PUT',
-              headers: {
-                'Content-Type': 'application/octet-stream',
-                'X-Upload-Ticket': start.ticket,
-                'X-Upload-Offset': String(offset),
-              },
-              body: blob.slice(offset, Math.min(offset + chunkSize, blob.size)),
-            });
-            offset = res.done ? blob.size : res.nextOffset;
-          }
-          // Re-renders the whole tab, which is what turns this button into the
-          // "Filed ✓" note — no local button-state juggling needed on success.
-          await loadClientDocs(email, { force: true });
-        } catch (err) {
-          setErr((err && err.message) || 'Could not file the document to SharePoint.');
-          btn.disabled = false;
-          btn.textContent = label;
-        }
-      });
-    });
-  }
-
-  // Regenerates the signed agreement PDF from the signature already stored on
-  // the onboarding record, via the same assets/sign-agreement.js the client's
-  // own download uses — same template, same coordinates, so the firm's copy and
-  // the client's copy cannot disagree. Nothing is persisted: the PDF is built on
-  // click, so there is no signed agreement in KV or SharePoint to go stale.
-  // Re-wired on every render because the 20s poll rebuilds this tab.
-  function wireSignedPdfButtons(records) {
-    document.querySelectorAll('#tab-documents .onb-signed-pdf').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const panel = btn.closest('.panel');
-        const errEl = panel ? panel.querySelector('.onb-pdf-error') : null;
-        const setErr = (msg) => { if (errEl) errEl.textContent = msg; };
-        setErr('');
-
-        const rec = (records || []).find((r) => r.onboardingId === btn.dataset.onb);
-        const agreement = rec && rec.data && rec.data.agreement;
-        if (!agreement || !agreement.signatureDataUrl) {
-          setErr('No signature is stored on this record.');
-          return;
-        }
-
-        const label = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = 'Preparing…';
-        window.BlueLineAgreementPdf.download({
-          signatureDataUrl: agreement.signatureDataUrl,
-          signedAt: agreement.signedAt,
-          onboardingId: btn.dataset.onb,
-          // Same resolver the client's own download uses, so both copies of one
-          // signature can never show different names.
-          clientName: window.BlueLineAgreementPdf.resolveClientName(rec.data),
-        })
-          .catch((err) => setErr((err && err.message) || 'Could not build the signed PDF.'))
-          .finally(() => {
-            btn.disabled = false;
-            btn.textContent = label;
-          });
-      });
-    });
   }
 
   // ---------- Emails tab ----------
@@ -4192,16 +4041,25 @@
               <span class="cell-missing">a document belongs to a person — it is filed under their name</span>
             </div>` : ''}
             <div class="row-list">${docs.length ? docs.map((d) => {
+              // Same three-way source handling as attachedDocsHtml: a client
+              // send-in and an auto-filed signed agreement are both wrong to
+              // credit to a staff member via staffLabel.
+              const fromClient = d.source === 'client';
+              const fromSystem = d.source === 'system';
+              const attachedWord = fromClient ? 'sent' : fromSystem ? 'auto-filed' : 'attached';
+              const byWhom = fromClient ? 'by the client' : fromSystem ? '' : `by ${staffLabel(d.uploadedBy)}`;
               const meta = [d.filename !== d.name ? d.filename : '', formatBytes(d.size),
-                d.uploadedAt ? `attached ${fmtDate(d.uploadedAt)}` : '',
-                d.uploadedBy ? `by ${staffLabel(d.uploadedBy)}` : '']
+                d.uploadedAt ? `${attachedWord} ${fmtDate(d.uploadedAt)}` : '',
+                d.uploadedBy && byWhom ? byWhom : '']
                 .filter(Boolean).map(escapeHtml).join(' · ');
+              const badge = fromClient ? ' <span class="badge badge-sky">from client</span>'
+                : fromSystem ? ' <span class="badge badge-green">auto-filed at signing</span>' : '';
               const link = d.webUrl
                 ? `<a class="name-link" href="${escapeHtml(d.webUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(d.name)}</a>`
                 : escapeHtml(d.name);
               return `<div class="row-item doc-row">
                 <div class="doc-main">
-                  <div class="row-title">${link}</div>
+                  <div class="row-title">${link}${badge}</div>
                   <div class="doc-meta">${whoLink(d.member)}${meta ? ` · ${meta}` : ''}</div>
                 </div>
                 <div class="doc-actions">
@@ -4212,29 +4070,11 @@
             }).join('') : '<p class="empty">Nothing attached to any member yet.</p>'}</div>
           </div>`;
 
-      // Signed onboarding agreements, per member — the same fixed record the
-      // person's Documents tab shows, below the attachments for the same reason.
-      const agreements = members.flatMap((m) => {
-        if (!m.contact) return [];
-        return linkedOnboardings(m.contact)
-          .filter((r) => r.data && r.data.agreement)
-          .map((r) => {
-            const a = r.data.agreement;
-            return `<div class="panel">
-              <div class="panel-head"><h2>Advisory Agreement — ${escapeHtml(r.onboardingId)}</h2>
-                ${whoLink(m.email)}</div>
-              <div class="kv-rows">
-                ${kvRow('Typed name', a.typedName ? escapeHtml(a.typedName) : '—')}
-                ${kvRow('Signed at', a.signedAt ? escapeHtml(fmtDateTime(a.signedAt)) : '—')}
-                ${kvRow('Acknowledged', a.placeholderAcknowledged ? 'Yes' : 'No')}
-              </div>
-              ${a.signatureDataUrl ? `<div class="onb-signature"><img src="${escapeHtml(a.signatureDataUrl)}" alt="Client signature" /></div>` : ''}
-            </div>`;
-          });
-      });
-
-      wrap.innerHTML = attachedPanel + (agreements.length ? agreements.join('')
-        : '<div class="panel"><p class="empty">No signed agreements on file for any member.</p></div>');
+      // No separate per-agreement panels here either — a member's signed
+      // agreement is auto-filed into the same library at signing, so it appears
+      // in the attachments list above (attributed to that member) like every
+      // other document. Matches the person's Documents tab deliberately.
+      wrap.innerHTML = attachedPanel;
 
       const addBtn = document.getElementById('g-doc-add');
       if (addBtn) {

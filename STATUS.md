@@ -466,7 +466,7 @@ Client portal is untouched and keeps its own look.
   / "Full record →" controls become links to `/admin/onboarding.html?id=…`**
   instead of tab jumps — they stay live rather than becoming dead buttons.
   Onboarding *data* is untouched: the Onboarding page, the submissions, the
-  auto-tasks and the signed agreements shown on the Documents tab all still work.
+  auto-tasks and the signed agreement filed to the Documents tab all still work.
 - **Emails** (no storage — `fetchClientEmailHistory()` in worker.js) is a LIVE
   read of a client's email history via Microsoft Graph, fetched fresh every time
   the tab is opened and never written anywhere. Needs the same app registration
@@ -525,11 +525,25 @@ Client portal is untouched and keeps its own look.
   - Real-Graph-unverified, like the Learning and Client Documents uploads: no
     Azure credentials in this environment to test the actual `$search` query
     against a live mailbox.
+- The **Documents tab is exactly two panels**: **Requested Documents** (what
+  you're still waiting on) then **Attached Documents** (what has arrived).
+  Requests come first because an outstanding ask matters more than a delivered
+  file. There is deliberately **no per-agreement panel** — a signed advisory
+  agreement is not a third category of thing, it is a document that arrived, so
+  it renders as an Attached Documents row like everything else (see
+  `autoFileSignedAgreement`). The old panels duplicated what the row already
+  says, and the signature image they displayed is visible inside the filed PDF.
+  The family/company Documents tab matches, for the same reason.
 - **Attached client documents** (`clientdoc:<email>:<invTs>-<rand>` KV,
-  **encrypted**) sit at the TOP of the Documents tab, above the signed
-  onboarding agreements: the agreements are a fixed historical record, this is
-  the part that gets added to. Attach with a display name; rename and delete
-  from the row.
+  **encrypted**) are the tab's second panel. Attach with a display name; rename
+  and delete from the row. Three **sources** render distinctly, because crediting
+  the wrong party is worse than saying nothing: `admin` (a staff attachment,
+  "attached … by <staff>"), `client` (a portal send-in — "sent … by the client",
+  sky "from client" badge; `staffLabel` would otherwise render a client's email
+  as if they were staff), and `system` (the agreement that filed itself at
+  signing — "auto-filed …", green "auto-filed at signing" badge, and **no
+  by-line at all**, since nobody attached it). Both the person tab and the
+  family/company tab implement all three.
   - **Bytes and metadata live in different stores.** The file goes to a
     SharePoint document library ("Client Documents"), filed under the client's
     **family folder** (see below), through the same chunked upload-session
