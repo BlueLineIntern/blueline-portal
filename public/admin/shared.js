@@ -53,7 +53,7 @@ async function api(path, opts = {}) {
     const contactMatch = path.match(/^\/api\/admin\/contacts\/([^/?]+)/);
     const cleanPath = path.split('?')[0];
     const combinedList = (opts.method || 'GET').toUpperCase() === 'GET'
-      && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/tasks'].includes(cleanPath);
+      && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/households', '/api/admin/tasks'].includes(cleanPath);
     if (taskMatch) requestWorkspace = TASK_WORKSPACES.get(decodeURIComponent(taskMatch[1])) || SHARED_ADMIN_WORKSPACE;
     else if (contactMatch) requestWorkspace = CONTACT_WORKSPACES.get(decodeURIComponent(contactMatch[1]).toLowerCase()) || SHARED_ADMIN_WORKSPACE;
     else if (!combinedList) requestWorkspace = SHARED_ADMIN_WORKSPACE;

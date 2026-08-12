@@ -249,7 +249,8 @@ async function requestedAdminWorkspace(request, env, adminEmail) {
   const allowed = await accessibleWorkspaceOwners(env, adminEmail);
   const requested = String(request.headers.get('X-Admin-Workspace') || allowed[0]).trim().toLowerCase();
   const path = new URL(request.url).pathname;
-  const combinedList = request.method === 'GET' && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/tasks'].includes(path);
+  const combinedList = request.method === 'GET'
+    && ['/api/admin/workspaces', '/api/admin/contacts', '/api/admin/households', '/api/admin/tasks'].includes(path);
   if (requested === ALL_ADMIN_WORKSPACES && isSupervisorAdmin(adminEmail) && combinedList) return ALL_ADMIN_WORKSPACES;
   return allowed.includes(requested) ? requested : null;
 }
@@ -5404,9 +5405,14 @@ async function handleAdminListHouseholds(request, env, cors) {
   const workspace = await requestedAdminWorkspace(request, env, adminEmail);
   if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
   const { items, errors } = await readAllEncrypted(env, 'household:');
+  const visibleWorkspaces = workspace === ALL_ADMIN_WORKSPACES
+    ? new Set(await accessibleWorkspaceOwners(env, adminEmail))
+    : new Set([workspace]);
   // Normalized here rather than in the page: records predate `kind`, and every
   // consumer would otherwise need the same `kind || 'family'` fallback.
-  const households = items.filter((h) => recordWorkspace(h) === workspace).map((h) => ({ ...h, kind: groupKindOf(h) }));
+  const households = items
+    .filter((h) => visibleWorkspaces.has(recordWorkspace(h)))
+    .map((h) => ({ ...h, kind: groupKindOf(h) }));
   return json({ households, decryptErrors: errors, workspace }, 200, cors);
 }
 
