@@ -135,6 +135,11 @@
     background: none; border: 0; padding: 0; font: inherit; color: var(--sky-dark);
     text-decoration: underline; cursor: pointer;
   }
+  .import-warnings {
+    font-size: var(--fs-xs); color: var(--amber); background: var(--amber-bg);
+    border-radius: var(--radius-sm); padding: var(--sp-3); margin: var(--sp-3) 0 0;
+    line-height: 1.6;
+  }
   .imp-create { color: var(--green); }
   .imp-update { color: var(--muted); }
   .imp-skip { color: var(--red); }
@@ -616,12 +621,20 @@
         <code>Name</code>, <code>Email</code>, <code>Phone</code>, <code>Status</code>,
         <code>Household</code>, <code>Household Type</code>, <code>Role</code>,
         <code>Advisor</code>, <code>Tags</code>, <code>Address</code>,
-        <code>Preferred Name</code>, <code>Work Email</code>, <code>Work Phone</code>.
+        <code>Preferred Name</code>, <code>Work Email</code>, <code>Work Phone</code>,
+        <code>Gender</code>, <code>IPS</code>, <code>AdvisoryAgreement</code>.
         Anything else is ignored. <button type="button" class="link-btn" id="import-template">Download a template</button>
+      </p>
+      <p class="field-note"><strong>IPS and AdvisoryAgreement</strong> are completion dates
+        (<code>2026-03-01</code> or <code>3/1/2026</code>). They are recorded against the
+        <em>family or company</em>, so a date on a person's row sets it for their household —
+        which is what makes a whole sheet of clients submittable at once. A blank cell leaves
+        whatever is on file alone; it never clears a date.
       </p>
     </div>
 
     <p class="form-error" id="import-error"></p>
+    <p class="import-warnings hidden" id="import-warnings"></p>
 
     <div class="hidden" id="import-preview">
       <div class="kv-rows" id="import-summary"></div>
@@ -1178,7 +1191,26 @@
   const IO_COLUMNS = [
     'Type', 'Name', 'Email', 'PreferredName', 'Status', 'Advisor',
     'Phone', 'WorkPhone', 'WorkEmail', 'Gender', 'Address', 'Household', 'Tags',
+    // Key-document completion dates. Stored on the FAMILY/COMPANY (see
+    // KEY_DOCUMENTS), so on a person's row these show — and on import set — the
+    // dates for the grouping that person belongs to, not something of their own.
+    'IPS', 'AdvisoryAgreement',
   ];
+
+  // A person's key-document dates come from the grouping they belong to.
+  // Membership is the reliable link; the free-text `household` label is a
+  // fallback for a contact who carries a label but was never added to the
+  // record. Searches allHouseholds, not just the visible ones, so a filtered-out
+  // family still resolves for the people exported under it.
+  function groupForContact(c) {
+    const email = String(c.email || '').toLowerCase();
+    const byMember = allHouseholds.find((h) => (h.members || [])
+      .some((m) => String(m.email || '').toLowerCase() === email));
+    if (byMember) return byMember;
+    const label = String(c.household || '').trim().toLowerCase();
+    if (!label) return null;
+    return allHouseholds.find((h) => String(h.name || '').trim().toLowerCase() === label) || null;
+  }
 
   // RFC 4180 quoting: wrap in quotes and double any inner quote whenever the
   // value contains a comma, quote, or newline — otherwise a name like
@@ -1204,10 +1236,12 @@
       .slice()
       .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)))
       .forEach((c) => {
+        const kd = (groupForContact(c) || {}).keyDocuments || {};
         lines.push([
           'Person', c.name, c.email, c.preferredName, c.status, c.advisor,
           c.phone, c.workPhone, c.workEmail, c.gender, c.address, c.household,
           (c.tags || []).join('; '),
+          kd.ips || '', kd.advisoryAgreement || '',
         ].map(csvCell).join(','));
       });
     households
@@ -1217,10 +1251,12 @@
         // Members ride in the Household column as a readable list; import
         // never reads them back (a household's membership is structured data
         // keyed on ids, not something to reconstruct from a spreadsheet cell).
+        const hkd = h.keyDocuments || {};
         lines.push([
           kindMeta(h).label, h.name, h.email, '', h.status, h.advisorRep,
           '', '', '', '', '', (h.members || []).map((m) => m.email).join('; '),
           (h.tags || []).join('; '),
+          hkd.ips || '', hkd.advisoryAgreement || '',
         ].map(csvCell).join(','));
       });
     // \r\n and a BOM so Excel opens it as UTF-8 rather than mangling accents.
@@ -1487,7 +1523,41 @@
     preferredname: 'preferredname', nickname: 'preferredname',
     workemail: 'workemail', businessemail: 'workemail',
     workphone: 'workphone', businessphone: 'workphone', officephone: 'workphone',
+    gender: 'gender',
+    ips: 'ips', ipsdate: 'ips', investmentpolicystatement: 'ips',
+    investmentpolicystatementips: 'ips', ipscompleted: 'ips',
+    advisoryagreement: 'advisoryagreement', advisory: 'advisoryagreement',
+    advisoryagreementdate: 'advisoryagreement', agreement: 'advisoryagreement',
   };
+
+  const KEY_DOC_LABEL = { ips: 'IPS', advisoryAgreement: 'Advisory Agreement' };
+
+  // Excel writes whatever the cell's format says, so a date typed into a
+  // spreadsheet arrives as 3/1/2026 far more often than 2026-03-01. Both are
+  // accepted and normalised to the YYYY-MM-DD the API stores — requiring ISO
+  // would fail almost every real sheet. Slash dates are read US-style (month
+  // first): there is no way to tell 3/1 from 1/3 without choosing a convention,
+  // and this is a US firm.
+  function parseImportDate(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return { value: '' };
+    let y, m, d;
+    let mt = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+    if (mt) { y = +mt[1]; m = +mt[2]; d = +mt[3]; } else {
+      mt = /^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/.exec(s);
+      if (!mt) return { error: `"${s}" is not a date (use YYYY-MM-DD or M/D/YYYY)` };
+      m = +mt[1]; d = +mt[2]; y = +mt[3];
+      if (y < 100) y += 2000;
+    }
+    const dt = new Date(y, m - 1, d);
+    // The Date constructor rolls 2/30 forward into March rather than failing,
+    // so the round-trip is what actually rejects an impossible date.
+    if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) {
+      return { error: `"${s}" is not a real calendar date` };
+    }
+    const pad = (n) => String(n).padStart(2, '0');
+    return { value: `${y}-${pad(m)}-${pad(d)}` };
+  }
 
   const IMPORT_STATUSES = ['prospect', 'onboarding', 'active', 'inactive'];
   const FAMILY_ROLES = ['head', 'spouse', 'partner', 'child', 'dependent', 'other'];
@@ -1580,6 +1650,53 @@
     // WHOLE file and applied after the pass — see the note where it is used.
     const explicitKeys = new Set();
 
+    // Key-document dates are stored on the grouping, so a person's row sets the
+    // dates for the family/company they belong to. Membership on the existing
+    // record is the reliable link; the Household column and the free-text label
+    // are the fallbacks.
+    const groupKeyOf = (h) => `${(h.kind === 'company' ? 'company' : 'family')}|${String(h.name || '').trim().toLowerCase()}`;
+    const groupKeyByMember = new Map();
+    allHouseholds.forEach((h) => {
+      (h.members || []).forEach((m) => {
+        const e = String(m.email || '').toLowerCase();
+        if (e && !groupKeyByMember.has(e)) groupKeyByMember.set(e, groupKeyOf(h));
+      });
+    });
+    const keyFromLabel = (label) => {
+      const l = String(label || '').trim().toLowerCase();
+      if (!l) return '';
+      if (groupsByKey.has(`family|${l}`)) return `family|${l}`;
+      if (groupsByKey.has(`company|${l}`)) return `company|${l}`;
+      return '';
+    };
+
+    const keyDocPlan = new Map();     // groupKey -> {kind, name, ips?, advisoryAgreement?, rows[]}
+    const keyDocConflicts = [];
+    // A date with nowhere to go: these are surfaced rather than dropped, since
+    // the row otherwise imports fine and the date would vanish without a word.
+    const keyDocOrphans = [];
+
+    // Returns true only if the value was actually taken, so the row's preview
+    // text can report what will really happen rather than what the cell said.
+    function recordKeyDoc(groupKey, kind, name, field, value, rowNo) {
+      // An EMPTY cell means "leave whatever is recorded alone", not "clear it".
+      // Round-tripping an export where most rows are blank must not wipe every
+      // date the firm has — clearing stays a deliberate act in the UI.
+      if (!value) return false;
+      let entry = keyDocPlan.get(groupKey);
+      if (!entry) { entry = { kind, name, rows: [] }; keyDocPlan.set(groupKey, entry); }
+      if (entry[field] !== undefined && entry[field] !== value) {
+        keyDocConflicts.push(
+          `Row ${rowNo}: ${KEY_DOC_LABEL[field]} for "${entry.name}" was already set to `
+          + `${entry[field]} by row ${entry.rows[0]} — ${value} on this row is ignored`
+        );
+        return false;
+      }
+      entry[field] = value;
+      if (!entry.rows.includes(rowNo)) entry.rows.push(rowNo);
+      return true;
+    }
+
     body.forEach((r) => {
       const cells = r.cells;
       const get = (key) => {
@@ -1659,8 +1776,43 @@
           }
         }
 
+        const ipsRes = parseImportDate(get('ips'));
+        const advRes = parseImportDate(get('advisoryagreement'));
+        // A malformed date fails the row rather than importing the contact
+        // without it — a half-applied row that looks successful is worse than
+        // one the advisor is told to fix.
+        if (ipsRes.error || advRes.error) {
+          items.push({ rowNo, type, name, email, action: 'skip',
+            reason: ipsRes.error || advRes.error });
+          return;
+        }
+        let docNote = '';
+        if (ipsRes.value || advRes.value) {
+          const target = (join && join.key)
+            || groupKeyByMember.get(email)
+            || keyFromLabel((contactsByEmail.get(email) || {}).household);
+          if (!target) {
+            docNote = 'dates ignored — not in a family or company';
+            keyDocOrphans.push(
+              `Row ${rowNo} (${email}): has a date but belongs to no family or company, `
+              + `so there is nothing to record it against`
+            );
+          } else {
+            const kind = target.split('|')[0];
+            const nm = (join && join.name) || (groupsByKey.get(target) || {}).name || target.split('|')[1];
+            const tookIps = recordKeyDoc(target, kind, nm, 'ips', ipsRes.value, rowNo);
+            const tookAdv = recordKeyDoc(target, kind, nm, 'advisoryAgreement', advRes.value, rowNo);
+            const parts = [];
+            if (tookIps) parts.push(`IPS ${ipsRes.value}`);
+            if (tookAdv) parts.push(`Advisory ${advRes.value}`);
+            docNote = parts.length
+              ? `sets ${nm}: ${parts.join(', ')}`
+              : 'dates ignored — an earlier row already set them';
+          }
+        }
+
         items.push({
-          rowNo, type, name, email, fields, join,
+          rowNo, type, name, email, fields, join, docNote,
           action: contactsByEmail.has(email) ? 'update' : 'create',
         });
         return;
@@ -1680,12 +1832,28 @@
         return;
       }
       const key = `${type}|${name.toLowerCase()}`;
+      const gIps = parseImportDate(get('ips'));
+      const gAdv = parseImportDate(get('advisoryagreement'));
+      if (gIps.error || gAdv.error) {
+        items.push({ rowNo, type, name, email, action: 'skip',
+          reason: gIps.error || gAdv.error });
+        return;
+      }
+      let gDocNote = '';
+      if (gIps.value || gAdv.value) {
+        const tookIps = recordKeyDoc(key, type, name, 'ips', gIps.value, rowNo);
+        const tookAdv = recordKeyDoc(key, type, name, 'advisoryAgreement', gAdv.value, rowNo);
+        const parts = [];
+        if (tookIps) parts.push(`IPS ${gIps.value}`);
+        if (tookAdv) parts.push(`Advisory ${gAdv.value}`);
+        gDocNote = parts.length ? parts.join(', ') : 'dates ignored — an earlier row already set them';
+      }
       const fields = { name, kind: type };
       if (status) fields.status = status;
       if (get('tags')) fields.tags = splitTags(get('tags'));
       if (email && looksLikeEmail(email)) fields.email = email;
       items.push({
-        rowNo, type, name, email, fields, groupKey: key,
+        rowNo, type, name, email, fields, groupKey: key, docNote: gDocNote,
         action: groupsByKey.has(key) ? 'update' : 'create',
       });
       explicitKeys.add(key);
@@ -1699,7 +1867,7 @@
     // created the grouping TWICE, once from each path.
     for (const key of explicitKeys) plannedGroups.delete(key);
 
-    return { items, plannedGroups, unknown, header };
+    return { items, plannedGroups, unknown, header, keyDocPlan, keyDocConflicts, keyDocOrphans };
   }
 
   function renderImportPreview(plan) {
@@ -1714,9 +1882,21 @@
       line('People to update', people.filter((i) => i.action === 'update').length),
       line('Families / companies named outright', groups.length),
       line('Families / companies created from a Household column', autoGroups.length),
+      plan.keyDocPlan.size ? line('Families / companies getting key-document dates', plan.keyDocPlan.size) : '',
+      plan.keyDocConflicts.length ? line('Conflicting dates (first row wins)', plan.keyDocConflicts.length) : '',
+      plan.keyDocOrphans.length ? line('Dates with no family / company to hold them', plan.keyDocOrphans.length) : '',
       skipped.length ? line('Rows skipped (see below)', skipped.length) : '',
       plan.unknown.length ? line('Columns ignored', plan.unknown.join(', ')) : '',
     ].filter(Boolean).join('');
+
+    // Conflicts and orphans are shown in full, not just counted: "3 conflicts"
+    // is not something an advisor can act on without knowing which rows.
+    const warnEl = document.getElementById('import-warnings');
+    const warnings = [...plan.keyDocConflicts, ...plan.keyDocOrphans];
+    warnEl.innerHTML = warnings.length
+      ? `<strong>Check these before importing</strong><br />${warnings.map((w) => escapeHtml(w)).join('<br />')}`
+      : '';
+    warnEl.classList.toggle('hidden', warnings.length === 0);
 
     document.getElementById('import-preview-body').innerHTML = plan.items.map((i) => {
       const cls = i.action === 'skip' ? 'imp-skip' : i.action === 'update' ? 'imp-update' : 'imp-create';
@@ -1731,6 +1911,7 @@
             + `${i.join.kind} "${i.join.name}" as ${i.join.role}`;
         }
       }
+      if (i.docNote) what += ` · ${i.docNote}`;
       return `<tr>
         <td>${i.rowNo}</td>
         <td>${escapeHtml(i.type)}</td>
@@ -1742,7 +1923,7 @@
 
     document.getElementById('import-preview').classList.remove('hidden');
     const runBtn = document.getElementById('import-run');
-    const total = people.length + groups.length + autoGroups.length;
+    const total = people.length + groups.length + autoGroups.length + plan.keyDocPlan.size;
     runBtn.disabled = total === 0;
     runBtn.textContent = total === 0 ? 'Nothing to import' : `Import ${total} record${total === 1 ? '' : 's'}`;
   }
@@ -1751,6 +1932,8 @@
     importPlan = null;
     document.getElementById('import-file').value = '';
     document.getElementById('import-error').textContent = '';
+    document.getElementById('import-warnings').innerHTML = '';
+    document.getElementById('import-warnings').classList.add('hidden');
     document.getElementById('import-preview').classList.add('hidden');
     document.getElementById('import-preview-body').innerHTML = '';
     document.getElementById('import-summary').innerHTML = '';
@@ -1775,12 +1958,12 @@
 
   document.getElementById('import-template').addEventListener('click', () => {
     const csv = [
-      'Type,Name,Email,Phone,Status,Household,Household Type,Role,Advisor,Tags',
-      'Family,Smith,,,active,,,,,',
-      'Person,John Smith,john@example.com,555-0100,active,Smith,Family,head,Fred Sabin,Retired;Trust',
-      'Person,Jane Smith,jane@example.com,555-0101,active,Smith,Family,spouse,Fred Sabin,',
-      'Company,Acme Holdings,,,prospect,,,,,Entity',
-      'Person,Dana Reed,dana@acme.example.com,555-0102,prospect,Acme Holdings,Company,owner,Jenn Young,',
+      'Type,Name,Email,Phone,Status,Household,Household Type,Role,Advisor,Tags,IPS,AdvisoryAgreement',
+      'Family,Smith,,,active,,,,,,2026-03-01,2026-02-14',
+      'Person,John Smith,john@example.com,555-0100,active,Smith,Family,head,Fred Sabin,Retired;Trust,,',
+      'Person,Jane Smith,jane@example.com,555-0101,active,Smith,Family,spouse,Fred Sabin,,,',
+      'Company,Acme Holdings,,,prospect,,,,,Entity,,',
+      'Person,Dana Reed,dana@acme.example.com,555-0102,prospect,Acme Holdings,Company,owner,Jenn Young,,3/1/2026,2/14/2026',
     ].join('\r\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -1887,6 +2070,29 @@
       } catch (err) {
         failures.push(`${g.kind} "${g.name}": ${(err && err.message) || 'failed'}`);
         tick(`${g.kind} "${g.name}" failed`);
+      }
+    }
+    // Key-document dates last: every grouping they target now exists, whether it
+    // came from an explicit row, an auto-create, or was already on file.
+    for (const [key, entry] of importPlan.keyDocPlan) {
+      const id = groupIds.get(key);
+      if (!id) {
+        failures.push(`${entry.kind} "${entry.name}": could not be created, so its `
+          + `key-document dates were not recorded`);
+        tick(`${entry.name} dates skipped`);
+        continue;
+      }
+      const payload = {};
+      if (entry.ips !== undefined) payload.ips = entry.ips;
+      if (entry.advisoryAgreement !== undefined) payload.advisoryAgreement = entry.advisoryAgreement;
+      try {
+        await api(`/api/admin/households/${encodeURIComponent(id)}`, {
+          method: 'POST', body: JSON.stringify({ keyDocuments: payload }),
+        });
+        tick(`${entry.name} key documents`);
+      } catch (err) {
+        failures.push(`${entry.kind} "${entry.name}" dates: ${(err && err.message) || 'failed'}`);
+        tick(`${entry.name} dates failed`);
       }
     }
     for (const p of peopleRows) {

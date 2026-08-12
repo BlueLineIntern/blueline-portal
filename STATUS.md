@@ -622,6 +622,32 @@ Client portal is untouched and keeps its own look.
     second run previewed "create 0, update 3" and changed no counts.
   - **Row numbers are true file lines**, not positions in the filtered list, so
     "Row 9" means row 9 in the sheet the advisor is about to go and fix.
+  - **`IPS` and `AdvisoryAgreement` columns** carry key-document completion
+    dates in both directions, which is what makes a whole book of clients
+    submittable in one file. They sit at the far right of the export, after
+    `Tags`.
+    - **The dates belong to the family/company, not the person** (see Key
+      Documents above), so a date on a person's row sets it for *their*
+      grouping, resolved by membership first, then their `Household` column,
+      then their stored household label. Export fills every member's row with
+      their grouping's dates, so the sheet reads per-client the way an advisor
+      thinks about it while still writing to one record.
+    - That routing has three consequences, all surfaced in the preview rather
+      than left to be discovered: two rows setting **different** dates on one
+      grouping is a **conflict** (first row wins, both row numbers named); a
+      person in **no** grouping has nowhere to store a date (**orphan**, listed
+      explicitly, the contact still imports); and a **blank cell leaves the
+      stored date alone rather than clearing it**, so round-tripping an export
+      whose rows are mostly blank cannot wipe the firm's dates. Clearing stays a
+      deliberate act in the Overview panel.
+    - **Excel dates are accepted.** A date typed into a spreadsheet arrives as
+      `3/1/2026` far more often than `2026-03-01`; both parse and normalise to
+      the ISO form the API stores. Slash dates are read US-style — there is no
+      way to tell 3/1 from 1/3 without picking a convention. `2/30/2026` is
+      rejected, because `new Date()` rolls it into March rather than failing, so
+      the parse is round-tripped to catch it. A malformed date **fails its row**
+      instead of importing the contact without the date, since a row that looks
+      successful but silently dropped a date is worse than one flagged to fix.
   - Sequential, not parallel: every contact save also pushes to SharePoint, and a
     burst of concurrent Graph calls is what gets throttled. Capped at 1000 rows
     per run for the same reason. Failures are collected per row and reported
