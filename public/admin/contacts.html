@@ -111,14 +111,19 @@
   .doc-upload-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 5px; }
 
   /* ---------- Key Documents (group overview) ----------
-     Label / date / state on one row, collapsing to stacked on narrow screens
-     so the date input never gets squeezed to unusability. */
-  .kd-rows { display: flex; flex-direction: column; gap: var(--sp-2); }
-  .kd-row { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
-  .kd-label { flex: 1 1 240px; font-size: var(--fs-sm); color: var(--text); }
-  .kd-input { flex: 0 0 auto; width: 170px; }
-  .kd-state { flex: 0 0 auto; }
-  .kd-actions { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
+     Sits as a normal grid column beside Family Details and At a Glance, so the
+     label stacks ABOVE its date rather than being stretched away from it across
+     a full-width panel — at 1129px that left ~800px of dead space between a
+     label and the input it belongs to. */
+  .kd-rows { display: flex; flex-direction: column; gap: var(--sp-4); }
+  .kd-row { display: flex; flex-direction: column; gap: 6px; }
+  .kd-label { font-size: var(--fs-sm); color: var(--muted); }
+  .kd-line { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+  .kd-input { flex: 0 0 auto; width: 165px; }
+  .kd-actions {
+    display: flex; align-items: center; gap: var(--sp-3);
+    margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--border);
+  }
 
   /* ---------- Import modal ----------
      Wider than the default 540px: the preview is a five-column table, and the
@@ -4157,22 +4162,19 @@
             ${kvRow('Upcoming meetings', '<span id="g-upcoming-meetings" class="cell-missing">…</span>')}
           </div>
         </div>
-        ${hh.background ? `<div class="panel panel-full">
-          <div class="panel-head"><h2>Background</h2></div>
-          <p style="white-space:pre-wrap;margin:0;">${escapeHtml(hh.background)}</p>
-        </div>` : ''}
-        <div class="panel panel-full">
-          <div class="panel-head"><h2>Key Documents</h2>
-            <span class="cell-missing">the date each was completed for this ${escapeHtml(meta.label.toLowerCase())}</span></div>
+        <div class="panel">
+          <div class="panel-head"><h2>Key Documents</h2></div>
           <div class="kd-rows">
             ${KEY_DOCUMENTS.map((d) => {
               const val = (hh.keyDocuments || {})[d.key] || '';
               return `<div class="kd-row">
                 <label class="kd-label" for="kd-${d.key}">${escapeHtml(d.label)}</label>
-                <input type="date" class="input kd-input" id="kd-${d.key}" data-kd="${d.key}" value="${escapeHtml(val)}" />
-                <span class="kd-state">${val
-                  ? `<span class="badge badge-green">Completed ${escapeHtml(fmtDateOnly(val))}</span>`
-                  : '<span class="badge badge-amber">Not recorded</span>'}</span>
+                <div class="kd-line">
+                  <input type="date" class="input kd-input" id="kd-${d.key}" data-kd="${d.key}" value="${escapeHtml(val)}" />
+                  ${val
+                    ? '<span class="badge badge-green">Completed</span>'
+                    : '<span class="badge badge-amber">Not recorded</span>'}
+                </div>
               </div>`;
             }).join('')}
           </div>
@@ -4187,6 +4189,10 @@
             <button type="button" class="panel-link btn-link" id="g-add-member">Add or change ${escapeHtml(meta.nounPlural)}</button></div>
           <div class="row-list">${roster}</div>
         </div>
+        ${hh.background ? `<div class="panel panel-full">
+          <div class="panel-head"><h2>Background</h2></div>
+          <p style="white-space:pre-wrap;margin:0;">${escapeHtml(hh.background)}</p>
+        </div>` : ''}
       </div>`;
 
     // Overview is NOT in GROUP_POLL_SKIP_TABS (its task counts should stay
