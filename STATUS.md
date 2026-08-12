@@ -596,6 +596,28 @@ Client portal is untouched and keeps its own look.
   hand-typed record does. CSV rather than `.xlsx` because reading a real workbook
   needs a ~1MB library and every spreadsheet tool exports CSV; the modal says so
   rather than leaving it to a failed upload.
+  - **Two modes, Replace being the default.** *Replace everything* treats the
+    file as the whole contact list: anyone not in it is **archived** and any
+    family/company not in it is **deleted**. *Add and update only* never removes
+    anything. The asymmetry is forced by what the API offers — there is no
+    hard-delete for a contact anywhere in the app, only archive, which is the
+    safer primitive anyway: it is reversible from the Archived tab and keeps the
+    person's tasks, notes, timeline and documents (verified). A grouping has only
+    a hard DELETE, so that half is **not** reversible, though its members' contact
+    records survive it.
+    - "In the file" includes groupings named only through a person's `Household`
+      column, not just explicit Family/Company rows — otherwise importing people
+      would delete the very families the same file is putting them into.
+    - Removals are measured against **all** records, never the filtered view: a
+      search box left open must not silently decide who survives.
+    - Already-archived contacts are excluded (nothing to do), and removals run
+      **last**, after every create/update has succeeded — the opposite order
+      could delete the old list and then fail to write the new one.
+    - The preview **names** what will go, not just counts it, and flags how many
+      of them hold a client portal login (which archiving does **not** disable).
+      The run button stays disabled until `REPLACE` is typed, and a file naming
+      no grouping at all says so explicitly, since that case would otherwise
+      quietly wipe every family and company.
   - **Two steps, always.** Choosing a file only ever *previews*: a per-row table
     of exactly what will happen, plus counts, plus a confirm button that names
     the number. A bulk CRM write has no undo, so "picked the wrong file" must not

@@ -135,6 +135,19 @@
     background: none; border: 0; padding: 0; font: inherit; color: var(--sky-dark);
     text-decoration: underline; cursor: pointer;
   }
+  .imp-mode { display: flex; gap: var(--sp-2); align-items: flex-start; margin-bottom: var(--sp-2); font-weight: var(--fw-normal); }
+  .imp-mode input { margin-top: 3px; flex: 0 0 auto; }
+  .imp-mode span { font-size: var(--fs-sm); color: var(--muted); }
+  .imp-mode strong { color: var(--text); }
+  .import-danger {
+    border: 1px solid var(--red); border-radius: var(--radius-sm);
+    background: var(--red-bg); padding: var(--sp-3); margin-top: var(--sp-3);
+  }
+  .import-danger p { font-size: var(--fs-sm); color: var(--red); margin: 0 0 var(--sp-2); font-weight: var(--fw-medium); }
+  .import-confirm-row { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+  .import-confirm-row label { font-size: var(--fs-xs); color: var(--text); }
+  .import-confirm-row .input { width: 160px; }
+  .import-names { color: var(--text); font-weight: var(--fw-normal); }
   .import-warnings {
     font-size: var(--fs-xs); color: var(--amber); background: var(--amber-bg);
     border-radius: var(--radius-sm); padding: var(--sp-3); margin: var(--sp-3) 0 0;
@@ -613,6 +626,16 @@
     a person also needs an <code>Email</code>, since that is what identifies them.</p>
 
     <div class="field">
+      <label>What should the file do?</label>
+      <label class="imp-mode"><input type="radio" name="import-mode" value="replace" checked />
+        <span><strong>Replace everything</strong> — the file becomes the contact list. Anyone
+        not in it is archived, and any family or company not in it is deleted.</span></label>
+      <label class="imp-mode"><input type="radio" name="import-mode" value="merge" />
+        <span><strong>Add and update only</strong> — nothing is ever removed. Rows in the file
+        are created or updated; everything else is left alone.</span></label>
+    </div>
+
+    <div class="field">
       <label for="import-file">Spreadsheet</label>
       <input type="file" id="import-file" accept=".csv,text/csv" />
       <p class="field-note">
@@ -635,6 +658,16 @@
 
     <p class="form-error" id="import-error"></p>
     <p class="import-warnings hidden" id="import-warnings"></p>
+    <!-- Shown only when a Replace run would actually remove something. Archiving
+         every client absent from a spreadsheet is not an action to arm with a
+         stray click, so the button stays disabled until REPLACE is typed. -->
+    <div class="import-danger hidden" id="import-danger">
+      <p id="import-danger-text"></p>
+      <div class="import-confirm-row">
+        <label for="import-confirm">Type <code>REPLACE</code> to enable the button</label>
+        <input type="text" class="input" id="import-confirm" autocomplete="off" placeholder="REPLACE" />
+      </div>
+    </div>
 
     <div class="hidden" id="import-preview">
       <div class="kv-rows" id="import-summary"></div>
@@ -1565,6 +1598,11 @@
 
   let importPlan = null;
 
+  function importMode() {
+    const el = document.querySelector('input[name="import-mode"]:checked');
+    return el ? el.value : 'replace';
+  }
+
   function normHeader(h) {
     return String(h || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   }
@@ -1867,7 +1905,35 @@
     // created the grouping TWICE, once from each path.
     for (const key of explicitKeys) plannedGroups.delete(key);
 
-    return { items, plannedGroups, unknown, header, keyDocPlan, keyDocConflicts, keyDocOrphans };
+    // ---- What a Replace run would remove ----
+    // Everything the file describes is "kept": people it lists, groupings it
+    // names outright, AND groupings it only refers to through a person's
+    // Household column — otherwise importing people would delete the very
+    // families the same file is putting them into.
+    const keptEmails = new Set(
+      items.filter((i) => i.type === 'person' && i.action !== 'skip').map((i) => i.email)
+    );
+    const keptGroupKeys = new Set([
+      ...explicitKeys,
+      ...plannedGroups.keys(),
+      ...items.filter((i) => i.join).map((i) => i.join.key),
+    ]);
+    // Measured against ALL records, not the filtered view: a search box left
+    // open must not silently decide who survives the import.
+    const removeContacts = allContacts.filter((c) => {
+      const e = String(c.email || '').toLowerCase();
+      return e && !c.archived && !keptEmails.has(e);
+    });
+    const removeGroups = allHouseholds.filter((h) => !keptGroupKeys.has(groupKeyOf(h)));
+
+    return {
+      items, plannedGroups, unknown, header, keyDocPlan, keyDocConflicts, keyDocOrphans,
+      removeContacts, removeGroups,
+      // A file with no Family/Company rows and no Household column describes no
+      // groupings at all, so "replace" would wipe every one of them. Worth
+      // saying out loud rather than leaving to be discovered in the count.
+      fileNamesNoGroups: keptGroupKeys.size === 0,
+    };
   }
 
   function renderImportPreview(plan) {
@@ -1922,10 +1988,52 @@
     }).join('');
 
     document.getElementById('import-preview').classList.remove('hidden');
+
+    // ---- Replace-mode removals ----
+    const replacing = importMode() === 'replace';
+    const rmC = replacing ? plan.removeContacts : [];
+    const rmG = replacing ? plan.removeGroups : [];
+    const removalCount = rmC.length + rmG.length;
+    const danger = document.getElementById('import-danger');
+    const confirmInput = document.getElementById('import-confirm');
+
+    if (removalCount) {
+      const withAccounts = rmC.filter((c) => c.hasAccount).length;
+      // Named, not just counted: "42 contacts will be archived" is not something
+      // an advisor can actually check before agreeing to it.
+      const nameList = (arr, get) => arr.slice(0, 25).map(get).map(escapeHtml).join(', ')
+        + (arr.length > 25 ? `, and ${arr.length - 25} more` : '');
+      document.getElementById('import-danger-text').innerHTML =
+        `<strong>This file is missing ${removalCount} record${removalCount === 1 ? '' : 's'} that exist${removalCount === 1 ? 's' : ''} today.</strong><br />`
+        + (rmC.length
+          ? `<br /><strong>${rmC.length} contact${rmC.length === 1 ? '' : 's'} will be archived</strong>`
+            + (withAccounts ? ` (${withAccounts} with a client portal login, which archiving does NOT disable)` : '')
+            + ` — reversible from the Archived tab; their tasks, notes, timeline and documents are kept.<br />`
+            + `<span class="import-names">${nameList(rmC, (c) => c.name || c.email)}</span><br />`
+          : '')
+        + (rmG.length
+          ? `<br /><strong>${rmG.length} famil${rmG.length === 1 ? 'y' : 'ies'} / compan${rmG.length === 1 ? 'y' : 'ies'} will be DELETED</strong>`
+            + ` — this one is not reversible, though the people in them keep their contact records.<br />`
+            + `<span class="import-names">${nameList(rmG, (h) => h.name)}</span><br />`
+          : '')
+        + (plan.fileNamesNoGroups && rmG.length
+          ? `<br />This file names no family or company at all — neither a Family/Company row nor a Household column — which is why every one of them is listed above.`
+          : '');
+      danger.classList.remove('hidden');
+    } else {
+      danger.classList.add('hidden');
+      confirmInput.value = '';
+    }
+
     const runBtn = document.getElementById('import-run');
     const total = people.length + groups.length + autoGroups.length + plan.keyDocPlan.size;
-    runBtn.disabled = total === 0;
-    runBtn.textContent = total === 0 ? 'Nothing to import' : `Import ${total} record${total === 1 ? '' : 's'}`;
+    const armed = !removalCount || confirmInput.value.trim().toUpperCase() === 'REPLACE';
+    runBtn.disabled = (total === 0 && removalCount === 0) || !armed;
+    runBtn.textContent = (total === 0 && removalCount === 0)
+      ? 'Nothing to import'
+      : removalCount
+        ? `Import ${total} and remove ${removalCount}`
+        : `Import ${total} record${total === 1 ? '' : 's'}`;
   }
 
   function resetImportModal() {
@@ -1934,6 +2042,8 @@
     document.getElementById('import-error').textContent = '';
     document.getElementById('import-warnings').innerHTML = '';
     document.getElementById('import-warnings').classList.add('hidden');
+    document.getElementById('import-danger').classList.add('hidden');
+    document.getElementById('import-confirm').value = '';
     document.getElementById('import-preview').classList.add('hidden');
     document.getElementById('import-preview-body').innerHTML = '';
     document.getElementById('import-summary').innerHTML = '';
@@ -1951,6 +2061,17 @@
   });
   document.getElementById('import-cancel').addEventListener('click', () => {
     document.getElementById('import-modal-backdrop').classList.add('hidden');
+  });
+  // Switching mode re-plans: what gets removed is entirely a function of the
+  // mode, so the preview must not keep showing the previous one's answer.
+  document.querySelectorAll('input[name="import-mode"]').forEach((r) => {
+    r.addEventListener('change', () => {
+      document.getElementById('import-confirm').value = '';
+      if (importPlan) renderImportPreview(importPlan);
+    });
+  });
+  document.getElementById('import-confirm').addEventListener('input', () => {
+    if (importPlan) renderImportPreview(importPlan);
   });
   document.getElementById('import-modal-backdrop').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) e.currentTarget.classList.add('hidden');
@@ -2022,7 +2143,11 @@
     const groupRows = importPlan.items.filter((i) => i.type !== 'person' && i.action !== 'skip');
     const autoGroups = [...importPlan.plannedGroups.values()];
     const peopleRows = importPlan.items.filter((i) => i.type === 'person' && i.action !== 'skip');
-    const total = groupRows.length + autoGroups.length + peopleRows.length;
+    const replacing = importMode() === 'replace';
+    const rmContacts = replacing ? importPlan.removeContacts : [];
+    const rmGroups = replacing ? importPlan.removeGroups : [];
+    const total = groupRows.length + autoGroups.length + peopleRows.length
+      + importPlan.keyDocPlan.size + rmContacts.length + rmGroups.length;
 
     // key -> id, so a person's join can find a grouping created moments ago.
     const groupIds = new Map(allHouseholds.map((h) => [
@@ -2122,6 +2247,28 @@
       } catch (err) {
         failures.push(`Row ${p.rowNo} (${p.email}): ${(err && err.message) || 'failed'}`);
         tick(`${p.email} failed`);
+      }
+    }
+
+    // Removals run LAST, after every create/update has succeeded. If the import
+    // half-fails, the records it was going to replace are still there — the
+    // opposite order could delete the old list and then fail to write the new.
+    for (const c of rmContacts) {
+      try {
+        await api(`/api/admin/contacts/${encodeURIComponent(c.email)}/archive`, { method: 'POST' });
+        tick(`archived ${c.email}`);
+      } catch (err) {
+        failures.push(`Archiving ${c.email}: ${(err && err.message) || 'failed'}`);
+        tick(`${c.email} archive failed`);
+      }
+    }
+    for (const h of rmGroups) {
+      try {
+        await api(`/api/admin/households/${encodeURIComponent(h.id)}`, { method: 'DELETE' });
+        tick(`deleted ${h.name}`);
+      } catch (err) {
+        failures.push(`Deleting ${h.name}: ${(err && err.message) || 'failed'}`);
+        tick(`${h.name} delete failed`);
       }
     }
 
