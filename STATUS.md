@@ -722,6 +722,33 @@ Client portal is untouched and keeps its own look.
     three-member family would otherwise render dozens of charts on one tab);
     Additional Info (individual answers — occupation, licence, health — where a
     form writing to several records at once would be a foot-gun); Onboarding.
+  - **Key Documents** on the grouping's Overview tab records the date an **IPS**
+    and an **Advisory Agreement** were completed (`keyDocuments: {ips,
+    advisoryAgreement}` on the `household:` record, encrypted with the rest of
+    it). Held on the GROUPING rather than per person on purpose: both are
+    executed for a household as a whole, so a copy on each member would be one
+    fact stored N times, free to disagree. Native date inputs, saved with one
+    button, each showing a green "Completed <date>" or amber "Not recorded".
+    - **App-side only, never mirrored to SharePoint.** The Households list has no
+      columns for these and Graph fails an entire PATCH on an unknown field —
+      the same trap documented for `kind`. Nothing extra was needed to enforce
+      it: `pushHouseholdToSharePoint` sends an explicit allowlist, so a field it
+      doesn't name is never transmitted. Adding a key document therefore needs
+      no SharePoint change; adding one to that allowlist would break the mirror.
+    - **Merged, not replaced, on save** (`handleAdminUpdateHousehold`): the
+      record spread is shallow, so a PATCH naming one document would otherwise
+      blank the other's date. Sending a key as `''` still clears just that one,
+      because recording a date by mistake has to be undoable. Adding a document
+      means adding its key to `KEY_DOCUMENT_KEYS` in worker.js, `$keyDocumentKeys`
+      in the mock, AND `KEY_DOCUMENTS` in contacts.html — the label list is
+      client-side, but a key the server doesn't know is silently dropped.
+    - Dates render through `fmtDateOnly()`, never `fmtDate()`:
+      `new Date('2026-02-14')` is UTC midnight and shows as the 13th in every US
+      timezone.
+    - Overview is deliberately **not** in `GROUP_POLL_SKIP_TABS` (its task counts
+      should stay live), so the 20s poll rebuilds this panel underneath a
+      half-typed date. A draft map carries the inputs across the rebuild, the
+      same fix the Documents tab's request fields use.
   - **Additional Info adds one thing no member's record holds**: a combined
     balance sheet, summed from the same three inputs the per-person derivation
     uses so it cannot disagree with them. Members with nothing recorded

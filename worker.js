@@ -5163,6 +5163,10 @@ async function handleAdminListClientEmails(request, env, cors, email) {
 // importantDates on a contact. A record written before `kind` existed has none,
 // and reads as a family (see handleAdminListHouseholds).
 const GROUP_KINDS = ['family', 'company'];
+// Firm-level documents whose completion date is tracked per grouping. Adding
+// one here is the only server-side change needed; the admin UI renders its own
+// labels from the same key list.
+const KEY_DOCUMENT_KEYS = ['ips', 'advisoryAgreement'];
 const HOUSEHOLD_ROLES = ['head', 'spouse', 'partner', 'child', 'dependent', 'other'];
 const COMPANY_ROLES = ['primary', 'owner', 'officer', 'employee', 'other'];
 const HOUSEHOLD_EMAIL_TYPES = ['', 'work', 'home', 'other'];
@@ -5227,6 +5231,34 @@ function sanitizeHouseholdFields(body, existingKind) {
     if (!HOUSEHOLD_EMAIL_TYPES.includes(t)) return { error: 'Invalid email type' };
     out.emailType = t;
   }
+  // Key documents: the date each was completed, held on the GROUPING rather
+  // than per-person, because an IPS and an advisory agreement are executed for
+  // a household as a whole — recording them on each member would be the same
+  // fact stored N times, free to disagree.
+  //
+  // App-side only, like `kind` and a contact's importantDates: the SharePoint
+  // Households list has no columns for these, and Graph fails the whole PATCH
+  // on an unknown field. Nothing extra is needed to enforce that — the mirror
+  // in pushHouseholdToSharePoint sends an explicit allowlist, so a field it
+  // doesn't name is never transmitted.
+  if (body.keyDocuments !== undefined) {
+    if (typeof body.keyDocuments !== 'object' || body.keyDocuments === null || Array.isArray(body.keyDocuments)) {
+      return { error: 'Key documents must be an object' };
+    }
+    const docs = {};
+    for (const key of KEY_DOCUMENT_KEYS) {
+      if (body.keyDocuments[key] === undefined) continue;
+      const v = String(body.keyDocuments[key] || '').trim().slice(0, 10);
+      // Empty clears the date — "we recorded this by mistake" has to be
+      // undoable, so a blank is a valid value rather than a rejected one.
+      if (v && !isIsoDate(v)) return { error: `${key} date must be YYYY-MM-DD` };
+      docs[key] = v;
+    }
+    // Only the keys actually sent appear here. handleAdminUpdateHousehold
+    // merges this over the stored value — the record spread is shallow, so
+    // replacing wholesale would let a PATCH naming one document blank another.
+    out.keyDocuments = docs;
+  }
   if (body.emailPrimary !== undefined) out.emailPrimary = !!body.emailPrimary;
   if (body.assignedTo !== undefined) out.assignedTo = String(body.assignedTo || '').trim().toLowerCase().slice(0, 200);
   if (body.advisorRep !== undefined) out.advisorRep = String(body.advisorRep || '').trim().slice(0, 200);
@@ -5280,6 +5312,7 @@ async function handleAdminCreateHousehold(request, env, cors) {
     advisorRep: fields.advisorRep || '',
     contactType: fields.contactType || '',
     background: fields.background || '',
+    keyDocuments: fields.keyDocuments || {},
     tags: fields.tags || [],
     status: fields.status || 'active',
     archived: false,
@@ -5313,6 +5346,12 @@ async function handleAdminUpdateHousehold(request, env, cors, id) {
   if (body.archived !== undefined) {
     fields.archived = !!body.archived;
     fields.archivedAt = body.archived ? new Date().toISOString() : null;
+  }
+  // Merged, not replaced: the spread below is shallow, so a PATCH naming only
+  // one key document would otherwise wipe the dates recorded for the others.
+  // Sending a key with an empty string still clears that one on purpose.
+  if (fields.keyDocuments) {
+    fields.keyDocuments = { ...(existing.keyDocuments || {}), ...fields.keyDocuments };
   }
   let record = {
     ...existing,

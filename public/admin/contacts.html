@@ -110,6 +110,16 @@
   .lr-progress span { display: block; height: 100%; width: 0; background: var(--sky-dark); transition: width 0.2s ease; }
   .doc-upload-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 5px; }
 
+  /* ---------- Key Documents (group overview) ----------
+     Label / date / state on one row, collapsing to stacked on narrow screens
+     so the date input never gets squeezed to unusability. */
+  .kd-rows { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .kd-row { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+  .kd-label { flex: 1 1 240px; font-size: var(--fs-sm); color: var(--text); }
+  .kd-input { flex: 0 0 auto; width: 170px; }
+  .kd-state { flex: 0 0 auto; }
+  .kd-actions { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
+
   /* ---------- Import modal ----------
      Wider than the default 540px: the preview is a five-column table, and the
      "what will happen" text is the whole point of previewing, so it must not
@@ -3932,6 +3942,18 @@
     ['notes', 'tasks', 'emails', 'meetings', 'timeline', 'documents', 'additional']
   );
 
+  // Firm-level documents whose completion date is tracked on the GROUPING, not
+  // per person: an IPS and an advisory agreement are executed for a household as
+  // a whole, so recording them on each member would be one fact stored N times,
+  // free to disagree. Keys must match KEY_DOCUMENT_KEYS in worker.js — adding a
+  // row here needs the key adding there too, or the date is silently dropped.
+  const KEY_DOCUMENTS = [
+    { key: 'ips', label: 'Investment Policy Statement (IPS)' },
+    { key: 'advisoryAgreement', label: 'Advisory Agreement' },
+  ];
+  // Half-typed dates, held across the 20s poll's re-render of the Overview tab.
+  const keyDocDraft = new Map();
+
   function currentGroup() {
     return allHouseholds.find((h) => h.id === selectedGroupId);
   }
@@ -4140,11 +4162,83 @@
           <p style="white-space:pre-wrap;margin:0;">${escapeHtml(hh.background)}</p>
         </div>` : ''}
         <div class="panel panel-full">
+          <div class="panel-head"><h2>Key Documents</h2>
+            <span class="cell-missing">the date each was completed for this ${escapeHtml(meta.label.toLowerCase())}</span></div>
+          <div class="kd-rows">
+            ${KEY_DOCUMENTS.map((d) => {
+              const val = (hh.keyDocuments || {})[d.key] || '';
+              return `<div class="kd-row">
+                <label class="kd-label" for="kd-${d.key}">${escapeHtml(d.label)}</label>
+                <input type="date" class="input kd-input" id="kd-${d.key}" data-kd="${d.key}" value="${escapeHtml(val)}" />
+                <span class="kd-state">${val
+                  ? `<span class="badge badge-green">Completed ${escapeHtml(fmtDateOnly(val))}</span>`
+                  : '<span class="badge badge-amber">Not recorded</span>'}</span>
+              </div>`;
+            }).join('')}
+          </div>
+          <p class="form-error" id="kd-error"></p>
+          <div class="kd-actions">
+            <button type="button" class="btn btn-primary btn-small" id="kd-save">Save dates</button>
+            <span class="io-status" id="kd-status"></span>
+          </div>
+        </div>
+        <div class="panel panel-full">
           <div class="panel-head"><h2>${escapeHtml(meta.label === 'Company' ? 'People' : 'Members')} (${members.length})</h2>
             <button type="button" class="panel-link btn-link" id="g-add-member">Add or change ${escapeHtml(meta.nounPlural)}</button></div>
           <div class="row-list">${roster}</div>
         </div>
       </div>`;
+
+    // Overview is NOT in GROUP_POLL_SKIP_TABS (its task counts should stay
+    // live), so the 20s poll rebuilds this markup underneath a half-typed
+    // date. Carry the inputs across the rebuild, same as the document-request
+    // fields on the Documents tab.
+    keyDocDraft.forEach((value, key) => {
+      const el = document.querySelector(`.kd-input[data-kd="${key}"]`);
+      if (el && value !== undefined) el.value = value;
+    });
+    wrap.querySelectorAll('.kd-input').forEach((el) => {
+      el.addEventListener('input', () => keyDocDraft.set(el.dataset.kd, el.value));
+    });
+
+    const kdSave = document.getElementById('kd-save');
+    if (kdSave) {
+      kdSave.addEventListener('click', async () => {
+        const errEl = document.getElementById('kd-error');
+        const statusEl = document.getElementById('kd-status');
+        errEl.textContent = '';
+        statusEl.textContent = '';
+        const payload = {};
+        for (const el of wrap.querySelectorAll('.kd-input')) {
+          const v = el.value.trim();
+          // A cleared field is sent as '' on purpose: recording a date by
+          // mistake has to be undoable.
+          if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+            errEl.textContent = 'Dates must be a real calendar date.';
+            return;
+          }
+          payload[el.dataset.kd] = v;
+        }
+        kdSave.disabled = true;
+        kdSave.textContent = 'Saving…';
+        try {
+          const res = await api(`/api/admin/households/${encodeURIComponent(hh.id)}`, {
+            method: 'POST', body: JSON.stringify({ keyDocuments: payload }),
+          });
+          // Update the in-memory copy so the re-render below shows the saved
+          // state rather than waiting on the next poll.
+          const idx = allHouseholds.findIndex((h) => h.id === hh.id);
+          if (idx !== -1 && res && res.household) allHouseholds[idx] = res.household;
+          keyDocDraft.clear();
+          statusEl.textContent = 'Saved.';
+          renderGroupOverviewTab();
+        } catch (err) {
+          errEl.textContent = (err && err.message) || 'Could not save those dates.';
+          kdSave.disabled = false;
+          kdSave.textContent = 'Save dates';
+        }
+      });
+    }
 
     const addBtn = document.getElementById('g-add-member');
     if (addBtn) addBtn.addEventListener('click', () => openGroupModal(hh, kind));

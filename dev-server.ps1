@@ -204,6 +204,37 @@ $householdRoles = @('head', 'spouse', 'partner', 'child', 'dependent', 'other')
 $companyRoles = @('primary', 'owner', 'officer', 'employee', 'other')
 $groupKinds = @('family', 'company')
 
+# Firm-level documents tracked per grouping. Mirrors KEY_DOCUMENT_KEYS in
+# worker.js -- keep the two lists in step.
+$keyDocumentKeys = @('ips', 'advisoryAgreement')
+
+# Mirror worker.js sanitizeHouseholdFields' keyDocuments handling: only the keys
+# actually sent are touched, an empty string clears one on purpose, and anything
+# that is not YYYY-MM-DD is rejected rather than stored. $existing is merged
+# underneath so a partial save cannot blank a sibling date, matching the merge
+# handleAdminUpdateHousehold does. Returns @{ docs = ... } or @{ error = ... }.
+function Read-KeyDocuments($body, $existing) {
+    $out = [ordered]@{}
+    # [ordered] is an OrderedDictionary: it has .Contains(), NOT .ContainsKey().
+    if ($existing -is [System.Collections.IDictionary]) {
+        foreach ($k in $keyDocumentKeys) {
+            if ($existing.Contains($k)) { $out[$k] = [string]$existing[$k] }
+        }
+    }
+    if (-not $body.PSObject.Properties['keyDocuments']) { return @{ docs = $out } }
+    $kd = $body.keyDocuments
+    if ($null -eq $kd) { return @{ docs = $out } }
+    foreach ($k in $keyDocumentKeys) {
+        if (-not $kd.PSObject.Properties[$k]) { continue }
+        $v = ([string]$kd.$k).Trim()
+        if ($v -and ($v -notmatch '^\d{4}-\d{2}-\d{2}$')) {
+            return @{ error = "$k date must be YYYY-MM-DD" }
+        }
+        $out[$k] = $v
+    }
+    return @{ docs = $out }
+}
+
 # Mirror worker.js sanitizeHouseholdFields' member handling: valid emails only,
 # a known role, and no one listed twice.
 function ConvertTo-HouseholdMembers($raw, $kind) {
@@ -1752,6 +1783,8 @@ while ($listener.IsListening) {
             if ($body.PSObject.Properties['status'] -and $contactStatuses -notcontains ([string]$body.status)) {
                 Send-Json $ctx 400 @{ error = 'Invalid status' }; continue
             }
+            $kdCreate = Read-KeyDocuments $body $null
+            if ($kdCreate.error) { Send-Json $ctx 400 @{ error = $kdCreate.error }; continue }
             $script:householdCounter++
             $id = 'hh-{0:d6}' -f $script:householdCounter
             $rec = [ordered]@{
@@ -1764,6 +1797,7 @@ while ($listener.IsListening) {
                 advisorRep = ([string]$body.advisorRep).Trim()
                 contactType = ([string]$body.contactType).Trim()
                 background = ([string]$body.background).Trim()
+                keyDocuments = $kdCreate.docs
                 tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() })
                 status = if ($contactStatuses -contains ([string]$body.status)) { [string]$body.status } else { 'active' }
                 archived = $false
@@ -1810,6 +1844,14 @@ while ($listener.IsListening) {
                 if ($body.PSObject.Properties[$f]) { $rec[$f] = ([string]$body.$f).Trim() }
             }
             if ($body.PSObject.Properties['emailPrimary']) { $rec.emailPrimary = [bool]$body.emailPrimary }
+            # Merged over what is stored, matching handleAdminUpdateHousehold:
+            # a PATCH naming one key document must not blank the others.
+            if ($body.PSObject.Properties['keyDocuments']) {
+                $existingDocs = if ($rec.Contains('keyDocuments')) { $rec.keyDocuments } else { $null }
+                $merged = Read-KeyDocuments $body $existingDocs
+                if ($merged.error) { Send-Json $ctx 400 @{ error = $merged.error }; continue }
+                $rec.keyDocuments = $merged.docs
+            }
             if ($body.PSObject.Properties['archived']) { $rec.archived = [bool]$body.archived }
             if ($body.PSObject.Properties['tags']) { $rec.tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() }) }
             $rec.updatedAt = (Get-Date).ToString('o')
