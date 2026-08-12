@@ -573,8 +573,8 @@ function registerStaff(members) {
 }
 function staffLabel(id) {
   if (!id) return 'Unassigned';
-  if (STAFF_LABELS[id]) return STAFF_LABELS[id];
   if (DYNAMIC_STAFF_LABELS[id]) return DYNAMIC_STAFF_LABELS[id];
+  if (STAFF_LABELS[id]) return STAFF_LABELS[id];
   if (String(id).startsWith('m-')) return '(removed)'; // roster member since deleted
   const local = String(id).split('@')[0] || String(id);
   return local.charAt(0).toUpperCase() + local.slice(1);

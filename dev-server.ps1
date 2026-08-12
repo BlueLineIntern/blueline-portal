@@ -1947,7 +1947,7 @@ while ($listener.IsListening) {
                 $entry.assignments = if ($assignments.ContainsKey($u.email)) { @($assignments[$u.email]) } else { $null }
                 $merged[$u.email] = $entry
             }
-            Send-Json $ctx 200 @{ contacts = @($merged.Values); admins = @($adminPasswords.Keys); workspace = $workspace }
+            Send-Json $ctx 200 @{ contacts = @($merged.Values); admins = @($adminPasswords.Keys); adminNames = $adminNames; workspace = $workspace }
         }
         elseif ($path -match '^/api/admin/contacts/(.+)/(archive|unarchive)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
@@ -2194,9 +2194,23 @@ while ($listener.IsListening) {
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $admins = @($adminPasswords.Keys | ForEach-Object {
                     $m = $adminMfa[$_]
-                    @{ email = $_; mfaEnabled = [bool]($m -and $m.confirmed) }
+                    @{ email = $_; name = $adminNames[$_]; mfaEnabled = [bool]($m -and $m.confirmed) }
                 })
             Send-Json $ctx 200 @{ admins = $admins; you = $adminEmail; boss = (Test-SupervisorAdmin $adminEmail) }
+        }
+        elseif ($path -match '^/api/admin/admins/(.+)/name$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can rename admin accounts' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if (-not $adminPasswords.ContainsKey($target)) { Send-Json $ctx 404 @{ error = 'Not an admin account' }; continue }
+            $body = Read-JsonBody $ctx
+            $name = if ($body) { ([string]$body.name).Trim() } else { '' }
+            if (-not $name) { Send-Json $ctx 400 @{ error = "Enter the admin's name" }; continue }
+            if ($name.Length -gt 200) { $name = $name.Substring(0, 200) }
+            $adminNames[$target] = $name
+            Write-Audit $adminEmail 'rename-admin' @{ target = $target; name = $name }
+            Send-Json $ctx 200 @{ email = $target; name = $name }
         }
         elseif ($path -match '^/api/admin/mfa/reset/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx

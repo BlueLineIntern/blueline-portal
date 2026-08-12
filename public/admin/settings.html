@@ -219,10 +219,13 @@
         const status = a.mfaEnabled
           ? '<span class="badge badge-green">Enabled</span>'
           : '<span class="badge badge-amber">Not set up</span>';
-        const action = boss && a.mfaEnabled
-          ? `<button type="button" class="btn btn-ghost btn-small reset-mfa-btn" data-email="${escapeHtml(a.email)}">Reset MFA</button>`
+        const actions = boss
+          ? `<div style="display:flex; gap:var(--sp-2); flex-wrap:wrap;">
+              <button type="button" class="btn btn-ghost btn-small edit-admin-name-btn" data-email="${escapeHtml(a.email)}" data-name="${escapeHtml(a.name || staffLabel(a.email))}">Edit name</button>
+              ${a.mfaEnabled ? `<button type="button" class="btn btn-ghost btn-small reset-mfa-btn" data-email="${escapeHtml(a.email)}">Reset MFA</button>` : ''}
+            </div>`
           : '<span class="cell-missing">—</span>';
-        return `<tr><td>${escapeHtml(staffLabel(a.email))}</td><td>${escapeHtml(a.email)}${isYou ? ' <span class="cell-missing">(you)</span>' : ''}</td><td>${status}</td><td>${action}</td></tr>`;
+        return `<tr><td>${escapeHtml(a.name || staffLabel(a.email))}</td><td>${escapeHtml(a.email)}${isYou ? ' <span class="cell-missing">(you)</span>' : ''}</td><td>${status}</td><td>${actions}</td></tr>`;
       })
       .join('');
   }
@@ -263,6 +266,25 @@
   });
 
   document.getElementById('admins-body').addEventListener('click', async (e) => {
+    const editNameBtn = e.target.closest('.edit-admin-name-btn');
+    if (editNameBtn) {
+      const email = editNameBtn.dataset.email;
+      const name = prompt("Admin's name", editNameBtn.dataset.name || '');
+      if (name === null || !name.trim() || name.trim() === editNameBtn.dataset.name) return;
+      const statusEl = document.getElementById('admins-status');
+      statusEl.textContent = 'Saving name…';
+      try {
+        const updated = await api(`/api/admin/admins/${encodeURIComponent(email)}/name`, {
+          method: 'POST', body: JSON.stringify({ name: name.trim() }),
+        });
+        registerStaff([{ id: updated.email, name: updated.name }]);
+        statusEl.textContent = `Changed ${email}'s name to ${updated.name}.`;
+        loadAdmins();
+      } catch (err) {
+        statusEl.textContent = `Name change failed: ${err.message}`;
+      }
+      return;
+    }
     const btn = e.target.closest('.reset-mfa-btn');
     if (!btn) return;
     const email = btn.dataset.email;

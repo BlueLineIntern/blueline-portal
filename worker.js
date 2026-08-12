@@ -173,6 +173,33 @@ async function addedAdminNames(env) {
   return names;
 }
 
+// Display-name overrides are kept separate from credentials so renaming an
+// admin can never disturb their password hash (or a legacy account's Worker
+// secret). This also lets the original hardcoded accounts be renamed in the UI.
+async function effectiveAdminNames(env) {
+  const names = { ...LEGACY_ADMIN_NAMES, ...(await addedAdminNames(env)) };
+  for (const keyName of await listKeys(env, 'admin_name:')) {
+    const email = keyName.slice('admin_name:'.length);
+    const name = String((await env.PORTAL_KV.get(keyName)) || '').trim();
+    if (name) names[email] = name;
+  }
+  return names;
+}
+
+async function handleAdminRenameAdmin(request, env, cors, targetEmail) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can rename admin accounts' }, 403, cors);
+  const email = String(targetEmail || '').trim().toLowerCase();
+  if (!(await isAdminAccount(env, email))) return json({ error: 'Not an admin account' }, 404, cors);
+  const body = await request.json().catch(() => null);
+  const name = String((body && body.name) || '').trim().slice(0, 200);
+  if (!name) return json({ error: "Enter the admin's name" }, 400, cors);
+  await env.PORTAL_KV.put(`admin_name:${email}`, name);
+  await logAudit(env, adminEmail, 'rename-admin', { target: email, name });
+  return json({ email, name }, 200, cors);
+}
+
 // ---------- Admin workspaces ----------
 // Every admin has a private data workspace and the firm supervisors can oversee them.
 // For employees the choice is exclusive: someone assigned to Frank works only
@@ -230,7 +257,7 @@ async function requestedAdminWorkspace(request, env, adminEmail) {
 async function handleAdminWorkspaces(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  const names = { ...LEGACY_ADMIN_NAMES, ...(await addedAdminNames(env)) };
+  const names = await effectiveAdminNames(env);
   const admins = await allAdminEmails(env);
   const allowed = await accessibleWorkspaceOwners(env, adminEmail);
   const requested = await requestedAdminWorkspace(request, env, adminEmail);
@@ -779,7 +806,7 @@ async function handleAdminMfaVerify(request, env, cors) {
 async function handleAdminListAdmins(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  const names = await addedAdminNames(env);
+  const names = await effectiveAdminNames(env);
   const admins = [];
   for (const email of await allAdminEmails(env)) {
     const mfa = await getAdminMfa(env, email); // throws on decrypt fail -> 500 (fail closed)
@@ -4017,7 +4044,7 @@ async function handleAdminContacts(request, env, cors) {
     ? await accessibleWorkspaceOwners(env, adminEmail)
     : workspace;
   return json(
-    { contacts: await buildContactList(env, visibleWorkspaces), admins: await allAdminEmails(env), adminNames: await addedAdminNames(env), workspace },
+    { contacts: await buildContactList(env, visibleWorkspaces), admins: await allAdminEmails(env), adminNames: await effectiveAdminNames(env), workspace },
     200,
     cors
   );
@@ -6735,6 +6762,10 @@ export default {
       }
       if (url.pathname === '/api/admin/admins' && request.method === 'POST') {
         return await handleAdminCreateAdmin(request, env, cors);
+      }
+      const adminNameMatch = url.pathname.match(/^\/api\/admin\/admins\/([^/]+)\/name$/);
+      if (adminNameMatch && request.method === 'POST') {
+        return await handleAdminRenameAdmin(request, env, cors, decodeURIComponent(adminNameMatch[1]));
       }
       if (url.pathname === '/api/admin/workspaces' && request.method === 'GET') {
         return await handleAdminWorkspaces(request, env, cors);
