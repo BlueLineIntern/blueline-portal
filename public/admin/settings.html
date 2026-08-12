@@ -34,10 +34,10 @@
       <div style="display:flex; gap:var(--sp-3); margin-top:var(--sp-4); flex-wrap:wrap; align-items:flex-start;">
         <input type="text" class="input" id="new-admin-name" placeholder="Name (e.g. Jane Doe)" style="flex:1; min-width:180px;" />
         <input type="email" class="input" id="new-admin-email" placeholder="new-admin@blueline-advisors.com" style="flex:1; min-width:220px;" />
-        <input type="text" class="input" id="new-admin-password" placeholder="Temporary password (10+ characters)" style="flex:1; min-width:220px;" />
+        <input type="password" class="input" id="new-admin-password" placeholder="Password" aria-label="Password" autocomplete="new-password" style="flex:1; min-width:220px;" />
         <button type="button" class="btn btn-primary btn-small" id="new-admin-add">Add Admin</button>
       </div>
-      <p class="hint" style="margin-top:var(--sp-2);">Tell them this password directly — there's no email invite. They'll be
+      <p class="hint" style="margin-top:var(--sp-2);">Set their password here and give it to them directly — there's no email invite. They'll be
       asked to set up an authenticator app (two-factor) the first time they sign in, same as everyone else.</p>
       <p class="form-error" id="new-admin-error"></p>
     </div>
