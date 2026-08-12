@@ -1,5 +1,4 @@
 # BlueLine Advisors Portal — Status
-<!-- diagnostic no-op: forcing an isolated Workers Build to rule out a deploy race across the last three rapid-fire pushes -->
 
 **Live site:** https://blueline-portal.fsabin.workers.dev/
 **Admin view:** https://blueline-portal.fsabin.workers.dev/admin (sign in with an `ADMIN_EMAILS` address + the `ADMIN_PASSWORD` secret set in Cloudflare)
