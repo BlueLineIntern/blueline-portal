@@ -110,14 +110,23 @@
   .lr-progress span { display: block; height: 100%; width: 0; background: var(--sky-dark); transition: width 0.2s ease; }
   .doc-upload-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 5px; }
 
+  /* ---------- Import modal ----------
+     Wider than the default 540px: the preview is a five-column table, and the
+     "what will happen" text is the whole point of previewing, so it must not
+     wrap into unreadability. */
+  .modal-wide { max-width: 860px; }
+  .import-preview-scroll { max-height: 40vh; overflow-y: auto; margin-top: var(--sp-3); }
+  .link-btn {
+    background: none; border: 0; padding: 0; font: inherit; color: var(--sky-dark);
+    text-decoration: underline; cursor: pointer;
+  }
+  .imp-create { color: var(--green); }
+  .imp-update { color: var(--muted); }
+  .imp-skip { color: var(--red); }
+
   /* ---------- Emails tab ----------
-     One panel per message, newest first — same visual weight as the signed
-     agreement panels on Documents, since this is likewise a fixed record of a
-     past exchange rather than something edited in place. */
-  /* Two actions in one panel head (a signed agreement on Documents has both a
-     PDF download and a link to the full record). Without grouping them, the
-     head's justify-content:space-between spreads the two apart across the row
-     instead of keeping them together at the right. */
+     One panel per message, newest first — a fixed record of a past exchange
+     rather than something edited in place. */
   .email-row .panel-head { align-items: flex-start; }
   .email-meta { color: var(--muted); font-size: var(--fs-xs); margin: 2px 0 0; }
   .email-preview { color: var(--text); font-size: var(--fs-sm); margin: var(--sp-2) 0 0; white-space: pre-wrap; }
@@ -215,6 +224,7 @@
         </div>
         <div class="page-actions">
           <input type="search" class="input search-input" id="contact-search" placeholder="Search name, email, family, company, tag…" />
+          <button type="button" class="btn btn-ghost" id="import-btn">Import…</button>
           <button type="button" class="btn btn-ghost" id="new-family-btn">+ New Family</button>
           <button type="button" class="btn btn-ghost" id="new-company-btn">+ New Company</button>
           <button type="button" class="btn btn-primary" id="new-contact-btn">+ New Person</button>
@@ -563,6 +573,58 @@
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost" id="cm-cancel-btn">Cancel</button>
       <button type="button" class="btn btn-primary" id="cm-save-btn">Save Contact</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk import of people, families and companies from a spreadsheet.
+     Deliberately a TWO-STEP flow: choosing a file only ever previews it, and
+     nothing is written until the count on the confirm button is read and
+     clicked. A bulk write to the CRM has no undo, so "picked the wrong file"
+     must not be able to become "created 300 junk contacts". -->
+<div class="modal-backdrop hidden" id="import-modal-backdrop">
+  <div class="modal modal-wide">
+    <h2>Import contacts</h2>
+    <p class="sub">A <strong>.csv</strong> file. Export from Excel or Google Sheets with
+    <em>File → Save As / Download → CSV</em>. Only the <code>Name</code> column is required;
+    a person also needs an <code>Email</code>, since that is what identifies them.</p>
+
+    <div class="field">
+      <label for="import-file">Spreadsheet</label>
+      <input type="file" id="import-file" accept=".csv,text/csv" />
+      <p class="field-note">
+        Columns recognised (in any order, any capitalisation):
+        <code>Type</code> (Person/Family/Company — defaults to Person),
+        <code>Name</code>, <code>Email</code>, <code>Phone</code>, <code>Status</code>,
+        <code>Household</code>, <code>Household Type</code>, <code>Role</code>,
+        <code>Advisor</code>, <code>Tags</code>, <code>Address</code>,
+        <code>Preferred Name</code>, <code>Work Email</code>, <code>Work Phone</code>.
+        Anything else is ignored. <button type="button" class="link-btn" id="import-template">Download a template</button>
+      </p>
+    </div>
+
+    <p class="form-error" id="import-error"></p>
+
+    <div class="hidden" id="import-preview">
+      <div class="kv-rows" id="import-summary"></div>
+      <div class="table-scroll import-preview-scroll">
+        <table class="data-table">
+          <thead>
+            <tr><th>Row</th><th>Type</th><th>Name</th><th>Email</th><th>What will happen</th></tr>
+          </thead>
+          <tbody id="import-preview-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="hidden" id="import-progress-wrap">
+      <div class="lr-progress"><span id="import-progress-bar"></span></div>
+      <p class="doc-upload-note" id="import-progress-note"></p>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="import-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="import-run" disabled>Import</button>
     </div>
   </div>
 </div>
@@ -1374,6 +1436,482 @@
     e.preventDefault();
     closeContactModal();
     openGroupModal(null, 'company');
+  });
+
+  // ---------- Spreadsheet import ----------
+  // Builds people, families and companies from a CSV using ONLY the endpoints
+  // that already exist (contact upsert + household create/update), so there is
+  // no import-specific server code to keep in step with them, and every row
+  // goes through the same validation a hand-typed record does.
+  //
+  // CSV rather than .xlsx: reading a real workbook needs a ~1MB library, and
+  // every spreadsheet tool exports CSV. Stated in the modal rather than left to
+  // be discovered by a failed upload.
+
+  const IMPORT_MAX_ROWS = 1000;
+
+  // Header aliases. Advisors export from somewhere else, so "Email Address" and
+  // "E-mail" should not be a failed import. Keys are the normalised form:
+  // lowercased, non-alphanumerics stripped.
+  const IMPORT_ALIASES = {
+    type: 'type', recordtype: 'type', contacttype: 'type',
+    name: 'name', fullname: 'name', clientname: 'name', displayname: 'name',
+    email: 'email', emailaddress: 'email', email1: 'email', primaryemail: 'email',
+    phone: 'phone', phonenumber: 'phone', mobile: 'phone', cell: 'phone', homephone: 'phone',
+    status: 'status',
+    household: 'household', householdname: 'household', family: 'household',
+    familyname: 'household', company: 'household', companyname: 'household',
+    householdtype: 'householdtype', grouptype: 'householdtype',
+    role: 'role', householdrole: 'role', relationship: 'role',
+    advisor: 'advisor', primaryadvisor: 'advisor', advisorrep: 'advisor',
+    tags: 'tags', tag: 'tags',
+    address: 'address', mailingaddress: 'address',
+    preferredname: 'preferredname', nickname: 'preferredname',
+    workemail: 'workemail', businessemail: 'workemail',
+    workphone: 'workphone', businessphone: 'workphone', officephone: 'workphone',
+  };
+
+  const IMPORT_STATUSES = ['prospect', 'onboarding', 'active', 'inactive'];
+  const FAMILY_ROLES = ['head', 'spouse', 'partner', 'child', 'dependent', 'other'];
+  const COMPANY_ROLES = ['primary', 'owner', 'officer', 'employee', 'other'];
+
+  let importPlan = null;
+
+  function normHeader(h) {
+    return String(h || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  // A real parser, not split(','): a quoted field may contain commas, newlines
+  // and escaped quotes (""), all of which appear in exported address and notes
+  // columns. Also strips a UTF-8 BOM, which Excel writes and which would
+  // otherwise corrupt the first header name.
+  // Each row carries the 1-based line it started on, because blank rows are
+  // dropped below and a positional index would then no longer match the line
+  // numbers the advisor sees in their spreadsheet — "Row 9" has to mean row 9
+  // in the file they are about to go and fix.
+  function parseCsv(text) {
+    const s = String(text).replace(/^﻿/, ''); // Excel writes a UTF-8 BOM
+    const rows = [];
+    let row = [];
+    let field = '';
+    let quoted = false;
+    let line = 1;
+    let rowStartLine = 1;
+    for (let i = 0; i < s.length; i += 1) {
+      const ch = s[i];
+      if (quoted) {
+        if (ch === '"') {
+          if (s[i + 1] === '"') { field += '"'; i += 1; }
+          else quoted = false;
+        } else {
+          if (ch === '\n') line += 1; // a newline INSIDE a quoted field
+          field += ch;
+        }
+        continue;
+      }
+      if (ch === '"') { quoted = true; continue; }
+      if (ch === ',') { row.push(field); field = ''; continue; }
+      if (ch === '\r') continue; // CRLF from Windows exports
+      if (ch === '\n') {
+        row.push(field);
+        rows.push({ cells: row, line: rowStartLine });
+        row = []; field = '';
+        line += 1;
+        rowStartLine = line;
+        continue;
+      }
+      field += ch;
+    }
+    row.push(field);
+    rows.push({ cells: row, line: rowStartLine });
+    // Trailing newline leaves one empty row; blank lines mid-file go too.
+    return rows.filter((r) => r.cells.some((c) => String(c).trim() !== ''));
+  }
+
+  function looksLikeEmail(v) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim());
+  }
+
+  function splitTags(v) {
+    // Semicolon first: a comma inside a CSV field has to be quoted, and
+    // "Retired; Trust" is what a person actually types in one cell.
+    return String(v || '').split(/[;,|]/).map((t) => t.trim()).filter(Boolean).slice(0, 20);
+  }
+
+  // Turns parsed rows into an ordered list of intended actions, WITHOUT writing
+  // anything. Everything the confirm step displays comes from here, so what is
+  // previewed is exactly what executes.
+  function buildImportPlan(rows) {
+    const headerCells = rows[0].cells;
+    const header = headerCells.map(normHeader).map((h) => IMPORT_ALIASES[h] || h);
+    const body = rows.slice(1);
+    const unknown = headerCells.filter((h) => String(h).trim() && !IMPORT_ALIASES[normHeader(h)]);
+
+    // Existing state, so the preview can say "update" vs "create" truthfully.
+    const contactsByEmail = new Map(allContacts.map((c) => [String(c.email || '').toLowerCase(), c]));
+    const groupsByKey = new Map(allHouseholds.map((h) => [
+      `${(h.kind === 'company' ? 'company' : 'family')}|${String(h.name || '').trim().toLowerCase()}`, h,
+    ]));
+
+    const items = [];
+    const seenEmails = new Set();
+    // Groups this import will create, so two people in the same new family
+    // produce ONE create and then a join, not two competing creates.
+    const plannedGroups = new Map();
+    // Groups named by a Family/Company row of their own, collected across the
+    // WHOLE file and applied after the pass — see the note where it is used.
+    const explicitKeys = new Set();
+
+    body.forEach((r) => {
+      const cells = r.cells;
+      const get = (key) => {
+        const at = header.indexOf(key);
+        return at === -1 ? '' : String(cells[at] === undefined ? '' : cells[at]).trim();
+      };
+      const rowNo = r.line;
+      const rawType = get('type').toLowerCase();
+      const name = get('name');
+      const email = get('email').toLowerCase();
+
+      let type = 'person';
+      if (/^(family|household)$/.test(rawType)) type = 'family';
+      else if (/^(company|business|corp|corporation|entity)$/.test(rawType)) type = 'company';
+      else if (rawType && !/^(person|individual|client|contact)$/.test(rawType)) {
+        items.push({ rowNo, type: rawType, name, email, action: 'skip',
+          reason: `Unknown Type "${rawType}" — use Person, Family or Company` });
+        return;
+      }
+
+      if (type === 'person') {
+        if (!email) {
+          items.push({ rowNo, type, name, email, action: 'skip',
+            reason: 'No Email — a person is identified by their email address' });
+          return;
+        }
+        if (!looksLikeEmail(email)) {
+          items.push({ rowNo, type, name, email, action: 'skip', reason: 'Email is not a valid address' });
+          return;
+        }
+        if (seenEmails.has(email)) {
+          items.push({ rowNo, type, name, email, action: 'skip',
+            reason: 'This email appears earlier in the file' });
+          return;
+        }
+        seenEmails.add(email);
+
+        const status = get('status').toLowerCase();
+        if (status && !IMPORT_STATUSES.includes(status)) {
+          items.push({ rowNo, type, name, email, action: 'skip',
+            reason: `Unknown Status "${status}" — use ${IMPORT_STATUSES.join(', ')}` });
+          return;
+        }
+
+        const fields = {};
+        if (name) fields.name = name;
+        if (status) fields.status = status;
+        if (get('phone')) fields.phone = get('phone');
+        if (get('advisor')) fields.advisor = get('advisor');
+        if (get('address')) fields.address = get('address');
+        if (get('preferredname')) fields.preferredName = get('preferredname');
+        if (get('workphone')) fields.workPhone = get('workphone');
+        const workEmail = get('workemail').toLowerCase();
+        if (workEmail && looksLikeEmail(workEmail)) fields.workEmail = workEmail;
+        if (get('tags')) fields.tags = splitTags(get('tags'));
+
+        const groupName = get('household');
+        let join = null;
+        if (groupName) {
+          const gt = get('householdtype').toLowerCase();
+          const kind = /^(company|business|corp|corporation|entity)$/.test(gt) ? 'company' : 'family';
+          const key = `${kind}|${groupName.toLowerCase()}`;
+          const roles = kind === 'company' ? COMPANY_ROLES : FAMILY_ROLES;
+          const role = get('role').toLowerCase();
+          join = {
+            key, kind, name: groupName,
+            // An unrecognised role becomes "other" rather than failing the row,
+            // matching what the server already does with one.
+            role: roles.includes(role) ? role : 'other',
+            existing: groupsByKey.has(key),
+          };
+          // The free-text label on the contact is kept in step with the real
+          // grouping, since the list and profile both surface it.
+          fields.household = groupName;
+          if (!groupsByKey.has(key) && !plannedGroups.has(key)) {
+            plannedGroups.set(key, { key, kind, name: groupName });
+          }
+        }
+
+        items.push({
+          rowNo, type, name, email, fields, join,
+          action: contactsByEmail.has(email) ? 'update' : 'create',
+        });
+        return;
+      }
+
+      // A Family/Company row of its own: names the grouping and can carry its
+      // own status and tags. Members still come from the people rows.
+      if (!name) {
+        items.push({ rowNo, type, name, email, action: 'skip',
+          reason: `A ${type} row needs a Name` });
+        return;
+      }
+      const status = get('status').toLowerCase();
+      if (status && !IMPORT_STATUSES.includes(status)) {
+        items.push({ rowNo, type, name, email, action: 'skip',
+          reason: `Unknown Status "${status}" — use ${IMPORT_STATUSES.join(', ')}` });
+        return;
+      }
+      const key = `${type}|${name.toLowerCase()}`;
+      const fields = { name, kind: type };
+      if (status) fields.status = status;
+      if (get('tags')) fields.tags = splitTags(get('tags'));
+      if (email && looksLikeEmail(email)) fields.email = email;
+      items.push({
+        rowNo, type, name, email, fields, groupKey: key,
+        action: groupsByKey.has(key) ? 'update' : 'create',
+      });
+      explicitKeys.add(key);
+    });
+
+    // An explicitly-declared Family/Company row supersedes one implied by a
+    // person's Household column, WHEREVER it sits in the file. Applied after the
+    // whole pass rather than during it: a person row can appear above the row
+    // that declares their family, and deleting mid-pass only worked when the
+    // declaration came first — otherwise the person re-added it and the import
+    // created the grouping TWICE, once from each path.
+    for (const key of explicitKeys) plannedGroups.delete(key);
+
+    return { items, plannedGroups, unknown, header };
+  }
+
+  function renderImportPreview(plan) {
+    const people = plan.items.filter((i) => i.type === 'person' && i.action !== 'skip');
+    const groups = plan.items.filter((i) => i.type !== 'person' && i.action !== 'skip');
+    const skipped = plan.items.filter((i) => i.action === 'skip');
+    const autoGroups = [...plan.plannedGroups.values()];
+
+    const line = (label, value) => `<div class="kv-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`;
+    document.getElementById('import-summary').innerHTML = [
+      line('People to create', people.filter((i) => i.action === 'create').length),
+      line('People to update', people.filter((i) => i.action === 'update').length),
+      line('Families / companies named outright', groups.length),
+      line('Families / companies created from a Household column', autoGroups.length),
+      skipped.length ? line('Rows skipped (see below)', skipped.length) : '',
+      plan.unknown.length ? line('Columns ignored', plan.unknown.join(', ')) : '',
+    ].filter(Boolean).join('');
+
+    document.getElementById('import-preview-body').innerHTML = plan.items.map((i) => {
+      const cls = i.action === 'skip' ? 'imp-skip' : i.action === 'update' ? 'imp-update' : 'imp-create';
+      let what;
+      if (i.action === 'skip') what = `Skipped — ${i.reason}`;
+      else if (i.type !== 'person') {
+        what = `${i.action === 'create' ? 'Create' : 'Update'} ${i.type}`;
+      } else {
+        what = `${i.action === 'create' ? 'Create' : 'Update'} person`;
+        if (i.join) {
+          what += ` · ${i.join.existing ? 'add to existing' : 'add to new'} `
+            + `${i.join.kind} "${i.join.name}" as ${i.join.role}`;
+        }
+      }
+      return `<tr>
+        <td>${i.rowNo}</td>
+        <td>${escapeHtml(i.type)}</td>
+        <td>${escapeHtml(i.name || '—')}</td>
+        <td>${escapeHtml(i.email || '—')}</td>
+        <td class="${cls}">${escapeHtml(what)}</td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('import-preview').classList.remove('hidden');
+    const runBtn = document.getElementById('import-run');
+    const total = people.length + groups.length + autoGroups.length;
+    runBtn.disabled = total === 0;
+    runBtn.textContent = total === 0 ? 'Nothing to import' : `Import ${total} record${total === 1 ? '' : 's'}`;
+  }
+
+  function resetImportModal() {
+    importPlan = null;
+    document.getElementById('import-file').value = '';
+    document.getElementById('import-error').textContent = '';
+    document.getElementById('import-preview').classList.add('hidden');
+    document.getElementById('import-preview-body').innerHTML = '';
+    document.getElementById('import-summary').innerHTML = '';
+    document.getElementById('import-progress-wrap').classList.add('hidden');
+    document.getElementById('import-progress-bar').style.width = '0';
+    document.getElementById('import-progress-note').textContent = '';
+    const runBtn = document.getElementById('import-run');
+    runBtn.disabled = true;
+    runBtn.textContent = 'Import';
+  }
+
+  document.getElementById('import-btn').addEventListener('click', () => {
+    resetImportModal();
+    document.getElementById('import-modal-backdrop').classList.remove('hidden');
+  });
+  document.getElementById('import-cancel').addEventListener('click', () => {
+    document.getElementById('import-modal-backdrop').classList.add('hidden');
+  });
+  document.getElementById('import-modal-backdrop').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) e.currentTarget.classList.add('hidden');
+  });
+
+  document.getElementById('import-template').addEventListener('click', () => {
+    const csv = [
+      'Type,Name,Email,Phone,Status,Household,Household Type,Role,Advisor,Tags',
+      'Family,Smith,,,active,,,,,',
+      'Person,John Smith,john@example.com,555-0100,active,Smith,Family,head,Fred Sabin,Retired;Trust',
+      'Person,Jane Smith,jane@example.com,555-0101,active,Smith,Family,spouse,Fred Sabin,',
+      'Company,Acme Holdings,,,prospect,,,,,Entity',
+      'Person,Dana Reed,dana@acme.example.com,555-0102,prospect,Acme Holdings,Company,owner,Jenn Young,',
+    ].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'contact-import-template.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  document.getElementById('import-file').addEventListener('change', async (e) => {
+    const errEl = document.getElementById('import-error');
+    errEl.textContent = '';
+    document.getElementById('import-preview').classList.add('hidden');
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    try {
+      const rows = parseCsv(await file.text());
+      if (rows.length < 2) {
+        errEl.textContent = 'That file has a header row but no data rows.';
+        return;
+      }
+      if (rows.length - 1 > IMPORT_MAX_ROWS) {
+        errEl.textContent = `That file has ${rows.length - 1} rows. Import at most `
+          + `${IMPORT_MAX_ROWS} at a time — each row is a separate save, and a much `
+          + `larger batch would run for a very long time.`;
+        return;
+      }
+      const plan = buildImportPlan(rows);
+      if (!plan.header.includes('name') && !plan.header.includes('email')) {
+        errEl.textContent = 'No Name or Email column found. The first row must be a header row.';
+        return;
+      }
+      importPlan = plan;
+      renderImportPreview(plan);
+    } catch (err) {
+      errEl.textContent = 'Could not read that file: ' + ((err && err.message) || 'unknown error');
+    }
+  });
+
+  document.getElementById('import-run').addEventListener('click', async (ev) => {
+    if (!importPlan) return;
+    const btn = ev.currentTarget;
+    const errEl = document.getElementById('import-error');
+    const bar = document.getElementById('import-progress-bar');
+    const note = document.getElementById('import-progress-note');
+    errEl.textContent = '';
+    document.getElementById('import-progress-wrap').classList.remove('hidden');
+    btn.disabled = true;
+    document.getElementById('import-cancel').disabled = true;
+
+    // Groups before people: a person's join needs the grouping to exist, and
+    // an explicitly-named row must win over the bare auto-create.
+    const groupRows = importPlan.items.filter((i) => i.type !== 'person' && i.action !== 'skip');
+    const autoGroups = [...importPlan.plannedGroups.values()];
+    const peopleRows = importPlan.items.filter((i) => i.type === 'person' && i.action !== 'skip');
+    const total = groupRows.length + autoGroups.length + peopleRows.length;
+
+    // key -> id, so a person's join can find a grouping created moments ago.
+    const groupIds = new Map(allHouseholds.map((h) => [
+      `${(h.kind === 'company' ? 'company' : 'family')}|${String(h.name || '').trim().toLowerCase()}`, h.id,
+    ]));
+    const members = new Map(allHouseholds.map((h) => [h.id, [...(h.members || [])]]));
+
+    let done = 0;
+    const failures = [];
+    const tick = (label) => {
+      done += 1;
+      bar.style.width = `${Math.round((done / total) * 100)}%`;
+      note.textContent = `${done} of ${total} — ${label}`;
+    };
+
+    // Sequential on purpose: every contact save also pushes to SharePoint, and
+    // a burst of concurrent Graph calls is exactly what gets throttled.
+    for (const g of groupRows) {
+      try {
+        const key = g.groupKey;
+        const id = groupIds.get(key);
+        const res = id
+          ? await api(`/api/admin/households/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify(g.fields) })
+          : await api('/api/admin/households', { method: 'POST', body: JSON.stringify(g.fields) });
+        const hh = res && res.household;
+        if (hh && hh.id) { groupIds.set(key, hh.id); if (!members.has(hh.id)) members.set(hh.id, [...(hh.members || [])]); }
+        tick(`${g.type} "${g.name}"`);
+      } catch (err) {
+        failures.push(`Row ${g.rowNo} (${g.name}): ${(err && err.message) || 'failed'}`);
+        tick(`${g.type} "${g.name}" failed`);
+      }
+    }
+    for (const g of autoGroups) {
+      // Belt and braces: buildImportPlan already removes any key an explicit
+      // row covers, so this should never fire. It is here because the failure
+      // it prevents is a duplicate grouping in the firm's live CRM.
+      if (groupIds.has(g.key)) { tick(`${g.kind} "${g.name}" already created`); continue; }
+      try {
+        const res = await api('/api/admin/households', {
+          method: 'POST', body: JSON.stringify({ name: g.name, kind: g.kind }),
+        });
+        const hh = res && res.household;
+        if (hh && hh.id) { groupIds.set(g.key, hh.id); members.set(hh.id, [...(hh.members || [])]); }
+        tick(`${g.kind} "${g.name}"`);
+      } catch (err) {
+        failures.push(`${g.kind} "${g.name}": ${(err && err.message) || 'failed'}`);
+        tick(`${g.kind} "${g.name}" failed`);
+      }
+    }
+    for (const p of peopleRows) {
+      try {
+        await api(`/api/admin/contacts/${encodeURIComponent(p.email)}`, {
+          method: 'POST', body: JSON.stringify(p.fields),
+        });
+        if (p.join) {
+          const id = groupIds.get(p.join.key);
+          if (id) {
+            const list = members.get(id) || [];
+            // Already a member: leave the existing role alone rather than
+            // silently rewriting it from a spreadsheet's blank cell.
+            if (!list.some((m) => String(m.email || '').toLowerCase() === p.email)) {
+              const next = [...list, { email: p.email, role: p.join.role }];
+              await api(`/api/admin/households/${encodeURIComponent(id)}`, {
+                method: 'POST', body: JSON.stringify({ members: next }),
+              });
+              members.set(id, next);
+            }
+          } else {
+            failures.push(`Row ${p.rowNo} (${p.email}): saved, but its `
+              + `${p.join.kind} "${p.join.name}" could not be created, so they were not added to it`);
+          }
+        }
+        tick(p.email);
+      } catch (err) {
+        failures.push(`Row ${p.rowNo} (${p.email}): ${(err && err.message) || 'failed'}`);
+        tick(`${p.email} failed`);
+      }
+    }
+
+    note.textContent = `Imported ${total - failures.length} of ${total}.`
+      + (failures.length ? ` ${failures.length} problem${failures.length === 1 ? '' : 's'} below.` : '');
+    if (failures.length) errEl.innerHTML = failures.map((f) => escapeHtml(f)).join('<br />');
+    document.getElementById('import-cancel').disabled = false;
+    document.getElementById('import-run').textContent = 'Done';
+
+    await loadData();
+    // Re-planned against the now-current data, so the preview can't still be
+    // offering to create records this run just made.
+    importPlan = null;
+    document.getElementById('import-preview').classList.add('hidden');
   });
 
   document.getElementById('hm-save-btn').addEventListener('click', async (ev) => {

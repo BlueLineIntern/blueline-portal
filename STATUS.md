@@ -589,6 +589,43 @@ Client portal is untouched and keeps its own look.
     `fileDeleted: false`; the alternative is a row that can't be removed at all.
   - Needs `SHAREPOINT_CLIENT_DOCS_LIST_ID`. Unset → `configured: false` and the
     panel names the missing setting instead of looking broken.
+- **Spreadsheet import** (`Import…` in the Contacts page head) builds people,
+  families and companies from a **CSV**, using only the endpoints that already
+  exist — contact upsert and household create/update — so there is no
+  import-specific server code, and every row passes the same validation a
+  hand-typed record does. CSV rather than `.xlsx` because reading a real workbook
+  needs a ~1MB library and every spreadsheet tool exports CSV; the modal says so
+  rather than leaving it to a failed upload.
+  - **Two steps, always.** Choosing a file only ever *previews*: a per-row table
+    of exactly what will happen, plus counts, plus a confirm button that names
+    the number. A bulk CRM write has no undo, so "picked the wrong file" must not
+    be able to become "created 300 junk contacts". Everything shown comes from
+    the same plan object the run then executes, so the preview cannot disagree
+    with the outcome.
+  - **Headers are aliased** (`Full Name`, `E-mail Address`, `Mobile`, `Family`,
+    `Relationship`, …, case/punctuation-insensitive) because advisors export from
+    somewhere else; unrecognised columns are listed as ignored rather than
+    silently dropped. A real CSV parser handles quoted commas, `""` escapes,
+    embedded newlines, CRLF and Excel's UTF-8 BOM — `split(',')` would corrupt
+    any address column.
+  - **A person's `Household` column find-or-creates the grouping** and joins them
+    with `Role` (unknown role → `other`, matching the server), and the contact's
+    free-text `household` label is kept in step. An explicit `Family`/`Company`
+    row supersedes one implied by a Household column **wherever it sits in the
+    file** — resolved after the whole pass, because a person row can appear
+    *above* the row declaring their family, and de-duplicating mid-pass created
+    the grouping twice, once from each path. There is a second guard at execution
+    time, since the failure it prevents is a duplicate grouping in the live CRM.
+  - **Idempotent**: contacts upsert by email, groupings match by name+kind, and a
+    person already in a grouping keeps their existing role rather than having it
+    rewritten from a blank cell. Verified by importing the same file twice — the
+    second run previewed "create 0, update 3" and changed no counts.
+  - **Row numbers are true file lines**, not positions in the filtered list, so
+    "Row 9" means row 9 in the sheet the advisor is about to go and fix.
+  - Sequential, not parallel: every contact save also pushes to SharePoint, and a
+    burst of concurrent Graph calls is what gets throttled. Capped at 1000 rows
+    per run for the same reason. Failures are collected per row and reported
+    without stopping the rest — one bad row never aborts a good import.
 - **Additional Info** (`clientinfo:<email>` KV, **encrypted**) — the
   suitability/KYC block: employment, written-agreement offering dates (ADV, CRS,
   privacy, fee/IPS/FP), investment profile, estimated net worth, estimated tax,
