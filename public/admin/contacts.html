@@ -224,7 +224,6 @@
         </div>
         <div class="page-actions">
           <input type="search" class="input search-input" id="contact-search" placeholder="Search name, email, family, company, tag…" />
-          <button type="button" class="btn btn-ghost" id="import-btn">Import…</button>
           <button type="button" class="btn btn-ghost" id="new-family-btn">+ New Family</button>
           <button type="button" class="btn btn-ghost" id="new-company-btn">+ New Company</button>
           <button type="button" class="btn btn-primary" id="new-contact-btn">+ New Person</button>
@@ -286,11 +285,15 @@
           </div>
 
           <div class="panel">
-            <div class="panel-head"><h2>Export</h2></div>
+            <div class="panel-head"><h2>Import / Export</h2></div>
             <div class="rail-body">
               <button type="button" class="io-action" id="export-btn">
                 <strong>Export CSV</strong>
                 <span>Downloads exactly what's listed, filters included</span>
+              </button>
+              <button type="button" class="io-action" id="import-btn">
+                <strong>Import CSV</strong>
+                <span>Add people, families and companies from a spreadsheet</span>
               </button>
               <p class="io-status" id="io-status"></p>
             </div>
