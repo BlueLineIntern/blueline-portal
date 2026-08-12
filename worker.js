@@ -1950,6 +1950,12 @@ async function handleOnboardingSave(request, env, cors, onboardingId, ctx) {
       const filingTask = autoFileSignedAgreement(env, onboardingId, clientEmail, record.data)
         .catch((err) => console.error('Auto-file to SharePoint failed for', onboardingId, err));
       if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(filingTask);
+      // A SEPARATE background task, not folded into the SharePoint filing above:
+      // a Graph outage must never stop this simple KV write, and a signature on
+      // a date the server can't parse must never stop the filing.
+      const keyDocTask = recordAdvisoryAgreementDate(env, clientEmail, d.agreement.signedAt)
+        .catch((err) => console.error('Recording the advisory agreement date failed for', onboardingId, err));
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(keyDocTask);
     }
     // The CRM follows the wizard: mid-workflow the person is 'onboarding', and
     // finishing hands them to Contacts as a live client. Runs on every save so
@@ -4333,6 +4339,43 @@ async function getClientDocsDriveId(env, token) {
 // filed automatically lands in exactly the folder a manual attach would have
 // used. Skips silently (not an error) when SharePoint isn't configured — same
 // rule the manual button already follows.
+// Fires on the SAME transition as autoFileSignedAgreement (signature absent ->
+// present), so signing in the portal shows up on the client's family/company
+// Overview — Key Documents — Advisory Agreement without an admin typing it in
+// by hand.
+//
+// A direct KV read-modify-write, NOT a full save through
+// handleAdminUpdateHousehold: this must only ever touch keyDocuments.advisoryAgreement,
+// never risk disturbing Members, Name, or triggering the two-way SharePoint
+// contact mirror as a side effect of an automated background action.
+// keyDocuments is merged, matching sanitizeHouseholdFields/handleAdminUpdateHousehold:
+// an existing IPS date must survive this write untouched.
+//
+// Silently does nothing if the client is in no family or company yet — the same
+// "orphan" case the CSV importer surfaces as a warning rather than an error, and
+// consistent with the manual Key Documents panel having nowhere to put a date
+// for someone who isn't in a grouping either.
+//
+// Overwrites rather than preserving an earlier date on purpose: a clear-and-resign
+// re-fires this whole function, and the recorded date should reflect the LATEST
+// real signature, not the first — the same reasoning autoFileSignedAgreement
+// already uses for why its SharePoint upload is conflictBehavior=replace.
+async function recordAdvisoryAgreementDate(env, clientEmail, signedAt) {
+  const date = String(signedAt || '').slice(0, 10);
+  if (!isIsoDate(date)) return;
+  const addr = String(clientEmail || '').trim().toLowerCase();
+  const { items } = await readAllEncrypted(env, 'household:');
+  const hh = items.find((h) => h && h.id && (h.members || [])
+    .some((m) => m && String(m.email || '').toLowerCase() === addr));
+  if (!hh) return;
+  const record = {
+    ...hh,
+    keyDocuments: { ...(hh.keyDocuments || {}), advisoryAgreement: date },
+    updatedAt: new Date().toISOString(),
+  };
+  await env.PORTAL_KV.put(`household:${hh.id}`, await encryptJSON(env, record));
+}
+
 async function autoFileSignedAgreement(env, onboardingId, clientEmail, data) {
   if (!env.SHAREPOINT_CLIENT_DOCS_LIST_ID) return;
   const agreement = data && data.agreement;

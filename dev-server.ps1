@@ -596,6 +596,27 @@ function Invoke-MockAutoFileAgreement($id, $clientEmail, $onboardingData) {
     Write-Timeline $clientEmail 'agreement-filed' 'system' @{ onboardingId = $id; webUrl = $rec.webUrl }
 }
 
+# Mirrors worker.js's recordAdvisoryAgreementDate: fires on the same signing
+# transition as Invoke-MockAutoFileAgreement, sets keyDocuments.advisoryAgreement
+# on the client's family/company to the signing date, and does nothing if they
+# are in no grouping. Merges rather than replaces keyDocuments -- an existing
+# ips date must survive this write, same reasoning as the worker.
+function Invoke-MockRecordAdvisoryDate($clientEmail, $signedAt) {
+    $date = ([string]$signedAt)
+    if ($date.Length -ge 10) { $date = $date.Substring(0, 10) }
+    if ($date -notmatch '^\d{4}-\d{2}-\d{2}$') { return }
+    $addr = $clientEmail.ToLower()
+    $hh = $null
+    foreach ($h in $households.Values) {
+        if (@($h.members) | Where-Object { $_.email -and ([string]$_.email).ToLower() -eq $addr }) { $hh = $h; break }
+    }
+    if (-not $hh) { return }
+    $docs = if ($hh.Contains('keyDocuments') -and $hh.keyDocuments) { $hh.keyDocuments } else { [ordered]@{} }
+    $docs['advisoryAgreement'] = $date
+    $hh.keyDocuments = $docs
+    $hh.updatedAt = (Get-Date).ToString('o')
+}
+
 # Assignees are admin accounts only (board lists are a separate grouping).
 function Test-AssigneeAllowed($a) {
     $a = ([string]$a).Trim().ToLower()
@@ -2368,6 +2389,7 @@ while ($listener.IsListening) {
                         category = 'onboarding'
                     }
                     Invoke-MockAutoFileAgreement $id $clientEmail $body.data
+                    Invoke-MockRecordAdvisoryDate $clientEmail $body.data.agreement.signedAt
                 }
                 Sync-OnboardingContact $clientEmail $rec
             }

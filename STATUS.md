@@ -792,6 +792,18 @@ Client portal is untouched and keeps its own look.
     - Dates render through `fmtDateOnly()`, never `fmtDate()`:
       `new Date('2026-02-14')` is UTC midnight and shows as the 13th in every US
       timezone.
+    - **A client signing in the portal sets the Advisory Agreement date
+      automatically** — `recordAdvisoryAgreementDate` (worker.js) fires on the
+      SAME signature-absent-to-present transition as `autoFileSignedAgreement`,
+      a separate `ctx.waitUntil()` task so a SharePoint outage can never block
+      this simple KV write and vice versa. Finds the client's family/company by
+      membership and merges `advisoryAgreement: <signing date>` into
+      `keyDocuments`, exactly as an admin's manual save does — an existing IPS
+      date is untouched. A client in no grouping is the same "orphan" case the
+      CSV importer already surfaces as a warning: nothing to record it against,
+      so nothing happens, silently. Fires once, on the transition, not on every
+      resave — the wizard resends the whole record on every step, so a second
+      save of an already-signed record must not re-fire this or drift the date.
     - Overview is deliberately **not** in `GROUP_POLL_SKIP_TABS` (its task counts
       should stay live), so the 20s poll rebuilds this panel underneath a
       half-typed date. A draft map carries the inputs across the rebuild, the
