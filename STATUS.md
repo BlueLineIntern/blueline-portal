@@ -454,6 +454,41 @@ Client portal is untouched and keeps its own look.
   Log, Documents, Additional Info | Assessments** (incl. the assignment editor).
   The divider separates what's looked at on every visit from the record opened
   deliberately.
+- **Clients / Prospects toggle** (contacts.html, same `.view-toggle` control as
+  List/Board on Operations). This is a **filter over one contact list, not a
+  second store**: a prospect is a person whose `status` is `prospect`, everyone
+  else is a client. Nothing is copied or migrated when a prospect converts, and
+  their notes, tasks, emails, meetings, documents and Additional Info come with
+  them untouched.
+  - A contact record with **no status at all** (a portal account that never got a
+    CRM record) reads as a prospect on both sides, matching what
+    `buildContactList()` in worker.js already defaults it to. Don't "fix" one
+    without the other or people go missing from both lists.
+  - **Families and companies are clients-side only** — a prospect is someone you
+    are trying to sign, not a household you already advise. A prospect who *does*
+    belong to a grouping still renders nested under it on the Clients side, the
+    same way an archived member does: the grouping's roster is the grouping's
+    roster, and dropping the row would make the member count disagree with the
+    rows beneath it. That is the one deliberate overlap between the two sides.
+  - The type filter (people/families/companies) and the archived toggle are
+    scoped to the segment on screen. The type filter is *hidden*, not reset, when
+    the toggle flips — `visibleRecords()` ignores it on the Prospects side, or
+    leaving it on "Families" would silently empty that list.
+  - `?seg=prospects` deep-links to the Prospects side (the dashboard's Prospects
+    stat tile uses it); `openProfile()` sets the segment from the record so Back
+    from a prospect lands on the right list however the profile was reached.
+  - **`prospect` is no longer selectable in the New/Edit Contact form** — it is
+    still a valid stored status, the dropdown just dropped it. A person becomes a
+    prospect by being added from the Prospects side, and stops being one via
+    **Convert to Client** on their profile (a `status: 'onboarding'` upsert and
+    nothing else). Two ways to say the same thing meant Status could silently
+    push a signed client back into the pipeline.
+  - The prospect variant of the form hides Status, Primary advisor and Household
+    and omits them from the payload rather than blanking them (`sanitizeContactFields`
+    only writes keys that are present, so anything set earlier survives).
+    Everything else is entered exactly as it is for a client.
+  - `scripts/test-prospects.js` runs the real `visibleRecords()` and
+    `sanitizeClientInfo()` against a fixture roster and pins all of the above.
 - **The Onboarding tab is switched OFF, not removed** (`SHOW_ONBOARDING_TAB =
   false` in contacts.html, hidden on request 2026-08-06). Flip that one constant
   to `true` and it returns on both the person and the family/company profile
@@ -713,6 +748,23 @@ Client portal is untouched and keeps its own look.
     stay read-only in edit mode and always render a figure — `$0.00` on an empty
     balance sheet is the answer, not a missing value; every other empty field
     reads **Not Set**.
+  - **Prospects get a different set of questions in the same record.**
+    `PROSPECT_AI_SECTIONS` (44 fields: Pipeline, Source & Referral, Engagement,
+    Opportunity, Needs & Fit, Disclosures & Outcome) replaces the suitability
+    block on a prospect's profile — `aiSectionsFor()` picks by the contact's
+    status, not by which side of the list toggle you came from, so a prospect
+    opened from inside a family shows the same thing. Both sets live in the same
+    `clientinfo:<email>` record and go through the same endpoint; **the key names
+    are disjoint and must stay that way**, which is what makes converting a
+    prospect lossless — the pipeline history stays readable after they sign, and
+    the suitability block simply starts showing. Prospect money figures are
+    estimates and are deliberately *not* summed into `clientInfoDerived()`'s net
+    worth, which describes a client's actual balance sheet.
+  - The prospect enum lists are declared **three times** — `AI_OPTIONS` in
+    contacts.html, `CLIENT_INFO_ENUMS` in worker.js, `$clientInfoEnums` in
+    dev-server.ps1 — and compared with `===`. Plain ASCII hyphens only: a stray
+    en dash in one of the three rejects every save. `scripts/test-prospects.js`
+    diffs all three and fails on drift.
   - One `AI_SECTIONS` spec drives the read view, the edit form and the save
     payload — with ~40 fields, three hand-maintained lists would drift within a
     week. Server-side: dates must be real `YYYY-MM-DD`, money parses `$`/commas

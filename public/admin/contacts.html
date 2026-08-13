@@ -242,6 +242,18 @@
   .assignment-item input, .assignment-select-all input { width: 16px; height: 16px; accent-color: var(--sky); flex-shrink: 0; }
   .assignment-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
   @media (max-width: 640px) { .assignment-items { grid-template-columns: 1fr; } }
+
+  /* Clients / Prospects segment toggle. Deliberately the same control as the
+     List/Board toggle on Operations — same markup, same rules — so the two
+     pages read as one product. Copied rather than shared because that one is
+     page-local too; if a third page wants it, move all three to style.css. */
+  .view-toggle { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+  .view-toggle button {
+    border: none; background: var(--panel); color: var(--muted); padding: 7px 15px;
+    font-family: var(--font-sans); font-size: var(--fs-sm); font-weight: var(--fw-semibold); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .view-toggle button + button { border-left: 1px solid var(--border-strong); }
+  .view-toggle button.active { background: var(--navy); color: #fff; }
 </style>
 </head>
 <body>
@@ -251,8 +263,8 @@
     <div id="list-view">
       <div class="page-head">
         <div>
-          <h1>Contacts</h1>
-          <p class="sub">People, families and companies. Click a person to open their profile;
+          <h1 id="list-title">Contacts</h1>
+          <p class="sub" id="list-sub">People, families and companies. Click a person to open their profile;
           click a family or company to see who's in it, or its name to edit it.</p>
         </div>
         <div class="page-actions">
@@ -260,7 +272,18 @@
           <button type="button" class="btn btn-ghost" id="new-family-btn">+ New Family</button>
           <button type="button" class="btn btn-ghost" id="new-company-btn">+ New Company</button>
           <button type="button" class="btn btn-primary" id="new-contact-btn">+ New Person</button>
+          <button type="button" class="btn btn-primary hidden" id="new-prospect-btn">+ Add Prospect</button>
         </div>
+      </div>
+
+      <!-- Clients and prospects are the same contact records, split on status:
+           a prospect is a person whose status is 'prospect', everyone else is a
+           client. So this is a filter, not a second store — nothing is copied or
+           migrated when a prospect converts, and their notes, tasks, emails and
+           Additional Info come with them. -->
+      <div class="view-toggle" id="segment-toggle">
+        <button type="button" data-segment="clients" class="active">● Clients</button>
+        <button type="button" data-segment="prospects">○ Prospects</button>
       </div>
 
       <!-- Outside .list-cols so the table panel starts at the same y as the
@@ -278,7 +301,7 @@
         <!-- The colour code is only self-explanatory once you've been told what
              it means, so the key says it rather than leaving it to be inferred
              from three icons. -->
-        <div class="type-legend" aria-hidden="true">
+        <div class="type-legend" aria-hidden="true" id="type-legend">
           <span class="type-legend-item"><span class="type-dot dot-person"></span>Person</span>
           <span class="type-legend-item"><span class="type-dot dot-family"></span>Family</span>
           <span class="type-legend-item"><span class="type-dot dot-company"></span>Company</span>
@@ -359,6 +382,10 @@
           <div class="detail-title-badges" id="detail-badges"></div>
         </div>
         <div class="detail-header-actions">
+          <!-- The only way out of the prospect pipeline, now that Status can't be
+               set to (or away from) 'prospect' in the edit form. Shown only on a
+               prospect's profile. -->
+          <button type="button" class="btn btn-primary hidden" id="convert-prospect-btn">Convert to Client</button>
           <button type="button" class="btn btn-ghost" id="edit-contact-btn">Edit Contact</button>
           <button type="button" class="btn btn-primary" id="detail-print-btn">Print / Save PDF</button>
           <button type="button" class="btn btn-ghost" id="archive-contact-btn">Archive</button>
@@ -557,11 +584,15 @@
         <input type="text" id="cm-preferredName" />
       </div>
     </div>
-    <div class="field-row">
+    <!-- Prospect is no longer selectable here: a person is a prospect because
+         they were added on the Prospects side of the toggle, and stops being one
+         via "Convert to client" on their profile. Leaving it in the dropdown
+         gave two ways to say the same thing, one of which could silently move a
+         signed client back into the prospect pipeline. -->
+    <div class="field-row" id="cm-client-only">
       <div class="field">
         <label for="cm-status">Status</label>
         <select id="cm-status">
-          <option value="prospect">Prospect</option>
           <option value="onboarding">Onboarding</option>
           <option value="active">Active</option>
           <option value="inactive">Inactive</option>
@@ -596,7 +627,7 @@
       <label for="cm-address">Address</label>
       <input type="text" id="cm-address" placeholder="e.g. 123 Main St, Springfield" />
     </div>
-    <div class="field">
+    <div class="field" id="cm-household-field">
       <label for="cm-household">Household</label>
       <input type="text" id="cm-household" placeholder="e.g. Example Family" />
     </div>
@@ -741,12 +772,16 @@
   let searchText = '';
   let showArchived = false;
   let typeFilter = 'all';           // all | people | families | companies
+  // Which side of the Clients / Prospects toggle is showing. Not a second data
+  // set: see isProspect() — it's a read of contact.status.
+  let segment = 'clients';          // clients | prospects
   const activeTags = new Set();     // tag filter; empty = no tag constraint
   // Which groupings are open. Held outside the render so the 20s background
   // poll can't collapse a family the advisor just expanded.
   const expandedGroups = new Set();
   let activeTab = 'overview';
   let modalEmail = null; // null = creating; email = editing that contact
+  let modalProspect = false; // contact modal is showing its prospect variant
   const POLL_INTERVAL_MS = 20000;
   // Tabs a background poll must not re-render: they hold either unsaved input
   // or accumulated state (paged history, scroll) that a rebuild would destroy.
@@ -789,6 +824,13 @@
   function statusBadge(status) {
     const cls = STATUS_BADGE[status] || 'badge-gray';
     return `<span class="badge ${cls}">${escapeHtml(STATUS_LABEL[status] || status)}</span>`;
+  }
+
+  // A contact record with no status at all is a portal account that never got a
+  // CRM record — the merge in worker.js defaults those to 'prospect', so the
+  // same default here keeps the two sides of the toggle agreeing on the total.
+  function isProspect(c) {
+    return (c && c.status ? c.status : 'prospect') === 'prospect';
   }
 
   function clientIsAssigned(client, key) {
@@ -848,7 +890,11 @@
   // a single toggle stands in for it, and renders nothing at all while there's
   // nothing archived to look at.
   function renderStatusFilters() {
-    const archivedCount = allContacts.filter((c) => c.archived).length;
+    // Scoped to the segment on screen: an archived client is not something the
+    // Prospects side can show, so offering "Show archived (12)" there would
+    // switch the list to a view that turns out to be empty.
+    const archivedCount = allContacts
+      .filter((c) => c.archived && isProspect(c) === (segment === 'prospects')).length;
     const wrap = document.getElementById('status-filters');
     if (!archivedCount && !showArchived) { wrap.innerHTML = ''; return; }
     wrap.innerHTML = `<button type="button" class="filter-pill ${showArchived ? 'active' : ''}" id="toggle-archived">
@@ -1047,8 +1093,12 @@
   // appears flat — which is what that filter is for.
   function visibleRecords() {
     const q = searchText.trim().toLowerCase();
+    const prospects = segment === 'prospects';
     const kindWanted = { families: 'family', companies: 'company' }[typeFilter];
-    const groups = typeFilter === 'people' ? [] : allHouseholds.filter((h) =>
+    // Families and companies are a client-side structure — a prospect is a
+    // person you are still trying to sign, not a household you already advise.
+    // So the Prospects side is a flat list of people and nothing else.
+    const groups = (prospects || typeFilter === 'people') ? [] : allHouseholds.filter((h) =>
       (showArchived ? h.archived : !h.archived)
       && (!kindWanted || groupKind(h) === kindWanted)
       && (!q || householdMatches(h, q))
@@ -1058,6 +1108,7 @@
     groups.forEach((h) => (h.members || []).forEach((m) => nested.add(m.email)));
 
     const inView = (c) => (showArchived ? c.archived : !c.archived)
+      && isProspect(c) === prospects
       && (!q || contactMatches(c, q))
       && matchesTags(c);
     // Members are listed because their grouping is in view, so they are not
@@ -1065,7 +1116,11 @@
     // whole family, not just the members whose own fields happen to match.
     const memberPeople = allContacts.filter((c) => nested.has(c.email)
       && (showArchived ? c.archived : !c.archived));
-    const loose = typeFilter === 'families' || typeFilter === 'companies'
+    // The type filter is a clients-side control (it picks between people,
+    // families and companies) and is hidden on the Prospects side — but its
+    // value survives the switch, so it has to be ignored here too. Otherwise
+    // leaving it on "Families" and flipping to Prospects showed an empty list.
+    const loose = !prospects && (typeFilter === 'families' || typeFilter === 'companies')
       ? []
       : allContacts.filter((c) => !nested.has(c.email) && inView(c));
     const seen = new Set(loose.map((c) => c.email));
@@ -1140,10 +1195,23 @@
       .map((c) => ({ sortKey: String(c.name || c.email).toLowerCase(), html: personRowHtml(c) }));
 
     const all = groupRows.concat(looseRows).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-    const total = allContacts.length + allHouseholds.length;
+    // Counted within the segment, not across the whole roster — "(3 of 47)" on
+    // a Prospects list holding 3 people reads as a filter nobody turned on.
+    // Clients also counts a prospect who belongs to a family or company, because
+    // those still render nested under it (same rule as an archived member: the
+    // grouping's roster is the grouping's roster, and dropping the row would
+    // make the member count disagree with the rows beneath it).
+    const inSegment = (r) => (showArchived ? r.archived : !r.archived);
+    const total = segment === 'prospects'
+      ? allContacts.filter((c) => inSegment(c) && isProspect(c)).length
+      : allHouseholds.filter(inSegment).length
+        + allContacts.filter((c) => inSegment(c) && (!isProspect(c) || groupsForEmail(c.email).length)).length;
+    const emptyMsg = segment === 'prospects'
+      ? 'No prospects yet — add your first with Add Prospect.'
+      : 'No contacts yet — add your first with New Person, New Family or New Company.';
     body.innerHTML = all.length
       ? all.map((r) => r.html).join('')
-      : `<tr><td colspan="4" class="empty">${total ? 'Nothing matches.' : 'No contacts yet — add your first with New Person, New Family or New Company.'}</td></tr>`;
+      : `<tr><td colspan="4" class="empty">${total ? 'Nothing matches.' : emptyMsg}</td></tr>`;
 
     // Person rows (top-level and nested) open the profile.
     body.querySelectorAll('.contact-row, .member-row[data-email]').forEach((tr) => {
@@ -1212,6 +1280,45 @@
     typeFilter = e.target.value;
     renderContacts();
   });
+
+  // ---------- Clients / Prospects segment ----------
+
+  // Everything that differs between the two sides of the toggle, in one place —
+  // the alternative was six `segment === 'prospects'` checks scattered through
+  // the render path, which is how the two halves drift.
+  function renderSegmentChrome() {
+    const prospects = segment === 'prospects';
+    document.querySelectorAll('#segment-toggle button').forEach((b) =>
+      b.classList.toggle('active', (b.dataset.segment === 'prospects') === prospects));
+    document.getElementById('list-title').textContent = prospects ? 'Prospects' : 'Contacts';
+    document.getElementById('list-sub').textContent = prospects
+      ? 'People you are still trying to win. Click a prospect to open the same profile a client gets — notes, tasks, emails, meetings — plus the pipeline detail on Additional Info.'
+      : "People, families and companies. Click a person to open their profile; click a family or company to see who's in it, or its name to edit it.";
+    document.getElementById('contact-search').placeholder = prospects
+      ? 'Search name, email, tag…'
+      : 'Search name, email, family, company, tag…';
+    // Groupings are clients-only, so the controls that exist to pick between
+    // people/families/companies have nothing to act on over here.
+    ['new-family-btn', 'new-company-btn', 'new-contact-btn', 'type-filter', 'type-legend']
+      .forEach((id) => document.getElementById(id).classList.toggle('hidden', prospects));
+    document.getElementById('new-prospect-btn').classList.toggle('hidden', !prospects);
+  }
+
+  function setSegment(next) {
+    if (next !== 'clients' && next !== 'prospects') return;
+    if (segment === next) return;
+    segment = next;
+    // Groupings only exist on the clients side; leaving rows expanded means
+    // coming back to a list someone else's click opened.
+    expandedGroups.clear();
+    renderSegmentChrome();
+    renderStatusFilters();
+    renderContacts();
+  }
+
+  document.querySelectorAll('#segment-toggle button').forEach((b) =>
+    b.addEventListener('click', () => setSegment(b.dataset.segment))
+  );
 
   document.getElementById('tag-filter').addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-tag]');
@@ -1353,14 +1460,36 @@
 
   // ---------- Create / edit contact modal ----------
 
+  // One form serves both sides. In prospect mode it drops the three fields that
+  // only mean something once someone is a client — Status (a prospect's status
+  // IS 'prospect'), Primary advisor (nobody is assigned to a person who hasn't
+  // signed), and Household (families and companies are a clients-side
+  // structure). Everything else — name, preferred name, both phones, both
+  // emails, gender, address, tags, important dates — is entered exactly as it
+  // is for a client, so nothing has to be re-keyed when they convert.
   function openContactModal(contact) {
+    // Editing follows the record, not the toggle: opening a prospect's Edit
+    // Contact from their profile must give the prospect form even if the list
+    // behind it was left on Clients.
+    modalProspect = contact ? isProspect(contact) : segment === 'prospects';
     modalEmail = contact ? contact.email : null;
-    document.getElementById('contact-modal-title').textContent = contact ? 'Edit Contact' : 'New Contact';
+    const noun = modalProspect ? 'Prospect' : 'Contact';
+    document.getElementById('contact-modal-title').textContent = `${contact ? 'Edit' : 'New'} ${noun}`;
+    document.getElementById('cm-save-btn').textContent = `Save ${noun}`;
+    document.getElementById('cm-client-only').classList.toggle('hidden', modalProspect);
+    document.getElementById('cm-household-field').classList.toggle('hidden', modalProspect);
+    // "— or — add a new Family or Company" is a clients-side offer.
+    document.getElementById('cm-switch-note').classList.toggle('hidden', modalProspect);
     document.getElementById('cm-email').value = contact ? contact.email : '';
     document.getElementById('cm-email').disabled = !!contact;
     document.getElementById('cm-name').value = contact ? contact.name || '' : '';
     document.getElementById('cm-preferredName').value = contact ? contact.preferredName || '' : '';
-    document.getElementById('cm-status').value = contact ? contact.status || 'prospect' : 'prospect';
+    // 'prospect' is no longer an option in this select, so a prospect record
+    // would land on whatever is first. The value is not read in prospect mode
+    // (the save forces 'prospect'), but leaving it mismatched invites a later
+    // reader to trust it.
+    document.getElementById('cm-status').value =
+      modalProspect ? 'onboarding' : contact && contact.status && contact.status !== 'prospect' ? contact.status : 'active';
     document.getElementById('cm-household').value = contact ? contact.household || '' : '';
     document.getElementById('cm-phone').value = contact ? contact.phone || '' : '';
     document.getElementById('cm-workEmail').value = contact ? contact.workEmail || '' : '';
@@ -2391,6 +2520,9 @@
   });
 
   document.getElementById('new-contact-btn').addEventListener('click', () => openContactModal(null));
+  // Same modal; openContactModal() reads `segment` to decide which variant to
+  // show, and this button is only visible while that is 'prospects'.
+  document.getElementById('new-prospect-btn').addEventListener('click', () => openContactModal(null));
   document.getElementById('cm-cancel-btn').addEventListener('click', closeContactModal);
   document.getElementById('contact-modal-backdrop').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeContactModal();
@@ -2420,22 +2552,37 @@
       importantDates,
       name: document.getElementById('cm-name').value.trim(),
       preferredName: document.getElementById('cm-preferredName').value.trim(),
-      status: document.getElementById('cm-status').value,
-      advisor: document.getElementById('cm-advisor').value.trim(),
       phone: document.getElementById('cm-phone').value.trim(),
       workPhone: document.getElementById('cm-workPhone').value.trim(),
       workEmail: document.getElementById('cm-workEmail').value.trim(),
       gender: document.getElementById('cm-gender').value.trim(),
       address: document.getElementById('cm-address').value.trim(),
-      household: document.getElementById('cm-household').value.trim(),
       tags: document.getElementById('cm-tags').value.split(',').map((t) => t.trim()).filter(Boolean),
     };
+    if (modalProspect) {
+      // Sent explicitly rather than omitted: on a NEW record the server would
+      // otherwise default it, and a person added from the Prospects side must
+      // land on the Prospects side. The three hidden fields are omitted, not
+      // blanked — sanitizeContactFields only writes keys that are present, so
+      // an advisor/household set before the record became a prospect survives.
+      payload.status = 'prospect';
+    } else {
+      payload.status = document.getElementById('cm-status').value;
+      payload.advisor = document.getElementById('cm-advisor').value.trim();
+      payload.household = document.getElementById('cm-household').value.trim();
+    }
     try {
       await api(`/api/admin/contacts/${encodeURIComponent(email)}`, {
         method: 'POST',
         body: JSON.stringify(payload),
       });
+      const wasProspect = modalProspect;
       closeContactModal();
+      // A prospect saved while the list sits on Clients would otherwise vanish
+      // into a segment the advisor isn't looking at.
+      if (wasProspect) segment = 'prospects';
+      else if (segment === 'prospects') segment = 'clients';
+      renderSegmentChrome();
       await loadData();
       if (!modalEmail) openProfile(email);
     } catch (err) {
@@ -2447,6 +2594,12 @@
 
   function openProfile(email) {
     selectedEmail = email;
+    // Back from a prospect's profile should land on the Prospects list, not on
+    // Clients — including when the profile was reached from a deep link, a
+    // search-palette hit, or the sidebar's Recently Viewed. setSegment()
+    // no-ops when it already matches, so this is free in the common case.
+    const opening = allContacts.find((x) => x.email === email);
+    if (opening) setSegment(isProspect(opening) ? 'prospects' : 'clients');
     activeTab = 'overview';
     editingNoteId = null;
     // Both of these are per-contact and fetched on demand. Cleared here so
@@ -2489,7 +2642,9 @@
       openGroupProfile(returnTo);
       return;
     }
-    history.replaceState(null, '', location.pathname);
+    // Keeps ?seg so a reload from the list comes back to the same side of the
+    // toggle rather than snapping to Clients.
+    history.replaceState(null, '', segment === 'prospects' ? `${location.pathname}?seg=prospects` : location.pathname);
     document.getElementById('list-view').classList.remove('hidden');
     window.scrollTo(0, 0);
   }
@@ -2565,7 +2720,9 @@
       b.addEventListener('click', () => openGroupProfile(b.dataset.gotoHh));
     });
     document.getElementById('archive-contact-btn').textContent = c.archived ? 'Unarchive' : 'Archive';
-    document.getElementById('print-client-line').textContent = `Client: ${c.name || c.email} (${c.email})`;
+    document.getElementById('convert-prospect-btn').classList.toggle('hidden', !isProspect(c));
+    document.getElementById('print-client-line').textContent =
+      `${isProspect(c) ? 'Prospect' : 'Client'}: ${c.name || c.email} (${c.email})`;
     document.getElementById('print-date-line').textContent = `Report date: ${new Date().toLocaleDateString()}`;
 
     renderOverviewTab(c, p, opts.background);
@@ -3386,6 +3543,33 @@
     confirmedByTaxReturn: ['Yes', 'No'],
     taxBracket: ['10%', '12%', '22%', '24%', '32%', '35%', '37%'],
     smoker: ['Yes', 'No'],
+
+    // ----- Prospect fields -----
+    // Same record, different questions. A prospect's Additional Info answers
+    // "should we pursue this, and what happens next" — the suitability block
+    // above is what you fill in once they've signed, and asking for a passport
+    // number at the first coffee is not a thing anyone does.
+    // Plain ASCII hyphens throughout, like the client enums above: these exact
+    // strings are re-declared in worker.js and dev-server.ps1 and compared with
+    // ===, so a stray en dash in one of the three rejects every save.
+    pipelineStage: ['New Lead', 'Contacted', 'Meeting Scheduled', 'Discovery Held', 'Proposal Delivered',
+      'Follow-Up', 'Verbal Commitment', 'Paperwork Out', 'Dormant / Nurture', 'Closed - Lost'],
+    prospectRating: ['A - High priority', 'B - Medium', 'C - Low', 'D - Nurture only'],
+    closeProbability: ['10%', '20%', '30%', '40%', '50%', '60%', '70%', '80%', '90%'],
+    leadSource: ['Client Referral', 'Professional / COI Referral', 'Personal Network', 'Website / Inbound',
+      'Seminar or Event', 'Social Media', 'Advertising', 'Cold Outreach', 'Existing Client Family Member',
+      'Walk-In', 'Other'],
+    referralThankYouSent: ['Yes', 'No'],
+    preferredContactMethod: ['Email', 'Phone', 'Text', 'In Person', 'Video Call'],
+    marketingConsent: ['Yes', 'No'],
+    primaryPlanningNeed: ['Retirement Planning', 'Investment Management', 'Tax Planning', 'Estate Planning',
+      'Insurance & Risk', 'Education Funding', 'Business or Succession Planning', 'Divorce or Life Transition',
+      'Charitable Giving', 'Comprehensive Planning'],
+    decisionTimeframe: ['Immediate', '1-3 months', '3-6 months', '6-12 months', 'More than a year', 'Unknown'],
+    fitAssessment: ['Strong fit', 'Good fit', 'Marginal', 'Not a fit', 'Too early to say'],
+    prospectOutcome: ['Open', 'Won', 'Lost', 'Dormant'],
+    outcomeReason: ['Fees', 'Investment approach', 'Personal fit', 'Stayed with current advisor',
+      'Chose another firm', 'Timing - not ready', 'No response', 'Not a fit for us', 'Other'],
   };
 
   const AI_SECTIONS = [
@@ -3446,6 +3630,86 @@
       ['importantInformation', 'Important Information', 'longtext'],
     ] },
   ];
+
+  // The prospect's Additional Info. Stored in the SAME clientinfo:<email> record
+  // as the block above and saved through the same endpoint — keys are disjoint,
+  // so converting a prospect to a client keeps every answer here and simply
+  // starts showing the suitability sections instead. Nothing is copied, nothing
+  // is lost, and the pipeline history stays readable after they sign.
+  //
+  // What an advisor actually needs on a prospect, in the order they need it:
+  // where the deal stands, where it came from, how the relationship is being
+  // worked, how big it is, whether it fits, and what was delivered/decided.
+  const PROSPECT_AI_SECTIONS = [
+    { title: 'Pipeline', fields: [
+      ['pipelineStage', 'Pipeline Stage', 'select'],
+      ['prospectRating', 'Priority', 'select'],
+      ['closeProbability', 'Probability to Close', 'select'],
+      ['expectedCloseDate', 'Expected Close Date', 'date'],
+      ['nextStep', 'Next Step', 'text'],
+      ['nextStepDate', 'Next Step Due', 'date'],
+    ], note: 'Next Step is the one field worth keeping current — it is what makes this list workable on a Monday morning. Put the actual commitment here ("send fee comparison"), not a stage name.' },
+
+    { title: 'Source & Referral', fields: [
+      ['leadSource', 'Lead Source', 'select'],
+      ['referredBy', 'Referred By', 'text'],
+      ['referralRelationship', 'Relationship to Referrer', 'text'],
+      ['campaignOrEvent', 'Campaign or Event', 'text'],
+      ['firstContactDate', 'First Contact Date', 'date'],
+      ['referralThankYouSent', 'Referral Thank-You Sent', 'select'],
+    ], note: 'Referred By is a name, not a link — a referrer who is also a client will not be cross-referenced automatically.' },
+
+    { title: 'Engagement', fields: [
+      ['firstMeetingDate', 'First Meeting Date', 'date'],
+      ['lastContactDate', 'Last Contact Date', 'date'],
+      ['meetingsHeld', 'Meetings Held', 'text'],
+      ['preferredContactMethod', 'Preferred Contact Method', 'select'],
+      ['bestTimeToReach', 'Best Time to Reach', 'text'],
+      ['marketingConsent', 'Consent to Marketing Contact', 'select'],
+      ['doNotContactUntil', 'Do Not Contact Until', 'date'],
+    ], note: 'These are typed by hand and are not derived from the Emails, Meetings or Timeline tabs — those show what actually happened.' },
+
+    { title: 'Opportunity', fields: [
+      ['estimatedInvestableAssets', 'Estimated Investable Assets', 'money'],
+      ['estimatedHeldAwayAssets', 'Estimated Held-Away Assets', 'money'],
+      ['expectedAssetsToTransfer', 'Assets Expected to Transfer', 'money'],
+      ['estimatedProspectIncome', 'Estimated Annual Income', 'money'],
+      ['estimatedAnnualRevenue', 'Estimated Annual Fee Revenue', 'money'],
+      ['currentAdvisorOrFirm', 'Current Advisor / Firm', 'text'],
+      ['currentCustodian', 'Current Custodian', 'text'],
+      ['reasonForChange', 'Why They Are Considering a Change', 'longtext'],
+    ], note: 'Estimates the advisor has been told or inferred — not verified figures. The confirmed numbers go on the client suitability block after they sign.' },
+
+    { title: 'Needs & Fit', fields: [
+      ['primaryPlanningNeed', 'Primary Planning Need', 'select'],
+      ['servicesOfInterest', 'Services of Interest', 'longtext'],
+      ['decisionTimeframe', 'Decision Timeframe', 'select'],
+      ['decisionMakers', 'Decision Makers', 'text'],
+      ['lifeEventsOrTriggers', 'Life Events / Triggers', 'longtext'],
+      ['fitAssessment', 'Fit Assessment', 'select'],
+      ['objectionsOrConcerns', 'Objections & Concerns', 'longtext'],
+      ['competingFirms', 'Also Talking To', 'text'],
+    ], note: 'Decision Makers matters more than it looks: a spouse or a business partner who has never been in the room is the usual reason a "sure thing" stalls.' },
+
+    { title: 'Disclosures & Outcome', fields: [
+      ['crsDeliveredDate', 'Form CRS Delivered', 'date'],
+      ['advDeliveredDate', 'Form ADV Part 2 Delivered', 'date'],
+      ['privacyNoticeDeliveredDate', 'Privacy Notice Delivered', 'date'],
+      ['proposalSentDate', 'Proposal Sent', 'date'],
+      ['agreementSentDate', 'Agreement Sent', 'date'],
+      ['prospectOutcome', 'Outcome', 'select'],
+      ['outcomeDate', 'Outcome Date', 'date'],
+      ['outcomeReason', 'Reason', 'select'],
+      ['prospectNotes', 'Prospect Notes', 'longtext'],
+    ], note: 'The delivery dates are a record of what was handed over and when. They are entered here, not verified — this page does not check them against a disclosure calendar, and it is not a substitute for the firm\'s compliance log.' },
+  ];
+
+  // Which spec a record gets. Driven by the contact's status, not by the list
+  // segment, so a prospect opened from inside a family shows the same thing as
+  // one opened from the Prospects list.
+  function aiSectionsFor(contact) {
+    return isProspect(contact) ? PROSPECT_AI_SECTIONS : AI_SECTIONS;
+  }
 
   let clientInfo = {};
   let clientInfoLoadedFor = '';
@@ -3513,7 +3777,7 @@
       wrap.innerHTML = '<div class="panel"><p class="empty">Loading…</p></div>';
       return;
     }
-    const sections = AI_SECTIONS.map((sec) => {
+    const sections = aiSectionsFor(currentContact()).map((sec) => {
       const rows = sec.fields.map(([key, label, type]) => {
         // Derived rows stay read-only in edit mode: they are computed from the
         // three figures above them, so an input here would be a second place to
@@ -5223,7 +5487,7 @@
       // these are individual answers (occupation, licence, health), and a form
       // that wrote to several records at once would be a foot-gun.
       const perMember = results.map((r) => {
-        const sections = AI_SECTIONS.map((sec) => `<div class="panel">
+        const sections = aiSectionsFor(r.member.contact).map((sec) => `<div class="panel">
           <div class="panel-head"><h2>${escapeHtml(sec.title)}</h2></div>
           <div class="kv-rows">${sec.fields.map(([key, label, type]) =>
             `<div class="kv-row${type === 'derived' ? ' ai-derived-row' : ''}">
@@ -5330,6 +5594,31 @@
     const c = currentContact();
     if (c) openContactModal(c);
   });
+
+  // Converting is a status change and nothing else: the same record keeps its
+  // email, notes, tasks, meetings, documents and Additional Info, and simply
+  // starts appearing on the other side of the toggle. Lands on 'onboarding'
+  // rather than 'active' because that is what a just-signed client is, and it
+  // is one dropdown away from either of the others in Edit Contact.
+  document.getElementById('convert-prospect-btn').addEventListener('click', async () => {
+    const c = currentContact();
+    if (!c) return;
+    if (!confirm(`Convert ${c.name || c.email} to a client?\n\nThey move to the Clients list with status Onboarding. Nothing is lost — notes, tasks, emails, meetings, documents and everything on Additional Info stay on the record. You can set their advisor and household in Edit Contact afterwards.`)) return;
+    const btn = document.getElementById('convert-prospect-btn');
+    btn.disabled = true;
+    try {
+      await api(`/api/admin/contacts/${encodeURIComponent(c.email)}`, {
+        method: 'POST', body: JSON.stringify({ status: 'onboarding' }),
+      });
+      setSegment('clients');
+      await loadData();
+      renderProfile();
+    } catch (err) {
+      alert(`Convert failed: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
   document.getElementById('detail-print-btn').addEventListener('click', () => window.print());
   document.getElementById('detail-back-btn').addEventListener('click', backToList);
 
@@ -5358,6 +5647,11 @@
   // Deep link: ?c=email opens that person's profile, ?hh=<id> a family or
   // company's; ?tab=notes (etc.) lands on a tab in either.
   (async function init() {
+    // ?seg=prospects opens straight onto the Prospects side. Applied before the
+    // first load so the list never paints Clients and then swap.
+    const seg = new URLSearchParams(location.search).get('seg');
+    if (seg === 'prospects') segment = 'prospects';
+    renderSegmentChrome();
     await loadData();
     const params = new URLSearchParams(location.search);
     const want = params.get('c');

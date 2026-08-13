@@ -680,7 +680,7 @@
       const overdue = openTasks.filter((t) => t.due && new Date(t.due) < now && !isSameLocalDay(new Date(t.due), now));
       document.getElementById('stat-tiles').innerHTML = [
         tile(byStatus('active'), 'Active Clients', '/admin/contacts.html'),
-        tile(byStatus('prospect'), 'Prospects', '/admin/contacts.html'),
+        tile(byStatus('prospect'), 'Prospects', '/admin/contacts.html?seg=prospects'),
         tile(onboardingCount, 'Onboarding', '/admin/onboarding.html'),
         tile(dueToday.length, 'Due Today', '/admin/operations.html?filter=today'),
         tile(overdue.length, 'Overdue', '/admin/operations.html?filter=overdue', overdue.length > 0),

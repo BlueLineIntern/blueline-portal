@@ -459,12 +459,22 @@ function Test-ClientIsParticipant($msg, $email) {
     foreach ($r in @($msg.cc)) { if ($r -and $r.address) { $null = $addrs.Add(([string]$r.address).ToLower()) } }
     return $addrs.Contains(([string]$email).ToLower())
 }
+# The three lists below cover BOTH halves of the Additional Info record: the
+# client suitability block and the prospect pipeline block. One record, one
+# endpoint, disjoint key sets - see CLIENT_INFO_* in worker.js, which these
+# mirror character for character. Anything not listed falls through to the
+# free-text branch in the POST handler, so the text fields need no entry here.
 $clientInfoDates = @('occupationStartDate', 'retirementDate', 'signedFeeAgreementDate',
     'signedIpsAgreementDate', 'signedFpAgreementDate', 'lastAdvOfferingDate',
     'initialCrsOfferingDate', 'lastCrsOfferingDate', 'lastPrivacyOfferingDate',
-    'driversLicenseIssuedDate', 'driversLicenseExpiresDate')
+    'driversLicenseIssuedDate', 'driversLicenseExpiresDate',
+    'expectedCloseDate', 'nextStepDate', 'firstContactDate', 'firstMeetingDate',
+    'lastContactDate', 'doNotContactUntil', 'crsDeliveredDate', 'advDeliveredDate',
+    'privacyNoticeDeliveredDate', 'proposalSentDate', 'agreementSentDate', 'outcomeDate')
 $clientInfoMoney = @('grossAnnualIncome', 'assets', 'nonLiquidAssets', 'liabilities',
-    'adjustedGrossIncome', 'estimatedTaxes')
+    'adjustedGrossIncome', 'estimatedTaxes',
+    'estimatedInvestableAssets', 'estimatedHeldAwayAssets', 'expectedAssetsToTransfer',
+    'estimatedProspectIncome', 'estimatedAnnualRevenue')
 $clientInfoEnums = @{
     investmentObjective = @('Capital Preservation', 'Income', 'Growth & Income', 'Growth', 'Aggressive Growth', 'Speculation')
     timeHorizon = @('Less than 1 year', '1-3 years', '3-5 years', '5-10 years', 'More than 10 years')
@@ -475,6 +485,24 @@ $clientInfoEnums = @{
     confirmedByTaxReturn = @('Yes', 'No')
     taxBracket = @('10%', '12%', '22%', '24%', '32%', '35%', '37%')
     smoker = @('Yes', 'No')
+    pipelineStage = @('New Lead', 'Contacted', 'Meeting Scheduled', 'Discovery Held', 'Proposal Delivered',
+        'Follow-Up', 'Verbal Commitment', 'Paperwork Out', 'Dormant / Nurture', 'Closed - Lost')
+    prospectRating = @('A - High priority', 'B - Medium', 'C - Low', 'D - Nurture only')
+    closeProbability = @('10%', '20%', '30%', '40%', '50%', '60%', '70%', '80%', '90%')
+    leadSource = @('Client Referral', 'Professional / COI Referral', 'Personal Network', 'Website / Inbound',
+        'Seminar or Event', 'Social Media', 'Advertising', 'Cold Outreach', 'Existing Client Family Member',
+        'Walk-In', 'Other')
+    referralThankYouSent = @('Yes', 'No')
+    preferredContactMethod = @('Email', 'Phone', 'Text', 'In Person', 'Video Call')
+    marketingConsent = @('Yes', 'No')
+    primaryPlanningNeed = @('Retirement Planning', 'Investment Management', 'Tax Planning', 'Estate Planning',
+        'Insurance & Risk', 'Education Funding', 'Business or Succession Planning', 'Divorce or Life Transition',
+        'Charitable Giving', 'Comprehensive Planning')
+    decisionTimeframe = @('Immediate', '1-3 months', '3-6 months', '6-12 months', 'More than a year', 'Unknown')
+    fitAssessment = @('Strong fit', 'Good fit', 'Marginal', 'Not a fit', 'Too early to say')
+    prospectOutcome = @('Open', 'Won', 'Lost', 'Dormant')
+    outcomeReason = @('Fees', 'Investment approach', 'Personal fit', 'Stayed with current advisor',
+        'Chose another firm', 'Timing - not ready', 'No response', 'Not a fit for us', 'Other')
 }
 
 # Net worth figures are derived on read, never stored - mirrors

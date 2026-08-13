@@ -4376,6 +4376,30 @@ const CLIENT_INFO_ENUMS = {
   confirmedByTaxReturn: ['', 'Yes', 'No'],
   taxBracket: ['', '10%', '12%', '22%', '24%', '32%', '35%', '37%'],
   smoker: ['', 'Yes', 'No'],
+
+  // Prospect pipeline fields. Same record and same endpoint as the suitability
+  // block above — the key sets are disjoint, so a prospect's Additional Info and
+  // a client's coexist and converting a prospect keeps both. Must stay
+  // character-identical to AI_OPTIONS in public/admin/contacts.html and
+  // $clientInfoEnums in dev-server.ps1.
+  pipelineStage: ['', 'New Lead', 'Contacted', 'Meeting Scheduled', 'Discovery Held', 'Proposal Delivered',
+    'Follow-Up', 'Verbal Commitment', 'Paperwork Out', 'Dormant / Nurture', 'Closed - Lost'],
+  prospectRating: ['', 'A - High priority', 'B - Medium', 'C - Low', 'D - Nurture only'],
+  closeProbability: ['', '10%', '20%', '30%', '40%', '50%', '60%', '70%', '80%', '90%'],
+  leadSource: ['', 'Client Referral', 'Professional / COI Referral', 'Personal Network', 'Website / Inbound',
+    'Seminar or Event', 'Social Media', 'Advertising', 'Cold Outreach', 'Existing Client Family Member',
+    'Walk-In', 'Other'],
+  referralThankYouSent: ['', 'Yes', 'No'],
+  preferredContactMethod: ['', 'Email', 'Phone', 'Text', 'In Person', 'Video Call'],
+  marketingConsent: ['', 'Yes', 'No'],
+  primaryPlanningNeed: ['', 'Retirement Planning', 'Investment Management', 'Tax Planning', 'Estate Planning',
+    'Insurance & Risk', 'Education Funding', 'Business or Succession Planning', 'Divorce or Life Transition',
+    'Charitable Giving', 'Comprehensive Planning'],
+  decisionTimeframe: ['', 'Immediate', '1-3 months', '3-6 months', '6-12 months', 'More than a year', 'Unknown'],
+  fitAssessment: ['', 'Strong fit', 'Good fit', 'Marginal', 'Not a fit', 'Too early to say'],
+  prospectOutcome: ['', 'Open', 'Won', 'Lost', 'Dormant'],
+  outcomeReason: ['', 'Fees', 'Investment approach', 'Personal fit', 'Stayed with current advisor',
+    'Chose another firm', 'Timing - not ready', 'No response', 'Not a fit for us', 'Other'],
 };
 
 const CLIENT_INFO_DATES = [
@@ -4383,12 +4407,21 @@ const CLIENT_INFO_DATES = [
   'signedFeeAgreementDate', 'signedIpsAgreementDate', 'signedFpAgreementDate',
   'lastAdvOfferingDate', 'initialCrsOfferingDate', 'lastCrsOfferingDate',
   'lastPrivacyOfferingDate', 'driversLicenseIssuedDate', 'driversLicenseExpiresDate',
+  // Prospect pipeline dates.
+  'expectedCloseDate', 'nextStepDate', 'firstContactDate', 'firstMeetingDate',
+  'lastContactDate', 'doNotContactUntil', 'crsDeliveredDate', 'advDeliveredDate',
+  'privacyNoticeDeliveredDate', 'proposalSentDate', 'agreementSentDate', 'outcomeDate',
 ];
 
 // Money fields are stored as numbers so the derived net-worth figures are
 // arithmetic rather than string parsing. Negative is allowed: an underwater
 // balance sheet is a real answer, not a typo to reject.
-const CLIENT_INFO_MONEY = ['grossAnnualIncome', 'assets', 'nonLiquidAssets', 'liabilities', 'adjustedGrossIncome', 'estimatedTaxes'];
+// Prospect money figures are estimates the advisor was told, not verified
+// balances — they are deliberately NOT summed into clientInfoDerived()'s net
+// worth, which describes a client's actual balance sheet.
+const CLIENT_INFO_MONEY = ['grossAnnualIncome', 'assets', 'nonLiquidAssets', 'liabilities', 'adjustedGrossIncome', 'estimatedTaxes',
+  'estimatedInvestableAssets', 'estimatedHeldAwayAssets', 'expectedAssetsToTransfer',
+  'estimatedProspectIncome', 'estimatedAnnualRevenue'];
 
 // Short free text, with the cap each one gets.
 const CLIENT_INFO_TEXT = {
@@ -4406,6 +4439,22 @@ const CLIENT_INFO_TEXT = {
   greenCardNumber: 60,
   personalInterests: 2000,
   importantInformation: 4000,
+  // Prospect pipeline free text.
+  nextStep: 200,
+  referredBy: 120,
+  referralRelationship: 120,
+  campaignOrEvent: 120,
+  meetingsHeld: 10,
+  bestTimeToReach: 120,
+  currentAdvisorOrFirm: 120,
+  currentCustodian: 120,
+  reasonForChange: 2000,
+  servicesOfInterest: 2000,
+  decisionMakers: 200,
+  lifeEventsOrTriggers: 2000,
+  objectionsOrConcerns: 2000,
+  competingFirms: 200,
+  prospectNotes: 4000,
 };
 
 // Estimated net worth and estimated liquid net worth are DERIVED, never stored:
