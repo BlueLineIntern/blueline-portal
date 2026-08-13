@@ -637,7 +637,8 @@ body .topbar, body .footer { display: none; }
 .tag-pill.on .tag-n { color: rgba(255,255,255,0.85); }
 .btn-link { border: none; background: none; cursor: pointer; font-family: var(--font-sans); padding: 0; }
 
-/* Export action */
+/* Import / export actions in the list rail. Already block + margin-bottom, so
+   these stack without further rules. */
 .io-action {
   display: block; width: 100%; text-align: left; cursor: pointer;
   border: 1px solid var(--border); background: var(--panel); color: var(--text);

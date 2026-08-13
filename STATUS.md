@@ -122,6 +122,207 @@ labeled "not a legally binding signature." NOTE: the coordinate math divides by
 the canvas's displayed width, so it only works when the canvas has non-zero
 layout size (a normal browser); a 0×0 viewport yields a blank pad.
 
+**Signed agreement PDF** (`public/assets/sign-agreement.js`): the captured
+signature is stamped onto the real agreement document
+(`public/onboarding/advisory-agreement.pdf` — 2 pages, US Letter 612×792) and
+offered as a download in two places: the wizard's confirmation step (the client's
+own copy) and each Advisory Agreement panel on a contact's **Documents** tab in
+admin (the firm's copy). One module drives both, so the two cannot disagree.
+- **Generated on demand, never stored.** Built in the browser from the signature
+  already on the onboarding record, so there is no second copy of a signed
+  agreement in KV or SharePoint to go stale when a template or a signature
+  changes. Not *byte*-identical between the two callers — pdf-lib names its
+  XObjects with a random suffix — but the same template, placement and rendering.
+- **The coordinates come from the template's own content stream**, not from
+  measuring a screenshot: page 2 draws the grey signature box with
+  `50.8 158.35 496.75 120.05 re f*`, and its text baselines are 257.15 (the
+  printed client name), 223.75 (`Signature: ____`) and 184.35 (`Date: ____`).
+  pdf-lib uses a bottom-left origin, so the signature is placed at (125, 226)
+  contained to 240×26pt and the date at (100, 187.35). **The 26pt height cap is
+  the binding constraint** — it is the only thing keeping the signature from
+  colliding with the printed name 33pt above the rule, which is why it is a cap
+  and not a target. **Re-exporting the agreement PDF invalidates every one of
+  these numbers**; they are specific to this file.
+- **The signature is cropped to its ink bounding box before stamping.** The pad is
+  a fixed 600×180 bitmap that the ink rarely fills, and stamping it untrimmed
+  scales the real signature down to an illegible sliver. Alpha is a sound ink test
+  because the pad only ever `clearRect()`s its background — which is also why the
+  stamp doesn't paint a white box over the underscore rule. Antialiasing is
+  excluded with an alpha > 8 threshold; > 0 would defeat the crop.
+- **pdf-lib 1.17.1 is vendored** at `public/assets/vendor/pdf-lib.min.js` (512KB)
+  rather than installed: there is no `package.json` here and `worker.js` deploys as
+  a plain ES module with no bundling step, so an npm import would mean introducing
+  a build pipeline that cannot be tested on this machine (no Node, and workerd has
+  no win32-arm64 build). It is a static asset under `public/`, so it does **not**
+  count against the Worker script-size limit, and it is lazy-loaded on first click
+  rather than on every page load of the wizard and the contact profile.
+- `dev-server.ps1` needed `.pdf` added to its MIME map; prod already handled it,
+  since `serveAsset` delegates to `env.ASSETS.fetch`.
+- **The client's typed name replaces the template's printed sample name.** The
+  template prints "Jeannette Smith" at baseline 257.15, which would otherwise
+  contradict the signature beneath it. A rectangle in the box's own `#F7F7F7`
+  fill covers it and the real name is drawn on top in Times-Bold 10.5 at the same
+  baseline, shrinking to fit (7pt floor) when long. Drawn **before** the
+  signature, so the patch can never erase it. Times, not Helvetica, throughout:
+  the document is set in NotoSerif and a sans-serif fill-in reads as a different
+  document. The name comes from `resolveClientName()` — `agreement.typedName`,
+  then profile first + last, then `profile.name`, then `consent.name` — and
+  **both callers go through that one function**, so the client's copy and the
+  firm's copy cannot show different names for one signature. An unresolvable name
+  leaves the template untouched rather than printing a blank.
+  - **The cover is visual only.** The sample name is still in the page's text
+    layer, so a text extractor (or copy-paste out of the PDF) still yields
+    "Jeannette Smith". Acceptable for a labelled proof of concept; for anything
+    real, re-export the template with no name rather than covering one.
+  - It assumes that line is flat grey with nothing else on it. Give the box a
+    border, a pattern or a second column and the patch becomes visible.
+  - Names are **sanitised for WinAnsi** first, because pdf-lib's standard-14 fonts
+    THROW on any character outside it — one autocorrected apostrophe would
+    otherwise fail the entire download. Typographic punctuation is transliterated
+    (’ → ', em dash → -), letters WinAnsi already covers are left intact (é, ü,
+    ñ, ø, æ, þ, ß), and stroked/ligature letters that do **not** decompose under
+    NFD are mapped explicitly (Ł → L, Đ → D, ı → i, Œ → OE). That last part is
+    not theoretical: NFD folding alone silently deleted them, turning Łukasz into
+    "ukasz" — losing the first letter of a client's name. Non-Latin scripts have
+    no ASCII equivalent and are dropped, since a standard font cannot render them.
+- Still a **proof of concept, deliberately**: the onboarding endpoints are
+  unauthenticated by design (see above), so a signature here has **no signer
+  attribution**, and the stamped PDF carries no tamper evidence — a PNG in a PDF
+  can be swapped by anyone holding the file. It is not a legally binding
+  signature and must not be relied on as an executed agreement. Making it real
+  means either a proper e-sign provider (DocuSign/Adobe Sign, which is what the
+  certificate and audit trail are actually bought for) or moving the agreement
+  step behind the **existing authenticated client login**, which would take
+  attribution from nothing to session + account + timestamp. Under Advisers Act
+  Rule 204-2 an executed advisory agreement is a books-and-records item, so this
+  needs compliance sign-off, not just code.
+
+**Filing the signed agreement into SharePoint**: each Advisory Agreement panel
+on a contact's Documents tab also has a **"File to Client Documents"** button,
+which pushes the generated PDF into the same SharePoint library and family/
+person folder as a manual attachment — `resolveClientDocFolder` decides which,
+exactly as it already does for everything else on that tab.
+- **No new server-side code.** This calls the *same* two endpoints the manual
+  Attach flow already uses (`/api/admin/contacts/:email/documents/upload` then
+  `/api/admin/client-documents/chunk`), feeding a `Blob` wrapping the generated
+  PDF bytes through the identical chunking loop a `File` input already used —
+  `Blob` and `File` share `.size` and `.slice()`, so no new upload code was
+  needed, only a new caller.
+- **Filed by filename, not by name**, to detect "already filed": the display
+  name can be edited afterwards (rename is a KV-only op), but the filename is
+  deterministic from the onboarding id, so the check survives a rename. Once
+  filed, the button becomes a "Filed ✓" note instead of disappearing outright —
+  a click is deliberate, never automatic on every save, so an autosave storm
+  can't file duplicate copies of one signature.
+- Hidden entirely (not shown-and-erroring) when `SHAREPOINT_CLIENT_DOCS_LIST_ID`
+  isn't set — same rule as the Download button being absent with no signature.
+  **Not exercisable against the not-configured guard locally**: the mock has no
+  such check at all (always answers as configured), so that error path is
+  confirmed by reading the code on both ends (`shared.js`'s `api()` throws
+  `data.error` verbatim; the worker returns exactly `"SHAREPOINT_CLIENT_DOCS_LIST_ID
+  is not set"`), not by running it.
+- Verified against the mock end to end, including **both folder branches**: a
+  contact with no household files under their own name (`Smith, Jeannette`); the
+  same contact added to a household then files a second agreement under the
+  family name (`Smith Family`) — and the first file did **not** retroactively
+  move, matching the documented "a folder is never renamed after the fact" rule
+  above.
+
+**Auto-filing at the moment of signing (no admin click at all)**: the instant a
+client's signature transitions from absent to present — the same
+`nowSigned && !prevSigned` check `agreement-signed` already used — the server
+itself generates the signed PDF and pushes it to SharePoint, before any admin
+ever opens anything. `autoFileSignedAgreement()` in `worker.js`, wired into
+`handleOnboardingSave` via `ctx.waitUntil()` so it runs in the background and
+can never delay or fail the client's own save request.
+- **This repo's first-ever npm-sourced import into `worker.js`.** Every previous
+  feature here was either handwritten or (for browser code) a vendored UMD
+  script tag — `worker.js` itself has never imported a package. `pdf-lib`'s real
+  **ESM** build (`vendor/pdf-lib.esm.min.js`, confirmed zero imports of its own —
+  every dependency already inlined) is imported by a **relative path**
+  (`./agreement-pdf-worker.js` → `./vendor/pdf-lib.esm.min.js`), deliberately
+  never a bare specifier like `'pdf-lib'`. A relative import needs no
+  `package.json`, no `node_modules`, no npm install step — Cloudflare's bundler
+  walks it from disk the same way it walks any other relative import in this
+  file. A bare specifier would need dependency resolution this repo has no
+  mechanism for.
+- **Separate implementation from `public/assets/sign-agreement.js`, not a
+  shared one** (`agreement-pdf-worker.js`, repo root, outside `public/` so it's
+  never served to a browser). The browser file uses `Image`/`canvas`/`document`;
+  none of that exists in the Workers runtime. The GEOMETRY constants and the
+  name-sanitization table (`LETTER_SWAPS`, punctuation transliteration) are
+  copied verbatim between the two files, each with a comment pointing at the
+  other — **a template layout change has to be applied by hand in both
+  places**, or the client's own download and the auto-filed copy will silently
+  drift apart.
+- **Known, deliberate gap: no ink-crop server-side.** The browser version crops
+  the signature to its ink bounding box by reading canvas pixel alpha; nothing
+  in the Workers runtime can decode a PNG's pixels without a hand-rolled
+  decoder, which would have been a second unverifiable risk stacked on top of
+  the first (this repo's first bundled import) in the same deploy. The
+  auto-filed copy therefore embeds the full untrimmed 600×180 signature pad,
+  contain-fit into the same box — legible in every case tested, but a
+  signature occupying only a small part of the pad renders smaller in the
+  auto-filed copy than in a manually-downloaded one. Real fix, not done here:
+  either move the crop to capture time (store an already-cropped image so every
+  consumer, including this one, needs no cropping logic at all) or write a real
+  PNG alpha decoder — flagged here as a follow-up, not silently accepted.
+- **Cannot be bundled or executed locally before deploy.** Node itself DOES run
+  on this machine (`node --check` genuinely parsed both `worker.js` and
+  `agreement-pdf-worker.js` clean — real verification, not visual inspection),
+  but `wrangler`/`workerd` cannot install: the shell layer reports `x86_64`, but
+  the actual Node install underneath is `win32 arm64`, and workerd has no
+  win32-arm64 build (confirmed directly — `npm install wrangler` fails with
+  `Unsupported platform: win32 arm64 LE` inside workerd's own installer). So the
+  syntax is genuinely confirmed correct; the actual Cloudflare bundling step
+  (resolving the relative imports, producing a working Worker) is not, and
+  cannot be locally. The Cloudflare fact that makes shipping this without that
+  survivable: **Workers Builds does not roll forward on a failed build** — a
+  bundler error fails the *build*, and the previous deployment keeps serving.
+  That claim is a documented characteristic of the platform, not something
+  confirmed against this repo's specific dashboard config, and there is no
+  dashboard access from here to read the actual build log if it ever does fail
+  — only the live site's behavior is checkable, which proves a deploy landed,
+  never *why* one didn't.
+- **Idempotent by filename, not by event count.** The filename is deterministic
+  from the onboarding id, so a client who clears and re-signs re-fires this
+  whole function — and the existing `clientdoc:` KV record is **updated in
+  place** (same id, `uploadedAt` preserved, `updatedAt` advanced), never
+  duplicated; Graph's `conflictBehavior=replace` does the equivalent on the
+  SharePoint side. Verified against the mock: a clear-then-resign on one record
+  produced exactly one document, and a second record's document was untouched.
+  (Timeline entries are a separate matter — `logTimeline`/`Write-Timeline` never
+  dedupes, by existing design, same as the pre-existing `agreement-signed`
+  entry it sits beside; multiple timeline entries for one document is expected,
+  not a bug.)
+- **A third document source, `system`** (distinct from `admin`/`client`) — the
+  existing manual attach flow credits an admin, a client send-in credits the
+  client; this credits neither, since nobody picked a file. Documents tab shows
+  it with a green "auto-filed at signing" badge and "auto-filed \<date\>" instead
+  of "attached by \<admin\>"; the Timeline tab's actor-suppression already
+  excluded `'system'` before this feature existed, so "by system" never leaks
+  into either view.
+- **The manual "File to Client Documents" button still exists, deliberately.**
+  It is the fallback for every agreement signed before this feature shipped
+  (their `nowSigned && !prevSigned` transition already happened, so auto-filing
+  never fires for them) and the retry path if the automatic filing ever fails
+  silently in the background.
+- Guarded the same way the manual button is: skips entirely, no error, when
+  `SHAREPOINT_CLIENT_DOCS_LIST_ID` isn't set.
+- **Real-Graph-unverified**, same category as Emails/Meetings/Learning above:
+  no Azure credentials in this environment to run the actual Graph PUT against
+  a live SharePoint drive. Verified here: the trigger condition, the
+  find-or-update dedup logic, and the frontend rendering — all against the
+  mock's simulated *outcome* (`Invoke-MockAutoFileAgreement` in
+  `dev-server.ps1`, which fabricates a plausible record rather than running any
+  real PDF/Graph code — PowerShell cannot execute `agreement-pdf-worker.js` or
+  `pdf-lib` at all). NOT verified: that `PDFDocument.load()`/`embedPng()`/
+  `embedFont()` actually succeed against the real template in the real Workers
+  runtime, and that the Graph PUT's URL/query-param shape
+  (`.../content?@microsoft.graph.conflictBehavior=replace`) is accepted as
+  written — first real signature against a live, Graph-connected deployment is
+  the actual test.
+
 **Legacy data:** records saved before the module rework (top-level
 `budget`/`riskAnswers`) are ignored by `loadModules()` — those were test data.
 Clients from that era just see an empty dashboard.
@@ -264,7 +465,7 @@ Client portal is untouched and keeps its own look.
   / "Full record →" controls become links to `/admin/onboarding.html?id=…`**
   instead of tab jumps — they stay live rather than becoming dead buttons.
   Onboarding *data* is untouched: the Onboarding page, the submissions, the
-  auto-tasks and the signed agreements shown on the Documents tab all still work.
+  auto-tasks and the signed agreement filed to the Documents tab all still work.
 - **Emails** (no storage — `fetchClientEmailHistory()` in worker.js) is a LIVE
   read of a client's email history via Microsoft Graph, fetched fresh every time
   the tab is opened and never written anywhere. Needs the same app registration
@@ -323,11 +524,25 @@ Client portal is untouched and keeps its own look.
   - Real-Graph-unverified, like the Learning and Client Documents uploads: no
     Azure credentials in this environment to test the actual `$search` query
     against a live mailbox.
+- The **Documents tab is exactly two panels**: **Requested Documents** (what
+  you're still waiting on) then **Attached Documents** (what has arrived).
+  Requests come first because an outstanding ask matters more than a delivered
+  file. There is deliberately **no per-agreement panel** — a signed advisory
+  agreement is not a third category of thing, it is a document that arrived, so
+  it renders as an Attached Documents row like everything else (see
+  `autoFileSignedAgreement`). The old panels duplicated what the row already
+  says, and the signature image they displayed is visible inside the filed PDF.
+  The family/company Documents tab matches, for the same reason.
 - **Attached client documents** (`clientdoc:<email>:<invTs>-<rand>` KV,
-  **encrypted**) sit at the TOP of the Documents tab, above the signed
-  onboarding agreements: the agreements are a fixed historical record, this is
-  the part that gets added to. Attach with a display name; rename and delete
-  from the row.
+  **encrypted**) are the tab's second panel. Attach with a display name; rename
+  and delete from the row. Three **sources** render distinctly, because crediting
+  the wrong party is worse than saying nothing: `admin` (a staff attachment,
+  "attached … by <staff>"), `client` (a portal send-in — "sent … by the client",
+  sky "from client" badge; `staffLabel` would otherwise render a client's email
+  as if they were staff), and `system` (the agreement that filed itself at
+  signing — "auto-filed …", green "auto-filed at signing" badge, and **no
+  by-line at all**, since nobody attached it). Both the person tab and the
+  family/company tab implement all three.
   - **Bytes and metadata live in different stores.** The file goes to a
     SharePoint document library ("Client Documents"), filed under the client's
     **family folder** (see below), through the same chunked upload-session
@@ -373,6 +588,109 @@ Client portal is untouched and keeps its own look.
     `fileDeleted: false`; the alternative is a row that can't be removed at all.
   - Needs `SHAREPOINT_CLIENT_DOCS_LIST_ID`. Unset → `configured: false` and the
     panel names the missing setting instead of looking broken.
+- **Spreadsheet import** (`Import…` in the Contacts page head) builds people,
+  families and companies from a **CSV**, using only the endpoints that already
+  exist — contact upsert and household create/update — so there is no
+  import-specific server code, and every row passes the same validation a
+  hand-typed record does. CSV rather than `.xlsx` because reading a real workbook
+  needs a ~1MB library and every spreadsheet tool exports CSV; the modal says so
+  rather than leaving it to a failed upload.
+  - **Export key documents** (third button in the Import / Export rail) is a
+    deliberately narrow companion sheet: `Type, Name, IPS, AdvisoryAgreement`,
+    one row per family/company, no people. The full export carries the same two
+    date columns, but ~150 contact rows around them make it the wrong tool for
+    "fill in who has signed what". The file re-imports as-is, since `Type` +
+    `Name` is all the importer needs to locate a grouping. Groupings with no
+    dates yet are included on purpose — they are the ones needing filling in —
+    and the status line counts them. Respects the type filter like its sibling
+    button, but says so rather than silently downloading a header-only file when
+    the filter is set to People only.
+  - **Two modes, "Add and update only" being the default.** *Replace everything*
+    treats the
+    file as the whole contact list: anyone not in it is **archived** and any
+    family/company not in it is **deleted**. *Add and update only* never removes
+    anything. The asymmetry is forced by what the API offers — there is no
+    hard-delete for a contact anywhere in the app, only archive, which is the
+    safer primitive anyway: it is reversible from the Archived tab and keeps the
+    person's tasks, notes, timeline and documents (verified). A grouping has only
+    a hard DELETE, so that half is **not** reversible, though its members' contact
+    records survive it.
+    - The additive mode is the **default**, and `importMode()` falls back to it if
+      the radios ever fail to render: the common case is a small sheet covering a
+      few households, where a file that omits everyone else must not be read as
+      an instruction to archive them. Replace was briefly the default; a
+      key-documents sheet naming one household would then have proposed archiving
+      every other contact on open — blocked by the typed `REPLACE` guard, but the
+      wrong thing to land on by not reading.
+    - "In the file" includes groupings named only through a person's `Household`
+      column, not just explicit Family/Company rows — otherwise importing people
+      would delete the very families the same file is putting them into.
+    - Removals are measured against **all** records, never the filtered view: a
+      search box left open must not silently decide who survives.
+    - Already-archived contacts are excluded (nothing to do), and removals run
+      **last**, after every create/update has succeeded — the opposite order
+      could delete the old list and then fail to write the new one.
+    - The preview **names** what will go, not just counts it, and flags how many
+      of them hold a client portal login (which archiving does **not** disable).
+      The run button stays disabled until `REPLACE` is typed, and a file naming
+      no grouping at all says so explicitly, since that case would otherwise
+      quietly wipe every family and company.
+  - **Two steps, always.** Choosing a file only ever *previews*: a per-row table
+    of exactly what will happen, plus counts, plus a confirm button that names
+    the number. A bulk CRM write has no undo, so "picked the wrong file" must not
+    be able to become "created 300 junk contacts". Everything shown comes from
+    the same plan object the run then executes, so the preview cannot disagree
+    with the outcome.
+  - **Headers are aliased** (`Full Name`, `E-mail Address`, `Mobile`, `Family`,
+    `Relationship`, …, case/punctuation-insensitive) because advisors export from
+    somewhere else; unrecognised columns are listed as ignored rather than
+    silently dropped. A real CSV parser handles quoted commas, `""` escapes,
+    embedded newlines, CRLF and Excel's UTF-8 BOM — `split(',')` would corrupt
+    any address column.
+  - **A person's `Household` column find-or-creates the grouping** and joins them
+    with `Role` (unknown role → `other`, matching the server), and the contact's
+    free-text `household` label is kept in step. An explicit `Family`/`Company`
+    row supersedes one implied by a Household column **wherever it sits in the
+    file** — resolved after the whole pass, because a person row can appear
+    *above* the row declaring their family, and de-duplicating mid-pass created
+    the grouping twice, once from each path. There is a second guard at execution
+    time, since the failure it prevents is a duplicate grouping in the live CRM.
+  - **Idempotent**: contacts upsert by email, groupings match by name+kind, and a
+    person already in a grouping keeps their existing role rather than having it
+    rewritten from a blank cell. Verified by importing the same file twice — the
+    second run previewed "create 0, update 3" and changed no counts.
+  - **Row numbers are true file lines**, not positions in the filtered list, so
+    "Row 9" means row 9 in the sheet the advisor is about to go and fix.
+  - **`IPS` and `AdvisoryAgreement` columns** carry key-document completion
+    dates in both directions, which is what makes a whole book of clients
+    submittable in one file. They sit at the far right of the export, after
+    `Tags`.
+    - **The dates belong to the family/company, not the person** (see Key
+      Documents above), so a date on a person's row sets it for *their*
+      grouping, resolved by membership first, then their `Household` column,
+      then their stored household label. Export fills every member's row with
+      their grouping's dates, so the sheet reads per-client the way an advisor
+      thinks about it while still writing to one record.
+    - That routing has three consequences, all surfaced in the preview rather
+      than left to be discovered: two rows setting **different** dates on one
+      grouping is a **conflict** (first row wins, both row numbers named); a
+      person in **no** grouping has nowhere to store a date (**orphan**, listed
+      explicitly, the contact still imports); and a **blank cell leaves the
+      stored date alone rather than clearing it**, so round-tripping an export
+      whose rows are mostly blank cannot wipe the firm's dates. Clearing stays a
+      deliberate act in the Overview panel.
+    - **Excel dates are accepted.** A date typed into a spreadsheet arrives as
+      `3/1/2026` far more often than `2026-03-01`; both parse and normalise to
+      the ISO form the API stores. Slash dates are read US-style — there is no
+      way to tell 3/1 from 1/3 without picking a convention. `2/30/2026` is
+      rejected, because `new Date()` rolls it into March rather than failing, so
+      the parse is round-tripped to catch it. A malformed date **fails its row**
+      instead of importing the contact without the date, since a row that looks
+      successful but silently dropped a date is worse than one flagged to fix.
+  - Sequential, not parallel: every contact save also pushes to SharePoint, and a
+    burst of concurrent Graph calls is what gets throttled. Capped at 1000 rows
+    per run for the same reason. Failures are collected per row and reported
+    without stopping the rest — one bad row never aborts a good import.
 - **Additional Info** (`clientinfo:<email>` KV, **encrypted**) — the
   suitability/KYC block: employment, written-agreement offering dates (ADV, CRS,
   privacy, fee/IPS/FP), investment profile, estimated net worth, estimated tax,
@@ -469,6 +787,69 @@ Client portal is untouched and keeps its own look.
     three-member family would otherwise render dozens of charts on one tab);
     Additional Info (individual answers — occupation, licence, health — where a
     form writing to several records at once would be a foot-gun); Onboarding.
+  - **Key Documents** on the grouping's Overview tab records the date an **IPS**
+    and an **Advisory Agreement** were completed (`keyDocuments: {ips,
+    advisoryAgreement}` on the `household:` record, encrypted with the rest of
+    it). Held on the GROUPING rather than per person on purpose: both are
+    executed for a household as a whole, so a copy on each member would be one
+    fact stored N times, free to disagree. Native date inputs, saved with one
+    button, each showing a green "Completed <date>" or amber "Not recorded".
+    - **Being app-only made these dates the victim of a sync bug** (fixed
+      2026-08-13, regression test in `scripts/test-household-sync.js`). Saving a
+      household pushes it to SharePoint, bumping that row's `Modified` to now.
+      The every-minute pull then saw SharePoint as newer than the copy it read
+      and rebuilt the record from it — and because KV is eventually consistent,
+      that copy could still be the pre-save one. Rebuilding from a stale base
+      wiped every field SharePoint has no column for, which is exactly the
+      app-owned set: `keyDocuments`, `kind`, `emailPrimary`, `members`. The
+      push setting `Modified` is what let the timestamp guard pass, so the two
+      faults lined up instead of cancelling. Symptom: a date set by hand or by
+      import reverted to "Not recorded" about a minute later.
+      **The fix is that the pull now writes only when SharePoint actually
+      carries a different value.** In the steady state it does not — the app
+      pushed those values moments ago — so it skips, and a skipped write cannot
+      clobber. Genuine SharePoint edits still differ, so they still flow in.
+      The same pass also stopped `name: undefined` (what
+      `householdFieldsFromSharePoint` returns for a blank Title, meaning "leave
+      it alone") from being spread onto the record and blanking a real household
+      name — object spread copies undefined rather than skipping it.
+      `pushHouseholdToSharePoint` had always filtered this on its own merge; the
+      pull never did. **This is the second time this sync has destroyed
+      app-owned fields** — the contacts version once erased `importantDates` and
+      `archived` on every run — so any future edit to either sync should start
+      by running that test.
+    - **App-side only, never mirrored to SharePoint.** The Households list has no
+      columns for these and Graph fails an entire PATCH on an unknown field —
+      the same trap documented for `kind`. Nothing extra was needed to enforce
+      it: `pushHouseholdToSharePoint` sends an explicit allowlist, so a field it
+      doesn't name is never transmitted. Adding a key document therefore needs
+      no SharePoint change; adding one to that allowlist would break the mirror.
+    - **Merged, not replaced, on save** (`handleAdminUpdateHousehold`): the
+      record spread is shallow, so a PATCH naming one document would otherwise
+      blank the other's date. Sending a key as `''` still clears just that one,
+      because recording a date by mistake has to be undoable. Adding a document
+      means adding its key to `KEY_DOCUMENT_KEYS` in worker.js, `$keyDocumentKeys`
+      in the mock, AND `KEY_DOCUMENTS` in contacts.html — the label list is
+      client-side, but a key the server doesn't know is silently dropped.
+    - Dates render through `fmtDateOnly()`, never `fmtDate()`:
+      `new Date('2026-02-14')` is UTC midnight and shows as the 13th in every US
+      timezone.
+    - **A client signing in the portal sets the Advisory Agreement date
+      automatically** — `recordAdvisoryAgreementDate` (worker.js) fires on the
+      SAME signature-absent-to-present transition as `autoFileSignedAgreement`,
+      a separate `ctx.waitUntil()` task so a SharePoint outage can never block
+      this simple KV write and vice versa. Finds the client's family/company by
+      membership and merges `advisoryAgreement: <signing date>` into
+      `keyDocuments`, exactly as an admin's manual save does — an existing IPS
+      date is untouched. A client in no grouping is the same "orphan" case the
+      CSV importer already surfaces as a warning: nothing to record it against,
+      so nothing happens, silently. Fires once, on the transition, not on every
+      resave — the wizard resends the whole record on every step, so a second
+      save of an already-signed record must not re-fire this or drift the date.
+    - Overview is deliberately **not** in `GROUP_POLL_SKIP_TABS` (its task counts
+      should stay live), so the 20s poll rebuilds this panel underneath a
+      half-typed date. A draft map carries the inputs across the rebuild, the
+      same fix the Documents tab's request fields use.
   - **Additional Info adds one thing no member's record holds**: a combined
     balance sheet, summed from the same three inputs the per-person derivation
     uses so it cannot disagree with them. Members with nothing recorded

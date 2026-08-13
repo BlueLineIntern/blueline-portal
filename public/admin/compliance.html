@@ -522,11 +522,6 @@
       <select id="d-area"></select>
     </div>
     <div class="field">
-      <label for="d-waiting">Waiting on</label>
-      <input type="text" id="d-waiting" maxlength="200" placeholder="e.g. custodian report, pending legal review" />
-      <p class="cmp-hint">Fill this in only while the item is blocked — it moves the item to the Waiting status.</p>
-    </div>
-    <div class="field">
       <label for="d-notes">Notes</label>
       <textarea id="d-notes" rows="3" maxlength="2000" placeholder="e.g. deferred to Q3, see email from custodian"></textarea>
     </div>
@@ -1559,7 +1554,6 @@
     document.getElementById('d-source').value = it.source || '';
     document.getElementById('d-notes').value = it.notes || '';
     document.getElementById('d-requirement').value = it.requirement || 'Best practice';
-    document.getElementById('d-waiting').value = it.waitingOn || '';
     // Rebuilt each open so a newly added area shows without a reload.
     document.getElementById('d-area').innerHTML =
       '<option value="">— not set —</option>' + areas.map((a) =>
@@ -1611,7 +1605,7 @@
     drawerMode = 'new';
     drawerId = null;
     document.getElementById('drawer-title').textContent = 'New compliance item';
-    populateDrawer({ dueDate: todayIso(), owner: owners[0], reviewer: 'N/A', requirement: 'Best practice', complianceArea: '', waitingOn: '' });
+    populateDrawer({ dueDate: todayIso(), owner: owners[0], reviewer: 'N/A', requirement: 'Best practice', complianceArea: '' });
     openDrawer();
     document.getElementById('d-item').focus();
   }
@@ -1654,7 +1648,10 @@
       reviewer: document.getElementById('d-reviewer').value,
       requirement: document.getElementById('d-requirement').value,
       complianceArea: document.getElementById('d-area').value,
-      waitingOn: document.getElementById('d-waiting').value.trim(),
+      // waitingOn is deliberately NOT sent. The field that set it was removed
+      // from this form, and sanitizeComplianceFields only touches keys the body
+      // actually names — so a save leaves any value already recorded alone
+      // rather than silently erasing it.
     };
     if (!payload.item) { setStatus('Item name is required.'); return; }
     if (!payload.dueDate) { setStatus('Due date is required.'); return; }

@@ -217,6 +217,37 @@ $householdRoles = @('head', 'spouse', 'partner', 'child', 'dependent', 'other')
 $companyRoles = @('primary', 'owner', 'officer', 'employee', 'other')
 $groupKinds = @('family', 'company')
 
+# Firm-level documents tracked per grouping. Mirrors KEY_DOCUMENT_KEYS in
+# worker.js -- keep the two lists in step.
+$keyDocumentKeys = @('ips', 'advisoryAgreement')
+
+# Mirror worker.js sanitizeHouseholdFields' keyDocuments handling: only the keys
+# actually sent are touched, an empty string clears one on purpose, and anything
+# that is not YYYY-MM-DD is rejected rather than stored. $existing is merged
+# underneath so a partial save cannot blank a sibling date, matching the merge
+# handleAdminUpdateHousehold does. Returns @{ docs = ... } or @{ error = ... }.
+function Read-KeyDocuments($body, $existing) {
+    $out = [ordered]@{}
+    # [ordered] is an OrderedDictionary: it has .Contains(), NOT .ContainsKey().
+    if ($existing -is [System.Collections.IDictionary]) {
+        foreach ($k in $keyDocumentKeys) {
+            if ($existing.Contains($k)) { $out[$k] = [string]$existing[$k] }
+        }
+    }
+    if (-not $body.PSObject.Properties['keyDocuments']) { return @{ docs = $out } }
+    $kd = $body.keyDocuments
+    if ($null -eq $kd) { return @{ docs = $out } }
+    foreach ($k in $keyDocumentKeys) {
+        if (-not $kd.PSObject.Properties[$k]) { continue }
+        $v = ([string]$kd.$k).Trim()
+        if ($v -and ($v -notmatch '^\d{4}-\d{2}-\d{2}$')) {
+            return @{ error = "$k date must be YYYY-MM-DD" }
+        }
+        $out[$k] = $v
+    }
+    return @{ docs = $out }
+}
+
 # Mirror worker.js sanitizeHouseholdFields' member handling: valid emails only,
 # a known role, and no one listed twice.
 function ConvertTo-HouseholdMembers($raw, $kind) {
@@ -550,6 +581,55 @@ function Resolve-ClientDocFolder($email) {
     return Get-UniqueDocFolder $folder $addr $peopleHolders
 }
 
+# Mirrors worker.js's autoFileSignedAgreement — but only its OBSERVABLE
+# behavior (the clientdoc record and timeline entry), not the PDF generation or
+# Graph call. There is no Node here and this mock is PowerShell, so it cannot
+# run pdf-lib or agreement-pdf-worker.js; a fake webUrl stands in for a real
+# SharePoint one. What this DOES let a local test confirm: the find-or-update
+# idempotency (a re-sign updates the same record instead of duplicating it),
+# and the frontend's rendering of a source:'system' document.
+function Invoke-MockAutoFileAgreement($id, $clientEmail, $onboardingData) {
+    $filename = "Advisory_Agreement_$($id -replace '[^A-Za-z0-9._-]+','_')_signed.pdf"
+    $folder = Resolve-ClientDocFolder $clientEmail
+    $existing = @($clientDocs.Values | Where-Object { $_.client -eq $clientEmail -and $_.filename -eq $filename }) | Select-Object -First 1
+    $script:docCounter++
+    $docId = if ($existing) { $existing.id } else { "$($clientEmail):$($script:docCounter)" }
+    $nowIso = (Get-Date).ToString('o')
+    $rec = [ordered]@{
+        id = $docId; client = $clientEmail
+        name = "Advisory Agreement (Signed) - $id"
+        filename = $filename; folder = $folder
+        webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/ClientDocuments/$folder/$filename"
+        driveId = 'mock-drive'; driveItemId = "item-$($script:docCounter)"
+        size = 63000; uploadedBy = 'system'; source = 'system'
+        uploadedAt = if ($existing) { $existing.uploadedAt } else { $nowIso }
+        updatedAt = $nowIso
+    }
+    $clientDocs[$docId] = $rec
+    Write-Timeline $clientEmail 'agreement-filed' 'system' @{ onboardingId = $id; webUrl = $rec.webUrl }
+}
+
+# Mirrors worker.js's recordAdvisoryAgreementDate: fires on the same signing
+# transition as Invoke-MockAutoFileAgreement, sets keyDocuments.advisoryAgreement
+# on the client's family/company to the signing date, and does nothing if they
+# are in no grouping. Merges rather than replaces keyDocuments -- an existing
+# ips date must survive this write, same reasoning as the worker.
+function Invoke-MockRecordAdvisoryDate($clientEmail, $signedAt) {
+    $date = ([string]$signedAt)
+    if ($date.Length -ge 10) { $date = $date.Substring(0, 10) }
+    if ($date -notmatch '^\d{4}-\d{2}-\d{2}$') { return }
+    $addr = $clientEmail.ToLower()
+    $hh = $null
+    foreach ($h in $households.Values) {
+        if (@($h.members) | Where-Object { $_.email -and ([string]$_.email).ToLower() -eq $addr }) { $hh = $h; break }
+    }
+    if (-not $hh) { return }
+    $docs = if ($hh.Contains('keyDocuments') -and $hh.keyDocuments) { $hh.keyDocuments } else { [ordered]@{} }
+    $docs['advisoryAgreement'] = $date
+    $hh.keyDocuments = $docs
+    $hh.updatedAt = (Get-Date).ToString('o')
+}
+
 # Assignees are admin accounts only (board lists are a separate grouping).
 function Test-AssigneeAllowed($a) {
     $a = ([string]$a).Trim().ToLower()
@@ -819,7 +899,7 @@ function Send-Json($ctx, $code, $obj) {
 }
 
 function Send-File($ctx, $path) {
-    $types = @{ '.html'='text/html'; '.css'='text/css'; '.js'='application/javascript'; '.png'='image/png'; '.svg'='image/svg+xml' }
+    $types = @{ '.html'='text/html'; '.css'='text/css'; '.js'='application/javascript'; '.png'='image/png'; '.svg'='image/svg+xml'; '.pdf'='application/pdf' }
     $ext = [IO.Path]::GetExtension($path).ToLower()
     $ctx.Response.ContentType = if ($types[$ext]) { $types[$ext] } else { 'application/octet-stream' }
     # Mirrors serveAsset in worker.js. Without this the mock sent no
@@ -1833,6 +1913,8 @@ while ($listener.IsListening) {
             if ($body.PSObject.Properties['status'] -and $contactStatuses -notcontains ([string]$body.status)) {
                 Send-Json $ctx 400 @{ error = 'Invalid status' }; continue
             }
+            $kdCreate = Read-KeyDocuments $body $null
+            if ($kdCreate.error) { Send-Json $ctx 400 @{ error = $kdCreate.error }; continue }
             $script:householdCounter++
             $id = 'hh-{0:d6}' -f $script:householdCounter
             $rec = [ordered]@{
@@ -1845,6 +1927,7 @@ while ($listener.IsListening) {
                 advisorRep = ([string]$body.advisorRep).Trim()
                 contactType = ([string]$body.contactType).Trim()
                 background = ([string]$body.background).Trim()
+                keyDocuments = $kdCreate.docs
                 tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() })
                 status = if ($contactStatuses -contains ([string]$body.status)) { [string]$body.status } else { 'active' }
                 archived = $false
@@ -1891,6 +1974,14 @@ while ($listener.IsListening) {
                 if ($body.PSObject.Properties[$f]) { $rec[$f] = ([string]$body.$f).Trim() }
             }
             if ($body.PSObject.Properties['emailPrimary']) { $rec.emailPrimary = [bool]$body.emailPrimary }
+            # Merged over what is stored, matching handleAdminUpdateHousehold:
+            # a PATCH naming one key document must not blank the others.
+            if ($body.PSObject.Properties['keyDocuments']) {
+                $existingDocs = if ($rec.Contains('keyDocuments')) { $rec.keyDocuments } else { $null }
+                $merged = Read-KeyDocuments $body $existingDocs
+                if ($merged.error) { Send-Json $ctx 400 @{ error = $merged.error }; continue }
+                $rec.keyDocuments = $merged.docs
+            }
             if ($body.PSObject.Properties['archived']) { $rec.archived = [bool]$body.archived }
             if ($body.PSObject.Properties['tags']) { $rec.tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() }) }
             $rec.updatedAt = (Get-Date).ToString('o')
@@ -2437,6 +2528,8 @@ while ($listener.IsListening) {
                         description = "$clientEmail signed the advisory agreement. Begin account opening."
                         category = 'onboarding'
                     }
+                    Invoke-MockAutoFileAgreement $id $clientEmail $body.data
+                    Invoke-MockRecordAdvisoryDate $clientEmail $body.data.agreement.signedAt
                 }
                 Sync-OnboardingContact $clientEmail $rec
             }

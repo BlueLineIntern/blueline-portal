@@ -1,3 +1,13 @@
+// This repo has no package.json/build pipeline (see STATUS.md), so this MUST
+// stay a relative-path import of a file already committed to the repo, never a
+// bare specifier like `import ... from 'pdf-lib'` — a bare specifier needs npm
+// dependency resolution at build time, which nothing here provides. The
+// vendored file has zero imports of its own (`vendor/pdf-lib.esm.min.js`, a
+// real ESM build with all its dependencies already inlined), so this needs no
+// node_modules to resolve — just esbuild walking a relative path on disk,
+// which Cloudflare's bundler does regardless of package.json.
+import { buildSignedAgreementServer, resolveClientNameServer } from './agreement-pdf-worker.js';
+
 /**
  * BlueLine Advisors Client Onboarding Portal — Cloudflare Worker API
  *
@@ -2011,7 +2021,7 @@ async function handleOnboardingStart(request, env, cors) {
   return json({ onboardingId, writeToken, startTime: record.startTime }, 201, cors);
 }
 
-async function handleOnboardingSave(request, env, cors, onboardingId) {
+async function handleOnboardingSave(request, env, cors, onboardingId, ctx) {
   if (!ONBOARDING_ID_PATTERN.test(onboardingId)) {
     return json({ error: 'Invalid onboarding id' }, 400, cors);
   }
@@ -2080,6 +2090,20 @@ async function handleOnboardingSave(request, env, cors, onboardingId) {
         description: `${clientEmail} signed the advisory agreement. Begin account opening.`,
         category: 'onboarding',
       });
+      // Best-effort, in the background: must never delay or fail the client's
+      // save request, which is what THEY are waiting on right now. If this
+      // throws, the admin's manual "File to Client Documents" button on the
+      // Documents tab is still there as a fallback — nothing here is the only
+      // way this ever gets filed.
+      const filingTask = autoFileSignedAgreement(env, onboardingId, clientEmail, record.data)
+        .catch((err) => console.error('Auto-file to SharePoint failed for', onboardingId, err));
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(filingTask);
+      // A SEPARATE background task, not folded into the SharePoint filing above:
+      // a Graph outage must never stop this simple KV write, and a signature on
+      // a date the server can't parse must never stop the filing.
+      const keyDocTask = recordAdvisoryAgreementDate(env, clientEmail, d.agreement.signedAt)
+        .catch((err) => console.error('Recording the advisory agreement date failed for', onboardingId, err));
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(keyDocTask);
     }
     // The CRM follows the wizard: mid-workflow the person is 'onboarding', and
     // finishing hands them to Contacts as a live client. Runs on every save so
@@ -2824,6 +2848,10 @@ async function syncSharePointHouseholds(env) {
   let synced = 0;
   let skipped = 0;
   let skippedNewerLocal = 0;
+  // Rows SharePoint reported as newer but whose SharePoint-owned fields already
+  // match ours — the steady state after any app-side save, and the case that
+  // must not write. See the note in the loop.
+  let skippedNoChange = 0;
   for (const item of data.value || []) {
     const fields = item.fields || {};
     const hhId = String(fields.HouseholdId || '').trim();
@@ -2837,16 +2865,53 @@ async function syncSharePointHouseholds(env) {
       if (localUpdated.getTime() >= spModified.getTime()) { skippedNewerLocal += 1; continue; }
     }
 
+    // The timestamp guard above is NOT sufficient on its own, and this is where
+    // key-document dates were being silently destroyed about a minute after
+    // being set.
+    //
+    // Saving a household pushes it to SharePoint, which bumps that row's
+    // Modified to now. This pull then runs within the minute, sees Modified as
+    // newer than the copy it just read, and rebuilds the record from that copy.
+    // KV is eventually consistent, so the copy read above can still be the
+    // pre-save one — and rebuilding from a stale base wipes every field
+    // SharePoint has no column for. Those fields are exactly the app-owned ones:
+    // keyDocuments, kind, emailPrimary, members. The push having set Modified is
+    // what makes the guard let a stale read through, so the two faults line up
+    // precisely rather than cancelling out.
+    //
+    // The defence is to make the write conditional on SharePoint actually
+    // carrying something different. In the steady state it does not: the app
+    // pushed those very values moments ago, so the fields match and this skips,
+    // and a skipped write cannot clobber anything. A row genuinely edited in
+    // SharePoint still differs, so real edits still flow in.
+    // undefined is stripped, not spread. householdFieldsFromSharePoint returns
+    // `name: undefined` for a blank Title to mean "leave it alone", but object
+    // spread COPIES an undefined value rather than skipping it — so spreading it
+    // raw would blank a real household name from an empty SharePoint Title.
+    // pushHouseholdToSharePoint already filters this on its own merge; the pull
+    // never did.
+    const spFields = Object.fromEntries(
+      Object.entries(householdFieldsFromSharePoint(fields)).filter(([, v]) => v !== undefined)
+    );
+    // Re-read as late as possible too. It does not make KV strongly consistent,
+    // but it shrinks the stale window from "however long this whole loop takes"
+    // to a single get, and costs one read on a path that was about to write.
+    const fresh = (await decryptToObject(env, await env.PORTAL_KV.get(`household:${hhId}`))) || existing;
+    const changed = Object.entries(spFields).some(([k, v]) => (
+      v !== undefined && JSON.stringify(fresh[k]) !== JSON.stringify(v)
+    ));
+    if (!changed) { skippedNoChange += 1; continue; }
+
     const record = {
-      ...existing,
-      ...householdFieldsFromSharePoint(fields),
+      ...fresh,
+      ...spFields,
       sharePointItemId: item.id,
       updatedAt: spModified ? spModified.toISOString() : new Date().toISOString(),
     };
     await env.PORTAL_KV.put(`household:${hhId}`, await encryptJSON(env, record));
     synced += 1;
   }
-  return { synced, skipped, skippedNewerLocal, timestamp: new Date().toISOString() };
+  return { synced, skipped, skippedNewerLocal, skippedNoChange, timestamp: new Date().toISOString() };
 }
 
 // Remove a household's backup row when the grouping itself is deleted in the
@@ -4550,6 +4615,122 @@ async function getClientDocsDriveId(env, token) {
   return drive.id;
 }
 
+// Fires once, automatically, the instant a client's signature transitions from
+// absent to present (see the nowSigned && !prevSigned check in
+// handleOnboardingSave) — no admin click involved. Uses the SAME Graph
+// plumbing as the manual "File to Client Documents" button
+// (resolveClientDocFolder, getGraphToken, getClientDocsDriveId) so a signature
+// filed automatically lands in exactly the folder a manual attach would have
+// used. Skips silently (not an error) when SharePoint isn't configured — same
+// rule the manual button already follows.
+// Fires on the SAME transition as autoFileSignedAgreement (signature absent ->
+// present), so signing in the portal shows up on the client's family/company
+// Overview — Key Documents — Advisory Agreement without an admin typing it in
+// by hand.
+//
+// A direct KV read-modify-write, NOT a full save through
+// handleAdminUpdateHousehold: this must only ever touch keyDocuments.advisoryAgreement,
+// never risk disturbing Members, Name, or triggering the two-way SharePoint
+// contact mirror as a side effect of an automated background action.
+// keyDocuments is merged, matching sanitizeHouseholdFields/handleAdminUpdateHousehold:
+// an existing IPS date must survive this write untouched.
+//
+// Silently does nothing if the client is in no family or company yet — the same
+// "orphan" case the CSV importer surfaces as a warning rather than an error, and
+// consistent with the manual Key Documents panel having nowhere to put a date
+// for someone who isn't in a grouping either.
+//
+// Overwrites rather than preserving an earlier date on purpose: a clear-and-resign
+// re-fires this whole function, and the recorded date should reflect the LATEST
+// real signature, not the first — the same reasoning autoFileSignedAgreement
+// already uses for why its SharePoint upload is conflictBehavior=replace.
+async function recordAdvisoryAgreementDate(env, clientEmail, signedAt) {
+  const date = String(signedAt || '').slice(0, 10);
+  if (!isIsoDate(date)) return;
+  const addr = String(clientEmail || '').trim().toLowerCase();
+  const { items } = await readAllEncrypted(env, 'household:');
+  const hh = items.find((h) => h && h.id && (h.members || [])
+    .some((m) => m && String(m.email || '').toLowerCase() === addr));
+  if (!hh) return;
+  const record = {
+    ...hh,
+    keyDocuments: { ...(hh.keyDocuments || {}), advisoryAgreement: date },
+    updatedAt: new Date().toISOString(),
+  };
+  await env.PORTAL_KV.put(`household:${hh.id}`, await encryptJSON(env, record));
+}
+
+async function autoFileSignedAgreement(env, onboardingId, clientEmail, data) {
+  if (!env.SHAREPOINT_CLIENT_DOCS_LIST_ID) return;
+  const agreement = data && data.agreement;
+  if (!agreement || !agreement.signatureDataUrl) return;
+
+  const templateRes = await env.ASSETS.fetch(new Request('https://assets.local/onboarding/advisory-agreement.pdf'));
+  if (!templateRes.ok) throw new Error('Could not read the agreement template asset');
+  const templateBytes = await templateRes.arrayBuffer();
+
+  const pdfBytes = await buildSignedAgreementServer(templateBytes, {
+    signatureDataUrl: agreement.signatureDataUrl,
+    signedAt: agreement.signedAt,
+    clientName: resolveClientNameServer(data),
+  });
+
+  const filename = `Advisory_Agreement_${onboardingId.replace(/[^A-Za-z0-9._-]+/g, '_')}_signed.pdf`;
+  const token = await getGraphToken(env);
+  const driveId = await getClientDocsDriveId(env, token);
+  const folder = await resolveClientDocFolder(env, clientEmail);
+  const path = `${folder}/${filename}`;
+  const uploadUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/`
+    + `${path.split('/').map(encodeURIComponent).join('/')}:/content`
+    // `replace`, not `rename`: the filename is fully deterministic from
+    // onboardingId, so a name collision on this exact path is always the SAME
+    // logical document (a re-sign after Clear), never an unrelated file. A
+    // client can clear and re-sign, which re-fires this whole function; the
+    // filed copy should reflect the latest signature, not accumulate
+    // "(1)", "(2)" copies of a superseded one.
+    + `?@microsoft.graph.conflictBehavior=replace`;
+  const uploadRes = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/pdf' },
+    body: pdfBytes,
+  });
+  if (!uploadRes.ok) {
+    throw new Error('Graph rejected the auto-filed agreement (' + uploadRes.status + '): '
+      + (await uploadRes.text()).slice(0, 300));
+  }
+  const item = await uploadRes.json();
+
+  // Find-or-update by filename (not create-always): the filename is
+  // deterministic, so a re-sign must UPDATE the existing clientdoc record in
+  // place, or the Documents tab would show two rows for what Graph just
+  // replaced as one file.
+  const { items: existingDocs } = await readAllEncrypted(env, `clientdoc:${clientEmail}:`);
+  const existing = existingDocs.find((d) => d.filename === filename);
+  const nowIso = new Date().toISOString();
+  const docRecord = {
+    id: existing ? existing.id : `${clientEmail}:${invTs()}-${randomHex(4)}`,
+    client: clientEmail,
+    name: `Advisory Agreement (Signed) — ${onboardingId}`,
+    filename,
+    folder,
+    webUrl: item.webUrl || '',
+    driveId,
+    driveItemId: item.id || '',
+    size: typeof item.size === 'number' ? item.size : pdfBytes.byteLength,
+    // Distinct from 'admin' (a staff attachment) and 'client' (a client send-in)
+    // — this was neither; nobody picked a file, the record filed itself. The
+    // Documents tab must render this source distinctly rather than crediting an
+    // admin who didn't do it.
+    uploadedBy: 'system',
+    source: 'system',
+    category: 'miscellaneous',
+    uploadedAt: existing ? existing.uploadedAt : nowIso,
+    updatedAt: nowIso,
+  };
+  await env.PORTAL_KV.put(`clientdoc:${docRecord.id}`, await encryptJSON(env, docRecord));
+  await logTimeline(env, clientEmail, 'agreement-filed', 'system', { onboardingId, webUrl: docRecord.webUrl });
+}
+
 async function handleAdminListClientDocs(request, env, cors, email) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -5309,6 +5490,10 @@ async function handleAdminListClientEmails(request, env, cors, email) {
 // importantDates on a contact. A record written before `kind` existed has none,
 // and reads as a family (see handleAdminListHouseholds).
 const GROUP_KINDS = ['family', 'company'];
+// Firm-level documents whose completion date is tracked per grouping. Adding
+// one here is the only server-side change needed; the admin UI renders its own
+// labels from the same key list.
+const KEY_DOCUMENT_KEYS = ['ips', 'advisoryAgreement'];
 const HOUSEHOLD_ROLES = ['head', 'spouse', 'partner', 'child', 'dependent', 'other'];
 const COMPANY_ROLES = ['primary', 'owner', 'officer', 'employee', 'other'];
 const HOUSEHOLD_EMAIL_TYPES = ['', 'work', 'home', 'other'];
@@ -5372,6 +5557,34 @@ function sanitizeHouseholdFields(body, existingKind) {
     const t = String(body.emailType || '').trim().toLowerCase();
     if (!HOUSEHOLD_EMAIL_TYPES.includes(t)) return { error: 'Invalid email type' };
     out.emailType = t;
+  }
+  // Key documents: the date each was completed, held on the GROUPING rather
+  // than per-person, because an IPS and an advisory agreement are executed for
+  // a household as a whole — recording them on each member would be the same
+  // fact stored N times, free to disagree.
+  //
+  // App-side only, like `kind` and a contact's importantDates: the SharePoint
+  // Households list has no columns for these, and Graph fails the whole PATCH
+  // on an unknown field. Nothing extra is needed to enforce that — the mirror
+  // in pushHouseholdToSharePoint sends an explicit allowlist, so a field it
+  // doesn't name is never transmitted.
+  if (body.keyDocuments !== undefined) {
+    if (typeof body.keyDocuments !== 'object' || body.keyDocuments === null || Array.isArray(body.keyDocuments)) {
+      return { error: 'Key documents must be an object' };
+    }
+    const docs = {};
+    for (const key of KEY_DOCUMENT_KEYS) {
+      if (body.keyDocuments[key] === undefined) continue;
+      const v = String(body.keyDocuments[key] || '').trim().slice(0, 10);
+      // Empty clears the date — "we recorded this by mistake" has to be
+      // undoable, so a blank is a valid value rather than a rejected one.
+      if (v && !isIsoDate(v)) return { error: `${key} date must be YYYY-MM-DD` };
+      docs[key] = v;
+    }
+    // Only the keys actually sent appear here. handleAdminUpdateHousehold
+    // merges this over the stored value — the record spread is shallow, so
+    // replacing wholesale would let a PATCH naming one document blank another.
+    out.keyDocuments = docs;
   }
   if (body.emailPrimary !== undefined) out.emailPrimary = !!body.emailPrimary;
   if (body.assignedTo !== undefined) out.assignedTo = String(body.assignedTo || '').trim().toLowerCase().slice(0, 200);
@@ -5446,6 +5659,7 @@ async function handleAdminCreateHousehold(request, env, cors) {
     advisorRep: fields.advisorRep || '',
     contactType: fields.contactType || '',
     background: fields.background || '',
+    keyDocuments: fields.keyDocuments || {},
     tags: fields.tags || [],
     status: fields.status || 'active',
     archived: false,
@@ -5484,6 +5698,12 @@ async function handleAdminUpdateHousehold(request, env, cors, id) {
   if (body.archived !== undefined) {
     fields.archived = !!body.archived;
     fields.archivedAt = body.archived ? new Date().toISOString() : null;
+  }
+  // Merged, not replaced: the spread below is shallow, so a PATCH naming only
+  // one key document would otherwise wipe the dates recorded for the others.
+  // Sending a key with an empty string still clears that one on purpose.
+  if (fields.keyDocuments) {
+    fields.keyDocuments = { ...(existing.keyDocuments || {}), ...fields.keyDocuments };
   }
   let record = {
     ...existing,
@@ -6701,7 +6921,7 @@ async function serveAsset(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const cors = resolveCorsOrigin(request, url, env);
 
@@ -6752,7 +6972,7 @@ export default {
       }
       const onbMatch = url.pathname.match(/^\/api\/onboarding\/(BLA-ONB-\d{4}-\d{4})$/);
       if (onbMatch && request.method === 'POST') {
-        return await handleOnboardingSave(request, env, cors, onbMatch[1]);
+        return await handleOnboardingSave(request, env, cors, onbMatch[1], ctx);
       }
       if (url.pathname === '/api/admin/login' && request.method === 'POST') {
         return await handleAdminLogin(request, env, cors);

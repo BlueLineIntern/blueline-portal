@@ -1012,6 +1012,44 @@ document.getElementById("export-audit").addEventListener("click", () => {
   download("audit_record.json", buildAuditJson(), "application/json");
 });
 
+// The client's own copy of what they signed: the captured signature stamped onto
+// the advisory agreement template (see assets/sign-agreement.js). Built in the
+// browser on demand and never stored — admin regenerates the same document from
+// the same signature on the contact's Documents tab, so the two cannot diverge.
+document.getElementById("export-signed-pdf").addEventListener("click", (e) => {
+  const btn = e.currentTarget;
+  const err = document.getElementById("signed-pdf-error");
+  const agreement = state.data.agreement || {};
+  err.textContent = "";
+
+  if (!agreement.signatureDataUrl) {
+    err.textContent =
+      "No signature was captured. Go back to the Advisory Agreement step and sign the box.";
+    return;
+  }
+
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Preparing PDF…";
+
+  window.BlueLineAgreementPdf.download({
+    signatureDataUrl: agreement.signatureDataUrl,
+    signedAt: agreement.signedAt,
+    onboardingId: state.onboardingId,
+    // Replaces the sample name printed on the template. Resolved by the shared
+    // module, not here, so admin's copy picks the same name from the same record.
+    clientName: window.BlueLineAgreementPdf.resolveClientName(state.data),
+  })
+    .catch((buildErr) => {
+      err.textContent =
+        (buildErr && buildErr.message) || "Could not build the signed agreement PDF.";
+    })
+    .finally(() => {
+      btn.disabled = false;
+      btn.textContent = label;
+    });
+});
+
 // ---------- Boot ----------
 
 showStep(state.onboardingId ? Math.min(state.currentStep, STEPS.length - 1) : 0);
