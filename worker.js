@@ -2669,6 +2669,10 @@ async function syncSharePointHouseholds(env) {
   let synced = 0;
   let skipped = 0;
   let skippedNewerLocal = 0;
+  // Rows SharePoint reported as newer but whose SharePoint-owned fields already
+  // match ours — the steady state after any app-side save, and the case that
+  // must not write. See the note in the loop.
+  let skippedNoChange = 0;
   for (const item of data.value || []) {
     const fields = item.fields || {};
     const hhId = String(fields.HouseholdId || '').trim();
@@ -2682,16 +2686,53 @@ async function syncSharePointHouseholds(env) {
       if (localUpdated.getTime() >= spModified.getTime()) { skippedNewerLocal += 1; continue; }
     }
 
+    // The timestamp guard above is NOT sufficient on its own, and this is where
+    // key-document dates were being silently destroyed about a minute after
+    // being set.
+    //
+    // Saving a household pushes it to SharePoint, which bumps that row's
+    // Modified to now. This pull then runs within the minute, sees Modified as
+    // newer than the copy it just read, and rebuilds the record from that copy.
+    // KV is eventually consistent, so the copy read above can still be the
+    // pre-save one — and rebuilding from a stale base wipes every field
+    // SharePoint has no column for. Those fields are exactly the app-owned ones:
+    // keyDocuments, kind, emailPrimary, members. The push having set Modified is
+    // what makes the guard let a stale read through, so the two faults line up
+    // precisely rather than cancelling out.
+    //
+    // The defence is to make the write conditional on SharePoint actually
+    // carrying something different. In the steady state it does not: the app
+    // pushed those very values moments ago, so the fields match and this skips,
+    // and a skipped write cannot clobber anything. A row genuinely edited in
+    // SharePoint still differs, so real edits still flow in.
+    // undefined is stripped, not spread. householdFieldsFromSharePoint returns
+    // `name: undefined` for a blank Title to mean "leave it alone", but object
+    // spread COPIES an undefined value rather than skipping it — so spreading it
+    // raw would blank a real household name from an empty SharePoint Title.
+    // pushHouseholdToSharePoint already filters this on its own merge; the pull
+    // never did.
+    const spFields = Object.fromEntries(
+      Object.entries(householdFieldsFromSharePoint(fields)).filter(([, v]) => v !== undefined)
+    );
+    // Re-read as late as possible too. It does not make KV strongly consistent,
+    // but it shrinks the stale window from "however long this whole loop takes"
+    // to a single get, and costs one read on a path that was about to write.
+    const fresh = (await decryptToObject(env, await env.PORTAL_KV.get(`household:${hhId}`))) || existing;
+    const changed = Object.entries(spFields).some(([k, v]) => (
+      v !== undefined && JSON.stringify(fresh[k]) !== JSON.stringify(v)
+    ));
+    if (!changed) { skippedNoChange += 1; continue; }
+
     const record = {
-      ...existing,
-      ...householdFieldsFromSharePoint(fields),
+      ...fresh,
+      ...spFields,
       sharePointItemId: item.id,
       updatedAt: spModified ? spModified.toISOString() : new Date().toISOString(),
     };
     await env.PORTAL_KV.put(`household:${hhId}`, await encryptJSON(env, record));
     synced += 1;
   }
-  return { synced, skipped, skippedNewerLocal, timestamp: new Date().toISOString() };
+  return { synced, skipped, skippedNewerLocal, skippedNoChange, timestamp: new Date().toISOString() };
 }
 
 // Remove a household's backup row when the grouping itself is deleted in the

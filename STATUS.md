@@ -794,6 +794,30 @@ Client portal is untouched and keeps its own look.
     executed for a household as a whole, so a copy on each member would be one
     fact stored N times, free to disagree. Native date inputs, saved with one
     button, each showing a green "Completed <date>" or amber "Not recorded".
+    - **Being app-only made these dates the victim of a sync bug** (fixed
+      2026-08-13, regression test in `scripts/test-household-sync.js`). Saving a
+      household pushes it to SharePoint, bumping that row's `Modified` to now.
+      The every-minute pull then saw SharePoint as newer than the copy it read
+      and rebuilt the record from it — and because KV is eventually consistent,
+      that copy could still be the pre-save one. Rebuilding from a stale base
+      wiped every field SharePoint has no column for, which is exactly the
+      app-owned set: `keyDocuments`, `kind`, `emailPrimary`, `members`. The
+      push setting `Modified` is what let the timestamp guard pass, so the two
+      faults lined up instead of cancelling. Symptom: a date set by hand or by
+      import reverted to "Not recorded" about a minute later.
+      **The fix is that the pull now writes only when SharePoint actually
+      carries a different value.** In the steady state it does not — the app
+      pushed those values moments ago — so it skips, and a skipped write cannot
+      clobber. Genuine SharePoint edits still differ, so they still flow in.
+      The same pass also stopped `name: undefined` (what
+      `householdFieldsFromSharePoint` returns for a blank Title, meaning "leave
+      it alone") from being spread onto the record and blanking a real household
+      name — object spread copies undefined rather than skipping it.
+      `pushHouseholdToSharePoint` had always filtered this on its own merge; the
+      pull never did. **This is the second time this sync has destroyed
+      app-owned fields** — the contacts version once erased `importantDates` and
+      `archived` on every run — so any future edit to either sync should start
+      by running that test.
     - **App-side only, never mirrored to SharePoint.** The Households list has no
       columns for these and Graph fails an entire PATCH on an unknown field —
       the same trap documented for `kind`. Nothing extra was needed to enforce
