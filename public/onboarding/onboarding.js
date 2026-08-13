@@ -3,7 +3,23 @@
 // localStorage; nothing is sent to a server and no real client is onboarded.
 
 const STORAGE_KEY = "bla_onboarding_poc";
-const COUNTER_KEY = "bla_onboarding_poc_counter";
+const PORTAL_SESSION_KEY = "blueline_session";
+
+function portalSession() {
+  try { return JSON.parse(localStorage.getItem(PORTAL_SESSION_KEY) || "null"); }
+  catch { return null; }
+}
+
+function portalAuthHeaders(extra = {}) {
+  try {
+    const session = portalSession();
+    return session && session.token
+      ? { ...extra, Authorization: `Bearer ${session.token}` }
+      : extra;
+  } catch {
+    return extra;
+  }
+}
 
 const STEPS = [
   "welcome", "consent", "regdocs", "agreement", "profile", "discovery",
@@ -42,42 +58,37 @@ function saveState() {
 }
 
 // IDs are issued by the server so they're unique across browsers. The server
-// also issues a per-session write token that must accompany every save, so a
-// guessed id can't be used to overwrite someone else's record. If the server
-// is unreachable, fall back to a local id (marked so admin data isn't expected
-// for it).
+// also binds the workflow to the signed-in portal account and issues a
+// per-session write token that must accompany every save.
 async function requestOnboardingId() {
-  try {
-    const res = await fetch("/api/onboarding/start", { method: "POST" });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.onboardingId) return { id: data.onboardingId, writeToken: data.writeToken, local: false };
-    }
-  } catch {}
-  const n = (Number(localStorage.getItem(COUNTER_KEY)) || 0) + 1;
-  localStorage.setItem(COUNTER_KEY, String(n));
-  return { id: `BLA-ONB-${new Date().getFullYear()}-L${String(n).padStart(3, "0")}`, writeToken: null, local: true };
+  const res = await fetch("/api/onboarding/start", { method: "POST", headers: portalAuthHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Could not start onboarding");
+  if (!data.onboardingId || !data.writeToken) throw new Error("The server did not issue an onboarding session");
+  return { id: data.onboardingId, writeToken: data.writeToken, local: false };
 }
 
 // Push the current state to the server so the BlueLine team can review
 // submissions in the admin view. Fire-and-forget: a failed sync never blocks
 // the user, and the full record is re-sent on every step. The write token
 // proves this browser owns the session.
-function syncToServer() {
+async function syncToServer() {
   if (!state.onboardingId || state.localOnly || !state.writeToken) return;
-  fetch(`/api/onboarding/${encodeURIComponent(state.onboardingId)}`, {
+  const res = await fetch(`/api/onboarding/${encodeURIComponent(state.onboardingId)}`, {
     method: "POST",
-    headers: {
+    headers: portalAuthHeaders({
       "Content-Type": "application/json",
       "X-Onboarding-Token": state.writeToken,
-    },
+    }),
     body: JSON.stringify({
       onboardingId: state.onboardingId,
       currentStep: state.currentStep,
       completionTime: state.completionTime,
       data: state.data,
     }),
-  }).catch(() => {});
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Could not save onboarding");
 }
 
 function nowIso() {
@@ -242,6 +253,14 @@ document.getElementById("profile-grid").innerHTML = PROFILE_FIELDS.map(([key, la
   return `<div class="field"><label for="pf-${key}">${label}${req}</label>
     <input type="${type}" id="pf-${key}" /></div>`;
 }).join("");
+
+// Identity comes from the authenticated portal account, never free-typed into
+// the workflow. Keep both email fields visible so the client can confirm it.
+const signedInEmail = String((portalSession() && portalSession().email) || "").trim().toLowerCase();
+for (const id of ["consent-email", "pf-email"]) {
+  const input = document.getElementById(id);
+  if (input && signedInEmail) { input.value = signedInEmail; input.readOnly = true; }
+}
 
 function buildRangeSelects(containerId, fields) {
   document.getElementById(containerId).innerHTML = fields
@@ -418,13 +437,20 @@ document.getElementById("start-btn").addEventListener("click", async () => {
   if (!state.onboardingId) {
     const btn = document.getElementById("start-btn");
     btn.disabled = true;
-    const issued = await requestOnboardingId();
-    btn.disabled = false;
-    state.onboardingId = issued.id;
-    state.writeToken = issued.writeToken;
-    state.localOnly = issued.local;
-    state.startTime = nowIso();
-    saveState();
+    try {
+      const issued = await requestOnboardingId();
+      state.onboardingId = issued.id;
+      state.writeToken = issued.writeToken;
+      state.localOnly = false;
+      state.startTime = nowIso();
+      saveState();
+    } catch (err) {
+      alert(err.message + " Sign in to the client portal and try again.");
+      location.href = "/";
+      return;
+    } finally {
+      btn.disabled = false;
+    }
   }
   showStep(1);
 });
@@ -433,12 +459,17 @@ document.getElementById("prev-btn").addEventListener("click", () => {
   if (state.currentStep > 1) showStep(state.currentStep - 1);
 });
 
-document.getElementById("next-btn").addEventListener("click", () => {
+document.getElementById("next-btn").addEventListener("click", async () => {
   const stepKey = STEPS[state.currentStep];
   const collect = COLLECTORS[stepKey];
   if (collect && !collect()) return; // validation failed
   saveState();
-  syncToServer();
+  try {
+    await syncToServer();
+  } catch (err) {
+    setError(`${stepKey}-error`, err.message + " Please try again.");
+    return;
+  }
   if (state.currentStep < STEPS.length - 1) showStep(state.currentStep + 1);
 });
 
@@ -450,6 +481,8 @@ document.getElementById("restart-btn").addEventListener("click", () => {
     else el.value = "";
   });
   document.querySelectorAll("select").forEach((el) => (el.value = ""));
+  document.getElementById("consent-email").value = signedInEmail;
+  document.getElementById("pf-email").value = signedInEmail;
   document.getElementById("risk-result").classList.add("hidden");
   clearSignature();
   showStep(0);
@@ -465,10 +498,11 @@ function setError(id, msg) {
 const COLLECTORS = {
   consent() {
     const name = document.getElementById("consent-name").value.trim();
-    const email = document.getElementById("consent-email").value.trim();
+    const email = document.getElementById("consent-email").value.trim().toLowerCase();
     const ack = document.getElementById("consent-ack").checked;
     if (!name || !email) return setError("consent-error", "Name and email are required.");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("consent-error", "Please enter a valid email address.");
+    if (!signedInEmail || email !== signedInEmail) return setError("consent-error", "Email must match the signed-in portal account.");
     if (!ack) return setError("consent-error", "You must acknowledge and consent to continue.");
     state.data.consent = { onboardingId: state.onboardingId, name, email, consented: true, timestamp: nowIso() };
     return setError("consent-error", "");
@@ -520,6 +554,9 @@ const COLLECTORS = {
     }
     if (profile.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profile.email)) {
       return setError("profile-error", "Please enter a valid email address.");
+    }
+    if (!signedInEmail || profile.email.toLowerCase() !== signedInEmail) {
+      return setError("profile-error", "Email must match the signed-in portal account.");
     }
     state.data.profile = profile;
     return setError("profile-error", "");
@@ -614,9 +651,9 @@ const COLLECTORS = {
 const POPULATORS = {
   consent() {
     const d = state.data.consent;
+    document.getElementById("consent-email").value = signedInEmail || (d && d.email) || "";
     if (!d) return;
     document.getElementById("consent-name").value = d.name || "";
-    document.getElementById("consent-email").value = d.email || "";
     document.getElementById("consent-ack").checked = !!d.consented;
   },
   regdocs() {
@@ -635,9 +672,10 @@ const POPULATORS = {
   },
   profile() {
     const d = state.data.profile;
+    document.getElementById("pf-email").value = signedInEmail || (d && d.email) || "";
     if (!d) return;
     PROFILE_FIELDS.forEach(([key]) => {
-      document.getElementById(`pf-${key}`).value = d[key] || "";
+      document.getElementById(`pf-${key}`).value = key === "email" ? (signedInEmail || d[key] || "") : (d[key] || "");
     });
   },
   discovery() {

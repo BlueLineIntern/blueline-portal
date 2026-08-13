@@ -17,6 +17,7 @@ $hhResponses = @{}
 $assignments = @{}  # email -> array of assigned module keys ($null / absent = all visible)
 $onboardings = @{}
 $onbSecrets = @{}
+$clientInvites = @{} # one-time token -> client email
 $script:onbCounter = 0
 $adminSessions = @{}  # admin session token -> admin email
 $auditLog = [System.Collections.ArrayList]::new()  # audit entries, appended in order
@@ -560,7 +561,7 @@ function Get-UniqueDocFolder($name, $id, $holders) {
 function Resolve-ClientDocFolder($email) {
     $addr = ([string]$email).Trim().ToLower()
     $emailFolder = Format-DocName $addr
-    $families = @($households.Values | Where-Object { $_.id -and $_.name -and (Get-GroupKind $_) -ne 'company' })
+    $families = @($households.Values | Where-Object { $_.id -and $_.name -and (Get-GroupKind $_) -ne 'company' -and -not $_.archived })
     $mine = @($families | Where-Object {
         @($_.members | Where-Object { $_ -and ([string]$_.email).ToLower() -eq $addr }).Count -gt 0
     } | Sort-Object `
@@ -619,10 +620,12 @@ function Invoke-MockRecordAdvisoryDate($clientEmail, $signedAt) {
     if ($date.Length -ge 10) { $date = $date.Substring(0, 10) }
     if ($date -notmatch '^\d{4}-\d{2}-\d{2}$') { return }
     $addr = $clientEmail.ToLower()
-    $hh = $null
-    foreach ($h in $households.Values) {
-        if (@($h.members) | Where-Object { $_.email -and ([string]$_.email).ToLower() -eq $addr }) { $hh = $h; break }
-    }
+    $hh = $households.Values | Where-Object {
+        -not $_.archived -and (@($_.members | Where-Object { $_.email -and ([string]$_.email).ToLower() -eq $addr }).Count -gt 0)
+    } | Sort-Object `
+        @{ Expression = { if ((Get-GroupKind $_) -eq 'company') { 1 } else { 0 } } }, `
+        @{ Expression = { if ([string]$_.createdAt) { [string]$_.createdAt } else { '9999' } } }, `
+        @{ Expression = { [string]$_.id } } | Select-Object -First 1
     if (-not $hh) { return }
     $docs = if ($hh.Contains('keyDocuments') -and $hh.keyDocuments) { $hh.keyDocuments } else { [ordered]@{} }
     $docs['advisoryAgreement'] = $date
@@ -939,6 +942,13 @@ function Get-AdminEmail($ctx) {
 function Get-RecordWorkspace($rec) {
     if ($rec -and [string]$rec.workspace) { return ([string]$rec.workspace).Trim().ToLower() }
     return $frankAdminEmail
+}
+
+function Test-ContactWorkspace($email, $workspace) {
+    $addr = ([string]$email).Trim().ToLower()
+    $contact = $contacts[$addr]
+    if ($contact) { return (Get-RecordWorkspace $contact) -eq $workspace }
+    return $workspace -eq $frankAdminEmail -and $users.ContainsKey($addr)
 }
 
 function Test-SupervisorAdmin($adminEmail) {
@@ -1258,12 +1268,19 @@ while ($listener.IsListening) {
         if ($path -eq '/api/register' -and $method -eq 'POST') {
             if (-not (Test-RateLimit 'register' (Get-ClientIp $ctx))) { Send-Json $ctx 429 @{ error = 'Too many attempts. Please try again later.' }; continue }
             $body = Read-Body $ctx
-            if ($users.ContainsKey($body.email)) { Send-Json $ctx 409 @{ error = 'An account with this email already exists' }; continue }
-            $users[$body.email] = @{ name = $body.name; email = $body.email; password = $body.password }
+            $email = ([string]$body.email).Trim().ToLower()
+            $invite = [string]$body.invite
+            $invitation = if ($invite -and $clientInvites.ContainsKey($invite)) { $clientInvites[$invite] } else { $null }
+            if (-not $invite -or -not $invitation -or $invitation.email -ne $email -or $invitation.expiresAt -le (Get-Date)) {
+                Send-Json $ctx 403 @{ error = 'A valid registration invitation from your advisor is required' }; continue
+            }
+            if ($users.ContainsKey($email)) { Send-Json $ctx 409 @{ error = 'An account with this email already exists' }; continue }
+            $users[$email] = @{ name = $body.name; email = $email; password = $body.password }
+            $clientInvites.Remove($invite)
             $token = New-Token
-            $sessions[$token] = $body.email
-            Write-Timeline $body.email 'account-created' 'client' $null
-            Send-Json $ctx 201 @{ token = $token; name = $body.name; email = $body.email }
+            $sessions[$token] = $email
+            Write-Timeline $email 'account-created' 'client' $null
+            Send-Json $ctx 201 @{ token = $token; name = $body.name; email = $email }
         }
         elseif ($path -eq '/api/login' -and $method -eq 'POST') {
             if (-not (Test-RateLimit 'login' (Get-ClientIp $ctx))) { Send-Json $ctx 429 @{ error = 'Too many login attempts. Please try again later.' }; continue }
@@ -1856,8 +1873,11 @@ while ($listener.IsListening) {
             Send-Json $ctx 200 @{ entries = $entries; hasMore = $false; cursor = $null }
         }
         elseif ($path -eq '/api/admin/activity' -and $method -eq 'GET') {
-            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $entries = @($timelineLog.ToArray() | Where-Object { Test-TimelineEntryValid $_ })
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $workspace = Get-AdminWorkspace $ctx $adminEmail
+            if (-not $workspace) { Send-Json $ctx 403 @{ error = 'You do not have access to that workspace' }; continue }
+            $entries = @($timelineLog.ToArray() | Where-Object { (Test-TimelineEntryValid $_) -and (Test-ContactWorkspace $_.client $workspace) })
             [array]::Reverse($entries)
             $entries = @($entries | Select-Object -First 30)
             Send-Json $ctx 200 @{ entries = $entries; hasMore = $false; cursor = $null }
@@ -1918,7 +1938,7 @@ while ($listener.IsListening) {
             $script:householdCounter++
             $id = 'hh-{0:d6}' -f $script:householdCounter
             $rec = [ordered]@{
-                id = $id; type = 'household'; kind = $kind; name = $name
+                id = $id; workspace = $workspace; type = 'household'; kind = $kind; name = $name
                 members = @($mem.members)
                 email = ([string]$body.email).Trim().ToLower()
                 emailType = ([string]$body.emailType).Trim().ToLower()
@@ -1943,6 +1963,8 @@ while ($listener.IsListening) {
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $id = $Matches[1]
             if (-not $households.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Household not found' }; continue }
+            $workspace = Get-AdminWorkspace $ctx $adminEmail
+            if (-not $workspace -or (Get-RecordWorkspace $households[$id]) -ne $workspace) { Send-Json $ctx 404 @{ error = 'Household not found' }; continue }
             $body = Read-Body $ctx
             if (-not $body) { Send-Json $ctx 400 @{ error = 'Invalid JSON body' }; continue }
             $rec = $households[$id]
@@ -1994,6 +2016,8 @@ while ($listener.IsListening) {
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $id = $Matches[1]
             if (-not $households.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Household not found' }; continue }
+            $workspace = Get-AdminWorkspace $ctx $adminEmail
+            if (-not $workspace -or (Get-RecordWorkspace $households[$id]) -ne $workspace) { Send-Json $ctx 404 @{ error = 'Household not found' }; continue }
             $households.Remove($id)
             Write-Audit $adminEmail 'delete-household' @{ id = $id }
             Send-Json $ctx 200 @{ ok = $true }
@@ -2245,6 +2269,19 @@ while ($listener.IsListening) {
             Write-Audit $adminEmail 'delete-client-document' @{ client = $client; id = $id; name = $name; fileDeleted = $true }
             Send-Json $ctx 200 @{ ok = $true; fileDeleted = $true }
         }
+        elseif ($path -match '^/api/admin/contacts/(.+)/portal-invite$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $workspace = Get-AdminWorkspace $ctx $adminEmail
+            if (-not $workspace) { Send-Json $ctx 403 @{ error = 'You do not have access to that workspace' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if (-not (Test-ContactWorkspace $target $workspace)) { Send-Json $ctx 404 @{ error = 'Contact not found in this workspace' }; continue }
+            if ($users.ContainsKey($target)) { Send-Json $ctx 409 @{ error = 'This contact already has a portal account' }; continue }
+            $invite = New-Token
+            $clientInvites[$invite] = @{ email = $target; expiresAt = (Get-Date).AddDays(7) }
+            Write-Audit $adminEmail 'create-client-invite' @{ client = $target }
+            Send-Json $ctx 201 @{ invite = $invite; email = $target; expiresIn = 604800 }
+        }
         elseif ($path -match '^/api/admin/contacts/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
@@ -2441,7 +2478,9 @@ while ($listener.IsListening) {
             $union = [System.Collections.ArrayList]@()
             $anyUnrestricted = $false
             foreach ($m in (Get-HouseholdMembers $email)) {
-                if ($assignments.ContainsKey($m)) {
+                if (-not $users.ContainsKey($m)) {
+                    $byMember[$m] = @()
+                } elseif ($assignments.ContainsKey($m)) {
                     $list = @($assignments[$m])
                     # NO `, @(...)` here. That wrapper protects a single-element
                     # array from unrolling when it is RETURNED, but assigning it
@@ -2474,9 +2513,10 @@ while ($listener.IsListening) {
             Send-Json $ctx 200 @{ assignments = @($assignments[$email]) }
         }
         elseif ($path -eq '/api/onboarding/start' -and $method -eq 'POST') {
+            $clientEmail = Get-SessionEmail $ctx
+            if (-not $clientEmail) { Send-Json $ctx 401 @{ error = 'Sign in to the client portal before starting onboarding' }; continue }
             if (-not (Test-RateLimit 'onboardingStart' (Get-ClientIp $ctx))) { Send-Json $ctx 429 @{ error = 'Too many onboarding sessions started. Please try again later.' }; continue }
-            $script:onbCounter++
-            $id = 'BLA-ONB-{0}-{1:d4}' -f (Get-Date).Year, $script:onbCounter
+            $id = 'BLA-ONB-{0}-{1}' -f (Get-Date).Year, ((New-Token).Substring(0,16))
             $writeToken = New-Token
             $onbSecrets[$id] = $writeToken
             $onboardings[$id] = @{
@@ -2484,13 +2524,14 @@ while ($listener.IsListening) {
                 startTime = (Get-Date).ToString('o')
                 completionTime = $null
                 currentStep = 0
+                clientEmail = $clientEmail
                 data = @{}
                 deleted = $false
                 updatedAt = (Get-Date).ToString('o')
             }
             Send-Json $ctx 201 @{ onboardingId = $id; writeToken = $writeToken; startTime = $onboardings[$id].startTime }
         }
-        elseif ($path -match '^/api/onboarding/(BLA-ONB-\d{4}-\d{4})$' -and $method -eq 'POST') {
+        elseif ($path -match '^/api/onboarding/(BLA-ONB-\d{4}-(?:\d{4}|[a-f0-9]{16}))$' -and $method -eq 'POST') {
             $id = $Matches[1]
             $provided = $ctx.Request.Headers['X-Onboarding-Token']
             if (-not $onbSecrets.ContainsKey($id) -or $provided -ne $onbSecrets[$id]) {
@@ -2498,9 +2539,20 @@ while ($listener.IsListening) {
             }
             if (-not $onboardings.ContainsKey($id)) { Send-Json $ctx 404 @{ error = 'Unknown onboarding id' }; continue }
             $rec = $onboardings[$id]
+            $sessionEmail = Get-SessionEmail $ctx
+            if (-not $sessionEmail -or $rec.clientEmail -ne $sessionEmail) { Send-Json $ctx 403 @{ error = 'This onboarding session does not belong to your portal account' }; continue }
             if ($rec.deleted) { Send-Json $ctx 410 @{ error = 'This onboarding record has been removed' }; continue }
             $body = Read-Body $ctx
             if (-not $body -or $body.onboardingId -ne $id) { Send-Json $ctx 400 @{ error = 'Body must include a matching onboardingId' }; continue }
+            $clientEmail = $sessionEmail
+            $submitted = @()
+            if ($body.data.profile -and $body.data.profile.email) { $submitted += ([string]$body.data.profile.email).Trim().ToLower() }
+            if ($body.data.consent -and $body.data.consent.email) { $submitted += ([string]$body.data.consent.email).Trim().ToLower() }
+            if (@($submitted | Where-Object { $_ -ne $clientEmail }).Count) { Send-Json $ctx 400 @{ error = 'Onboarding email must match the signed-in portal account' }; continue }
+            $signature = [string]$body.data.agreement.signatureDataUrl
+            if ($signature -and ($signature.Length -gt 90000 -or $signature -notmatch '^data:image/png;base64,iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$')) {
+                Send-Json $ctx 400 @{ error = 'The captured signature is not a valid PNG image' }; continue
+            }
             $prevCompletion = $rec.completionTime
             $prevSigned = [bool]($rec.data -and $rec.data.agreement -and $rec.data.agreement.signatureDataUrl)
             $rec.completionTime = $body.completionTime
@@ -2508,9 +2560,6 @@ while ($listener.IsListening) {
             $rec.data = $body.data
             $rec.updatedAt = (Get-Date).ToString('o')
             # CRM history + automation on transitions, mirroring worker.js.
-            $clientEmail = ''
-            if ($body.data.profile -and $body.data.profile.email) { $clientEmail = ([string]$body.data.profile.email).Trim().ToLower() }
-            elseif ($body.data.consent -and $body.data.consent.email) { $clientEmail = ([string]$body.data.consent.email).Trim().ToLower() }
             if ($clientEmail -match '^[^\s@]+@[^\s@]+\.[^\s@]+$') {
                 if ($rec.completionTime -and -not $prevCompletion) {
                     Write-Timeline $clientEmail 'onboarding-completed' 'client' @{ onboardingId = $id }
@@ -2557,7 +2606,7 @@ while ($listener.IsListening) {
             $nextCursor = if ($hasMore) { "$nextOffset" } else { $null }
             Send-Json $ctx 200 @{ entries = $entries; limit = $limit; hasMore = $hasMore; cursor = $nextCursor }
         }
-        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})/restore$' -and $method -eq 'POST') {
+        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-(?:\d{4}|[a-f0-9]{16}))/restore$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $id = $Matches[1]
@@ -2567,7 +2616,7 @@ while ($listener.IsListening) {
             Write-Audit $adminEmail 'restore-onboarding' @{ onboardingId = $id }
             Send-Json $ctx 200 @{ ok = $true }
         }
-        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-\d{4})$' -and $method -eq 'DELETE') {
+        elseif ($path -match '^/api/admin/onboarding/(BLA-ONB-\d{4}-(?:\d{4}|[a-f0-9]{16}))$' -and $method -eq 'DELETE') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $id = $Matches[1]

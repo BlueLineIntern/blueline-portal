@@ -23,17 +23,17 @@ import { buildSignedAgreementServer, resolveClientNameServer } from './agreement
  *                                 (see DATA_ENCRYPTION_KEY; legacy plaintext still read)
  *   onboarding:<id>            -> onboarding POC record (sample/test data only)
  *   onboarding_secret:<id>     -> per-session write token  (TTL'd, never returned)
- *   onboarding_counter         -> sequence number for onboarding ids
+ *   client_invite:<sha256>      -> invited client email (7-day TTL, one use)
  *   rl:<scope>:<ip>            -> { count, windowStart }    (TTL'd, rate limiting)
  *
  * Endpoints:
- *   POST   /api/register                    { name, email, password }
+ *   POST   /api/register                    { name, email, password, invite }
  *   POST   /api/login                       { email, password }
  *   POST   /api/logout                      (Authorization: Bearer <token>)
  *   GET    /api/assessments                 (Authorization: Bearer <token>)
  *   POST   /api/assessments/:module         (Authorization: Bearer <token>)
- *   POST   /api/onboarding/start            -> { onboardingId, writeToken }
- *   POST   /api/onboarding/:id              (X-Onboarding-Token: <writeToken>)
+ *   POST   /api/onboarding/start            (Authorization: Bearer <client session>)
+ *   POST   /api/onboarding/:id              (client session + X-Onboarding-Token)
  *   POST   /api/admin/login                 { email, password } -> { token, email }
  *   POST   /api/admin/logout                (Authorization: Bearer <admin session>)
  *   GET    /api/admin/clients               (Authorization: Bearer <admin session>)
@@ -66,6 +66,7 @@ import { COMPLIANCE_SEED } from './compliance-seed.js';
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const PBKDF2_ITERATIONS = 100000;
 const ONBOARDING_TTL_SECONDS = 60 * 60 * 24 * 30; // secrets + soft-deleted records expire after 30 days
+const CLIENT_INVITE_TTL_SECONDS = 60 * 60 * 24 * 7;
 
 // Admin staff each sign in with their own password. The password for each email
 // lives in its own Cloudflare secret (the `secret` field below); set them with:
@@ -458,7 +459,7 @@ async function handleRegister(request, env, cors) {
   const body = await request.json().catch(() => null);
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
 
-  const { name, email, password } = body;
+  const { name, email, password, invite } = body;
   if (!name || !isValidEmail(email) || !password || password.length < 8) {
     return json(
       { error: 'name, a valid email, and a password of at least 8 characters are required' },
@@ -468,6 +469,15 @@ async function handleRegister(request, env, cors) {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
+  const inviteToken = String(invite || '').trim();
+  if (!inviteToken) {
+    return json({ error: 'A registration invitation from your advisor is required' }, 403, cors);
+  }
+  const inviteKey = `client_invite:${await sha256Hex(inviteToken)}`;
+  const inviteEmail = String((await env.PORTAL_KV.get(inviteKey)) || '').trim().toLowerCase();
+  if (!inviteEmail || inviteEmail !== normalizedEmail) {
+    return json({ error: 'This registration invitation is invalid or has expired' }, 403, cors);
+  }
   const existing = await env.PORTAL_KV.get(`user:${normalizedEmail}`);
   if (existing) {
     return json({ error: 'An account with this email already exists' }, 409, cors);
@@ -480,12 +490,35 @@ async function handleRegister(request, env, cors) {
     `user:${normalizedEmail}`,
     JSON.stringify({ name, email: normalizedEmail, salt, hash, iterations: PBKDF2_ITERATIONS })
   );
+  // One-time use: consuming the link before issuing the session prevents two
+  // near-simultaneous requests from intentionally reusing it after this point.
+  await env.PORTAL_KV.delete(inviteKey);
 
   const token = randomHex(32);
   await env.PORTAL_KV.put(`session:${token}`, normalizedEmail, { expirationTtl: SESSION_TTL_SECONDS });
 
   await logTimeline(env, normalizedEmail, 'account-created', 'client', null);
   return json({ token, name, email: normalizedEmail }, 201, cors);
+}
+
+async function handleAdminCreateClientInvite(request, env, cors, rawEmail) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
+  const email = String(rawEmail || '').trim().toLowerCase();
+  if (!isValidEmail(email) || !(await contactBelongsToWorkspace(env, email, workspace))) {
+    return json({ error: 'Contact not found in this workspace' }, 404, cors);
+  }
+  if (await env.PORTAL_KV.get(`user:${email}`)) {
+    return json({ error: 'This contact already has a portal account' }, 409, cors);
+  }
+  const token = randomHex(32);
+  await env.PORTAL_KV.put(`client_invite:${await sha256Hex(token)}`, email, {
+    expirationTtl: CLIENT_INVITE_TTL_SECONDS,
+  });
+  await logAudit(env, adminEmail, 'create-client-invite', { client: email });
+  return json({ invite: token, email, expiresIn: CLIENT_INVITE_TTL_SECONDS }, 201, cors);
 }
 
 async function handleLogin(request, env, cors) {
@@ -1939,7 +1972,13 @@ async function handleGetAssignments(request, env, cors) {
   let union = [];
   let anyUnrestricted = false;
   for (const m of members) {
-    const list = loadAssignments(await env.PORTAL_KV.get(`assignments:${m}`));
+    // A household record can include people who have never created a portal
+    // account. They do not have work in the portal and must not turn a missing
+    // assignment record into the legacy "everything is visible" default.
+    const hasAccount = !!(await env.PORTAL_KV.get(`user:${m}`));
+    const list = hasAccount
+      ? loadAssignments(await env.PORTAL_KV.get(`assignments:${m}`))
+      : [];
     byMember[m] = list;
     if (list === null) anyUnrestricted = true;
     else for (const k of list) if (!union.includes(k)) union.push(k);
@@ -1980,28 +2019,32 @@ async function handleAdminSetAssignments(request, env, cors, rawEmail) {
   return json({ assignments: clean }, 200, cors);
 }
 
-// ---------- Onboarding proof of concept ----------
-// Sample/test data only. Each session is issued a per-session write token at
-// /start; every save must present it via the X-Onboarding-Token header. This
-// stops anyone who guesses a (sequential, predictable) onboarding id from
-// overwriting someone else's in-progress record. It is NOT full client auth —
-// there is no account, no login — but it closes the "anyone can POST to any id"
-// hole. The token is stored under a separate key and never returned by the
-// admin endpoints.
+// ---------- Authenticated client onboarding ----------
+// Every onboarding is bound to the signed-in portal account as well as a
+// per-session write token. The token prevents one browser session from editing
+// another; client auth prevents a caller from claiming somebody else's email.
 
-const ONBOARDING_ID_PATTERN = /^BLA-ONB-\d{4}-\d{4}$/;
+const ONBOARDING_ID_PATTERN = /^BLA-ONB-\d{4}-(?:\d{4}|[a-f0-9]{16})$/;
 const ONBOARDING_MAX_BYTES = 100_000;
 
+function isValidSignatureDataUrl(value) {
+  if (typeof value !== 'string' || value.length > 90_000) return false;
+  const match = value.match(/^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/);
+  if (!match) return false;
+  // A PNG signature must have the standard eight-byte signature. Checking the
+  // encoded prefix avoids decoding attacker-controlled data in the Worker.
+  return match[1].startsWith('iVBORw0KGgo');
+}
+
 async function handleOnboardingStart(request, env, cors) {
+  const clientEmail = await getSessionEmail(request, env);
+  if (!clientEmail) return json({ error: 'Sign in to the client portal before starting onboarding' }, 401, cors);
   if (!(await checkRateLimit(env, 'onboardingStart', clientIp(request)))) {
     return json({ error: 'Too many onboarding sessions started. Please try again later.' }, 429, cors);
   }
 
-  // KV has no atomic increment; a race here can skip or repeat a number.
-  // Acceptable for a proof of concept.
-  const n = (Number(await env.PORTAL_KV.get('onboarding_counter')) || 0) + 1;
-  await env.PORTAL_KV.put('onboarding_counter', String(n));
-  const onboardingId = `BLA-ONB-${new Date().getFullYear()}-${String(n).padStart(4, '0')}`;
+  // Random ids avoid the non-atomic KV counter race and are not enumerable.
+  const onboardingId = `BLA-ONB-${new Date().getFullYear()}-${randomHex(8)}`;
 
   const writeToken = randomHex(24);
   await env.PORTAL_KV.put(`onboarding_secret:${onboardingId}`, writeToken, {
@@ -2013,6 +2056,7 @@ async function handleOnboardingStart(request, env, cors) {
     startTime: new Date().toISOString(),
     completionTime: null,
     currentStep: 0,
+    clientEmail,
     data: {},
     deleted: false,
     updatedAt: new Date().toISOString(),
@@ -2037,6 +2081,12 @@ async function handleOnboardingSave(request, env, cors, onboardingId, ctx) {
     return json({ error: 'Unknown onboarding id — call /api/onboarding/start first' }, 404, cors);
   }
   const existing = JSON.parse(existingRaw);
+  const sessionEmail = await getSessionEmail(request, env);
+  const legacyEmail = onboardingRecordEmail(existing);
+  const boundEmail = String(existing.clientEmail || legacyEmail || '').toLowerCase();
+  if (!sessionEmail || (boundEmail && boundEmail !== sessionEmail)) {
+    return json({ error: 'This onboarding session does not belong to your portal account' }, 403, cors);
+  }
   if (existing.deleted) {
     return json({ error: 'This onboarding record has been removed' }, 410, cors);
   }
@@ -2060,17 +2110,27 @@ async function handleOnboardingSave(request, env, cors, onboardingId, ctx) {
     startTime: existing.startTime,
     completionTime: typeof body.completionTime === 'string' ? body.completionTime : existing.completionTime,
     currentStep: Number.isInteger(body.currentStep) ? body.currentStep : existing.currentStep,
+    clientEmail: sessionEmail,
     data: body.data,
     deleted: false,
     updatedAt: new Date().toISOString(),
   };
-  await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
-
   // CRM history + automation on state transitions (not on every save). The
   // client identity comes from the wizard's own profile/consent emails; when
   // neither is present yet there is nobody to attach history to, so skip.
   const d = record.data || {};
-  const clientEmail = String(((d.profile && d.profile.email) || (d.consent && d.consent.email) || '')).trim().toLowerCase();
+  const submittedEmails = [d.profile && d.profile.email, d.consent && d.consent.email]
+    .filter(Boolean)
+    .map((value) => String(value).trim().toLowerCase());
+  if (submittedEmails.some((value) => value !== sessionEmail)) {
+    return json({ error: 'Onboarding email must match the signed-in portal account' }, 400, cors);
+  }
+  const signature = d.agreement && d.agreement.signatureDataUrl;
+  if (signature && !isValidSignatureDataUrl(signature)) {
+    return json({ error: 'The captured signature is not a valid PNG image' }, 400, cors);
+  }
+  await env.PORTAL_KV.put(`onboarding:${onboardingId}`, JSON.stringify(record));
+  const clientEmail = sessionEmail;
   if (isValidEmail(clientEmail)) {
     const justCompleted = record.completionTime && !existing.completionTime;
     const prevSigned = !!(existing.data && existing.data.agreement && existing.data.agreement.signatureDataUrl);
@@ -2226,7 +2286,8 @@ async function handleAdminOnboarding(request, env, cors) {
 function onboardingRecordEmail(record) {
   const data = (record && record.data) || {};
   return String(
-    (data.profile && data.profile.email)
+    (record && record.clientEmail)
+    || (data.profile && data.profile.email)
     || (data.consent && data.consent.email)
     || ''
   ).trim().toLowerCase();
@@ -4571,7 +4632,7 @@ async function resolveClientDocFolder(env, email) {
   // back to the mailbox folder, which still lands the file under this client.
   try {
     const { items } = await readAllEncrypted(env, 'household:');
-    const families = items.filter((h) => h && h.id && h.name && groupKindOf(h) !== 'company');
+    const families = items.filter((h) => h && h.id && h.name && groupKindOf(h) !== 'company' && !h.archived);
     const mine = families
       .filter((h) => (h.members || []).some((m) => m && String(m.email || '').toLowerCase() === addr))
       .sort(oldestFirst);
@@ -4649,8 +4710,14 @@ async function recordAdvisoryAgreementDate(env, clientEmail, signedAt) {
   if (!isIsoDate(date)) return;
   const addr = String(clientEmail || '').trim().toLowerCase();
   const { items } = await readAllEncrypted(env, 'household:');
-  const hh = items.find((h) => h && h.id && (h.members || [])
-    .some((m) => m && String(m.email || '').toLowerCase() === addr));
+  const matches = items
+    .filter((h) => h && h.id && !h.archived && (h.members || [])
+      .some((m) => m && String(m.email || '').toLowerCase() === addr))
+    .sort((a, b) => {
+      const kind = Number(groupKindOf(a) === 'company') - Number(groupKindOf(b) === 'company');
+      return kind || oldestFirst(a, b);
+    });
+  const hh = matches[0];
   if (!hh) return;
   const record = {
     ...hh,
@@ -6795,15 +6862,22 @@ async function handleAdminActivity(request, env, cors) {
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
   const workspace = await requestedAdminWorkspace(request, env, adminEmail);
   if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
-  const cursor = new URL(request.url).searchParams.get('cursor') || undefined;
-  const result = await pagedEncryptedList(env, 'activity:', cursor, 30);
-  result.entries = await filterDeletedReferences(result.entries, env);
+  let cursor = new URL(request.url).searchParams.get('cursor') || undefined;
   const visible = [];
-  for (const entry of result.entries) {
-    if (await contactBelongsToWorkspace(env, entry.client, workspace)) visible.push(entry);
+  let hasMore = true;
+  // Filter while walking pages, not after returning one global page. Using the
+  // remaining result count as each KV limit means a page can never contain more
+  // visible entries than we can return, so advancing its cursor cannot skip one.
+  while (visible.length < 30 && hasMore) {
+    const page = await pagedEncryptedList(env, 'activity:', cursor, 30 - visible.length);
+    const entries = await filterDeletedReferences(page.entries, env);
+    for (const entry of entries) {
+      if (await contactBelongsToWorkspace(env, entry.client, workspace)) visible.push(entry);
+    }
+    cursor = page.cursor || undefined;
+    hasMore = page.hasMore;
   }
-  result.entries = visible;
-  return json(result, 200, cors);
+  return json({ entries: visible, hasMore, cursor: hasMore ? cursor : null }, 200, cors);
 }
 
 // Per-admin, per-workspace notification read cursor. Notifications themselves are DERIVED
@@ -6912,11 +6986,18 @@ const REVALIDATE_EXT = /\.(?:html|js|css)$/i;
 async function serveAsset(request, env) {
   const res = await env.ASSETS.fetch(request);
   const path = new URL(request.url).pathname;
-  // A directory URL ("/", "/admin/") serves index.html, so match it too.
-  if (!REVALIDATE_EXT.test(path) && !path.endsWith('/')) return res;
   // Response from ASSETS is immutable; clone before touching headers.
   const out = new Response(res.body, res);
-  out.headers.set('Cache-Control', 'no-cache');
+  // A directory URL ("/", "/admin/") serves index.html, so match it too.
+  if (REVALIDATE_EXT.test(path) || path.endsWith('/')) out.headers.set('Cache-Control', 'no-cache');
+  out.headers.set('X-Content-Type-Options', 'nosniff');
+  out.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  out.headers.set('X-Frame-Options', 'DENY');
+  out.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  out.headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+  if (new URL(request.url).protocol === 'https:') {
+    out.headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   return out;
 }
 
@@ -6970,7 +7051,7 @@ export default {
       if (url.pathname === '/api/onboarding/start' && request.method === 'POST') {
         return await handleOnboardingStart(request, env, cors);
       }
-      const onbMatch = url.pathname.match(/^\/api\/onboarding\/(BLA-ONB-\d{4}-\d{4})$/);
+      const onbMatch = url.pathname.match(/^\/api\/onboarding\/(BLA-ONB-\d{4}-(?:\d{4}|[a-f0-9]{16}))$/);
       if (onbMatch && request.method === 'POST') {
         return await handleOnboardingSave(request, env, cors, onbMatch[1], ctx);
       }
@@ -7157,6 +7238,10 @@ export default {
           return json({ error: 'Contact not found in this workspace' }, 404, cors);
         }
       }
+      const clientInviteMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/portal-invite$/);
+      if (clientInviteMatch && request.method === 'POST') {
+        return await handleAdminCreateClientInvite(request, env, cors, decodeURIComponent(clientInviteMatch[1]));
+      }
       // Archive/unarchive must be matched before the generic upsert route below,
       // whose `(.+)` would otherwise swallow the "/archive" suffix into the email.
       const archiveMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/(archive|unarchive)$/);
@@ -7309,11 +7394,11 @@ export default {
       if (url.pathname === '/api/admin/audit' && request.method === 'GET') {
         return await handleAdminAudit(request, env, cors);
       }
-      const onbRestoreMatch = url.pathname.match(/^\/api\/admin\/onboarding\/(BLA-ONB-\d{4}-\d{4})\/restore$/);
+      const onbRestoreMatch = url.pathname.match(/^\/api\/admin\/onboarding\/(BLA-ONB-\d{4}-(?:\d{4}|[a-f0-9]{16}))\/restore$/);
       if (onbRestoreMatch && request.method === 'POST') {
         return await handleAdminRestoreOnboarding(request, env, cors, onbRestoreMatch[1]);
       }
-      const onbDeleteMatch = url.pathname.match(/^\/api\/admin\/onboarding\/(BLA-ONB-\d{4}-\d{4})$/);
+      const onbDeleteMatch = url.pathname.match(/^\/api\/admin\/onboarding\/(BLA-ONB-\d{4}-(?:\d{4}|[a-f0-9]{16}))$/);
       if (onbDeleteMatch && request.method === 'DELETE') {
         return await handleAdminDeleteOnboarding(request, env, cors, onbDeleteMatch[1]);
       }

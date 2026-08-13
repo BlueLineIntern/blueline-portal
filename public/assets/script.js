@@ -6,6 +6,15 @@
 const API_BASE_URL = "";
 
 const SESSION_KEY = "blueline_session";
+const REGISTRATION_INVITE_KEY = "blueline_registration_invite";
+const inviteUrl = new URL(location.href);
+const inviteFromUrl = inviteUrl.searchParams.get("invite") || "";
+if (inviteFromUrl) {
+  sessionStorage.setItem(REGISTRATION_INVITE_KEY, inviteFromUrl);
+  inviteUrl.searchParams.delete("invite");
+  history.replaceState(null, "", inviteUrl.pathname + inviteUrl.search + inviteUrl.hash);
+}
+const REGISTRATION_INVITE = inviteFromUrl || sessionStorage.getItem(REGISTRATION_INVITE_KEY) || "";
 
 function getSession() {
   const raw = localStorage.getItem(SESSION_KEY);
@@ -263,9 +272,11 @@ document.getElementById("register-form").addEventListener("submit", async (e) =>
         name: document.getElementById("register-name").value.trim(),
         email: document.getElementById("register-email").value.trim(),
         password: document.getElementById("register-password").value,
+        invite: REGISTRATION_INVITE,
       },
     });
     setSession({ token: data.token, name: data.name, email: data.email });
+    sessionStorage.removeItem(REGISTRATION_INVITE_KEY);
     await enterApp();
   } catch (err) {
     errorEl.textContent = err.message;
@@ -290,6 +301,13 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
     errorEl.textContent = err.message;
   }
 });
+
+// An advisor's one-time link opens directly on account creation instead of
+// making the client notice and switch away from the default Login tab.
+if (REGISTRATION_INVITE) {
+  const createTab = document.querySelector('.tab-btn[data-tab="register"]');
+  if (createTab) createTab.click();
+}
 
 document.getElementById("logout-btn").addEventListener("click", async () => {
   try {

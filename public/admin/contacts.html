@@ -2622,7 +2622,9 @@
             ${kvRow('Household', c.household ? escapeHtml(c.household) : '<span class="cell-missing">—</span>')}
             ${kvRow('Primary advisor', c.advisor ? escapeHtml(c.advisor) : '<span class="cell-missing">—</span>')}
             ${kvRow('Status', statusBadge(c.status))}
-            ${kvRow('Portal account', c.hasAccount ? '<span class="badge badge-green">Registered</span>' : '<span class="badge badge-gray">Not registered</span>')}
+            ${kvRow('Portal account', c.hasAccount
+              ? '<span class="badge badge-green">Registered</span>'
+              : '<span class="badge badge-gray">Not registered</span> <button type="button" class="btn btn-ghost btn-small" id="create-portal-invite">Create registration link</button>')}
           </div>
         </div>
         <div class="panel">
@@ -2659,6 +2661,27 @@
     document.getElementById('overview-activity-link').addEventListener('click', (e) => {
       e.preventDefault();
       setTab('timeline');
+    });
+    const inviteBtn = document.getElementById('create-portal-invite');
+    if (inviteBtn) inviteBtn.addEventListener('click', async () => {
+      inviteBtn.disabled = true;
+      const oldText = inviteBtn.textContent;
+      inviteBtn.textContent = 'Creating…';
+      try {
+        const result = await api(`/api/admin/contacts/${encodeURIComponent(email)}/portal-invite`, { method: 'POST' });
+        const link = `${location.origin}/?invite=${encodeURIComponent(result.invite)}`;
+        try {
+          await navigator.clipboard.writeText(link);
+          alert('Registration link copied to your clipboard. It expires in 7 days and can be used once.');
+        } catch {
+          prompt('Copy this one-time registration link. It expires in 7 days:', link);
+        }
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        inviteBtn.disabled = false;
+        inviteBtn.textContent = oldText;
+      }
     });
     if (!background || !prevActivity) renderOverviewActivity(email);
   }
