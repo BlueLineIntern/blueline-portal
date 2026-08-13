@@ -1784,8 +1784,11 @@ function loadAssignments(raw) {
 // isn't would have their own work hidden from the portal they share.
 //
 // A single null (= "no record, everything visible") makes the whole union null,
-// because one member with no assignment record means everything is visible to
-// the household by the same rule that applies to them individually.
+// because one REGISTERED member with no assignment record means everything is
+// visible by the same rule that applies to them individually. A household
+// contact who has not created a portal account is different: there is nobody to
+// assign work to yet, so their list is empty and must not widen the household
+// union to every module.
 async function handleGetAssignments(request, env, cors) {
   const email = await getSessionEmail(request, env);
   if (!email) return json({ error: 'Not authenticated' }, 401, cors);
@@ -1794,7 +1797,11 @@ async function handleGetAssignments(request, env, cors) {
   let union = [];
   let anyUnrestricted = false;
   for (const m of members) {
-    const list = loadAssignments(await env.PORTAL_KV.get(`assignments:${m}`));
+    const [rawAssignments, account] = await Promise.all([
+      env.PORTAL_KV.get(`assignments:${m}`),
+      env.PORTAL_KV.get(`user:${m}`),
+    ]);
+    const list = account ? loadAssignments(rawAssignments) : [];
     byMember[m] = list;
     if (list === null) anyUnrestricted = true;
     else for (const k of list) if (!union.includes(k)) union.push(k);

@@ -316,52 +316,36 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
 //
 // Household-wide on purpose: Home must not report "all caught up" while a spouse
 // still has three assessments open in the portal they share.
+function assessmentProgressForMember(email) {
+  const assignmentList = Object.prototype.hasOwnProperty.call(assignmentsByMember, email)
+    ? assignmentsByMember[email]
+    : (email === viewingMember ? assignedKeys : null);
+  const assigned = (key) => !Array.isArray(assignmentList) || assignmentList.includes(key);
+  const answered = (mod) => {
+    const answers = isPersonalModule(mod.key) ? (personalByMember[email] || {}) : sharedModules;
+    return !!answers[mod.key];
+  };
+
+  // The advisor assignment editor presents Financial Picture Analysis as ONE
+  // assessment even though it stores five module keys. Count it the same way on
+  // Home: one assigned item, complete only when every assigned FPA module is
+  // complete. Category assessments remain one item per key.
+  const assignedFpa = MODULES.filter((mod) => assigned(mod.key));
+  const assignedCategories = CATEGORY_MODULES.filter((mod) => assigned(mod.key));
+  const total = (assignedFpa.length ? 1 : 0) + assignedCategories.length;
+  const done = (assignedFpa.length && assignedFpa.every(answered) ? 1 : 0)
+    + assignedCategories.filter(answered).length;
+  return { email, done, total, outstanding: Math.max(0, total - done) };
+}
+
 function assessmentTotals() {
-  const all = MODULES.concat(CATEGORY_MODULES);
   const members = (household.members || []).map((m) => m.email);
   // No household data yet (first paint, or a failed /api/household): fall back
   // to the member on screen so Home renders something truthful rather than zero.
   const scope = members.length ? members : [viewingMember || household.you || ""];
-  const assignedTo = (m) => (Object.prototype.hasOwnProperty.call(assignmentsByMember, m)
-    ? assignmentsByMember[m]
-    : (m === viewingMember ? assignedKeys : null));
-  // A non-array assignment record means "no record" = everything visible, the
-  // same rule isAssigned uses.
-  const isAssignedTo = (m, key) => {
-    const asg = assignedTo(m);
-    return !Array.isArray(asg) || asg.includes(key);
-  };
-
-  let done = 0;
-  let total = 0;
-
-  // Shared modules are ONE household copy, so they count once — counting them
-  // per member would have made a two-person household read "2 of 34" when there
-  // are really 13 shared slots plus 4 personal each. Available if ANY member is
-  // assigned it, matching the union the server returns.
-  for (const mod of all) {
-    if (isPersonalModule(mod.key)) continue;
-    if (!scope.some((m) => isAssignedTo(m, mod.key))) continue;
-    total += 1;
-    if (sharedModules[mod.key]) done += 1;
-  }
-
-  // Personal modules count once per member, since each has their own.
-  const perMember = [];
-  for (const m of scope) {
-    const answered = personalByMember[m] || {};
-    let mDone = 0;
-    let mTotal = 0;
-    for (const mod of all) {
-      if (!isPersonalModule(mod.key)) continue;
-      if (!isAssignedTo(m, mod.key)) continue;
-      mTotal += 1;
-      if (answered[mod.key]) mDone += 1;
-    }
-    done += mDone;
-    total += mTotal;
-    perMember.push({ email: m, done: mDone, total: mTotal });
-  }
+  const perMember = scope.map(assessmentProgressForMember);
+  const done = perMember.reduce((sum, p) => sum + p.done, 0);
+  const total = perMember.reduce((sum, p) => sum + p.total, 0);
   return { done, total, outstanding: Math.max(0, total - done), perMember };
 }
 
@@ -432,7 +416,8 @@ function renderHomeLanding() {
   if (totals.total) {
     // Says whose numbers these are. A shared household total is meaningless
     // without that — 16 of 34 looks like a broken count if you think it's yours.
-    const scopeNote = household.shared ? " across your household" : "";
+    const membersWithWork = totals.perMember.filter((p) => p.total > 0);
+    const scopeNote = membersWithWork.length > 1 ? " across your household" : "";
     document.getElementById("home-progress-line").textContent =
       `${totals.done} of ${totals.total} assessment${totals.total === 1 ? "" : "s"} complete${scopeNote}`;
     document.getElementById("home-progress-fill").style.width =
@@ -442,13 +427,13 @@ function renderHomeLanding() {
     // rather than only a blended figure.
     const breakdown = document.getElementById("home-progress-members");
     if (breakdown) {
-      breakdown.innerHTML = household.shared
-        ? totals.perMember
+      breakdown.innerHTML = membersWithWork.length > 1
+        ? membersWithWork
             .map((p) => `<span class="home-progress-member">${escapeHtml(shortMemberName(p.email))}
               ${p.done}/${p.total}</span>`)
             .join("")
         : "";
-      breakdown.classList.toggle("hidden", !household.shared);
+      breakdown.classList.toggle("hidden", membersWithWork.length <= 1);
     }
   }
 
@@ -869,15 +854,15 @@ function renderMemberSwitch() {
   const wrap = document.getElementById("member-switch");
   if (!household.shared) { wrap.classList.add("hidden"); return; }
   wrap.classList.remove("hidden");
-  // The count is that member's PERSONAL assessments only — the switcher has no
-  // effect on the shared ones, so including those would make every member show
-  // the same number and imply the switch did nothing.
+  // The count is all unfinished assessments assigned to that member. Answers
+  // for non-personal modules still come from the one shared household copy,
+  // but assignment visibility and the remaining count stay per person.
   document.getElementById("member-switch-btns").innerHTML = household.members
     .map((m) => {
-      const done = Object.keys(personalByMember[m.email] || {}).length;
+      const remaining = assessmentProgressForMember(m.email).outstanding;
       return `<button type="button" class="member-btn${m.email === viewingMember ? " active" : ""}"
         data-member="${escapeHtml(m.email)}">${escapeHtml(isYou(m.email) ? "You" : m.name)}
-        <span class="member-btn-count">${done}</span></button>`;
+        <span class="member-btn-count" title="${remaining} remaining">${remaining}</span></button>`;
     })
     .join("");
   wrap.querySelectorAll(".member-btn").forEach((b) =>
