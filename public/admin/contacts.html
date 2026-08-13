@@ -324,6 +324,10 @@
                 <strong>Export CSV</strong>
                 <span>Downloads exactly what's listed, filters included</span>
               </button>
+              <button type="button" class="io-action" id="export-keydocs-btn">
+                <strong>Export key documents</strong>
+                <span>Families and companies with their IPS and Advisory Agreement dates</span>
+              </button>
               <button type="button" class="io-action" id="import-btn">
                 <strong>Import CSV</strong>
                 <span>Add people, families and companies from a spreadsheet</span>
@@ -627,12 +631,16 @@
 
     <div class="field">
       <label>What should the file do?</label>
-      <label class="imp-mode"><input type="radio" name="import-mode" value="replace" checked />
-        <span><strong>Replace everything</strong> — the file becomes the contact list. Anyone
-        not in it is archived, and any family or company not in it is deleted.</span></label>
-      <label class="imp-mode"><input type="radio" name="import-mode" value="merge" />
+      <!-- The additive mode is the default because it is the non-destructive one
+           and the common case: a small sheet covering a few households, where
+           everything absent from the file should simply be left alone. Replace
+           is a deliberate choice, not something to land on by not reading. -->
+      <label class="imp-mode"><input type="radio" name="import-mode" value="merge" checked />
         <span><strong>Add and update only</strong> — nothing is ever removed. Rows in the file
-        are created or updated; everything else is left alone.</span></label>
+        are created or updated; everything else is left exactly as it is.</span></label>
+      <label class="imp-mode"><input type="radio" name="import-mode" value="replace" />
+        <span><strong>Replace everything</strong> — the file becomes the whole contact list.
+        Anyone not in it is archived, and any family or company not in it is deleted.</span></label>
     </div>
 
     <div class="field">
@@ -1259,6 +1267,21 @@
     el.classList.toggle('err', !!isErr);
   }
 
+  // \r\n and a BOM so Excel opens it as UTF-8 rather than mangling accents. The
+  // BOM is written as an escape, not a literal character: the raw bytes are
+  // invisible in an editor and easy to strip by accident.
+  function downloadCsv(filename, lines) {
+    const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   document.getElementById('export-btn').addEventListener('click', () => {
     // `people` is every person on screen — including members nested inside a
     // collapsed family. Exporting only the expanded ones would make the file
@@ -1292,19 +1315,40 @@
           hkd.ips || '', hkd.advisoryAgreement || '',
         ].map(csvCell).join(','));
       });
-    // \r\n and a BOM so Excel opens it as UTF-8 rather than mangling accents.
-    // Written as an escape, not a literal BOM character: the raw bytes are
-    // invisible in an editor and easy to strip by accident.
-    const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `contacts-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    downloadCsv(`contacts-${new Date().toISOString().slice(0, 10)}.csv`, lines);
     setIoStatus(`Exported ${people.length + households.length} row${people.length + households.length === 1 ? '' : 's'}.`);
+  });
+
+  // A groupings-only sheet for the key-document dates, deliberately narrow: four
+  // columns, one row per family/company, no people. The full export carries the
+  // same two date columns, but 150 contact rows around them make it the wrong
+  // tool for "fill in who has signed what". This file re-imports as-is \u2014
+  // Type + Name is all the importer needs to find a grouping.
+  document.getElementById('export-keydocs-btn').addEventListener('click', () => {
+    const { groups } = visibleRecords();
+    if (!groups.length) {
+      // Otherwise a type filter of "People only" silently downloads a
+      // header-only file that looks like the firm has no households.
+      setIoStatus('No families or companies are listed \u2014 clear the type filter and try again.', true);
+      return;
+    }
+    const lines = [['Type', 'Name', 'IPS', 'AdvisoryAgreement'].join(',')];
+    groups
+      .slice()
+      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+      .forEach((h) => {
+        const kd = h.keyDocuments || {};
+        lines.push([
+          kindMeta(h).label, h.name, kd.ips || '', kd.advisoryAgreement || '',
+        ].map(csvCell).join(','));
+      });
+    downloadCsv(`key-documents-${new Date().toISOString().slice(0, 10)}.csv`, lines);
+    const withNone = groups.filter((h) => {
+      const kd = h.keyDocuments || {};
+      return !kd.ips && !kd.advisoryAgreement;
+    }).length;
+    setIoStatus(`Exported ${groups.length} famil${groups.length === 1 ? 'y' : 'ies'} / compan${groups.length === 1 ? 'y' : 'ies'}`
+      + (withNone ? `, ${withNone} with no dates recorded yet.` : '.'));
   });
 
   // ---------- Create / edit contact modal ----------
@@ -1600,7 +1644,9 @@
 
   function importMode() {
     const el = document.querySelector('input[name="import-mode"]:checked');
-    return el ? el.value : 'replace';
+    // Falls back to the SAFE mode: if the radios ever fail to render, an import
+    // must not silently become a destructive one.
+    return el ? el.value : 'merge';
   }
 
   function normHeader(h) {
@@ -1616,7 +1662,7 @@
   // numbers the advisor sees in their spreadsheet — "Row 9" has to mean row 9
   // in the file they are about to go and fix.
   function parseCsv(text) {
-    const s = String(text).replace(/^﻿/, ''); // Excel writes a UTF-8 BOM
+    const s = String(text).replace(/^\ufeff/, ''); // Excel writes a UTF-8 BOM
     const rows = [];
     let row = [];
     let field = '';

@@ -595,7 +595,18 @@ Client portal is untouched and keeps its own look.
   hand-typed record does. CSV rather than `.xlsx` because reading a real workbook
   needs a ~1MB library and every spreadsheet tool exports CSV; the modal says so
   rather than leaving it to a failed upload.
-  - **Two modes, Replace being the default.** *Replace everything* treats the
+  - **Export key documents** (third button in the Import / Export rail) is a
+    deliberately narrow companion sheet: `Type, Name, IPS, AdvisoryAgreement`,
+    one row per family/company, no people. The full export carries the same two
+    date columns, but ~150 contact rows around them make it the wrong tool for
+    "fill in who has signed what". The file re-imports as-is, since `Type` +
+    `Name` is all the importer needs to locate a grouping. Groupings with no
+    dates yet are included on purpose — they are the ones needing filling in —
+    and the status line counts them. Respects the type filter like its sibling
+    button, but says so rather than silently downloading a header-only file when
+    the filter is set to People only.
+  - **Two modes, "Add and update only" being the default.** *Replace everything*
+    treats the
     file as the whole contact list: anyone not in it is **archived** and any
     family/company not in it is **deleted**. *Add and update only* never removes
     anything. The asymmetry is forced by what the API offers — there is no
@@ -604,6 +615,13 @@ Client portal is untouched and keeps its own look.
     person's tasks, notes, timeline and documents (verified). A grouping has only
     a hard DELETE, so that half is **not** reversible, though its members' contact
     records survive it.
+    - The additive mode is the **default**, and `importMode()` falls back to it if
+      the radios ever fail to render: the common case is a small sheet covering a
+      few households, where a file that omits everyone else must not be read as
+      an instruction to archive them. Replace was briefly the default; a
+      key-documents sheet naming one household would then have proposed archiving
+      every other contact on open — blocked by the typed `REPLACE` guard, but the
+      wrong thing to land on by not reading.
     - "In the file" includes groupings named only through a person's `Household`
       column, not just explicit Family/Company rows — otherwise importing people
       would delete the very families the same file is putting them into.
