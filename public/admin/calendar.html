@@ -44,6 +44,34 @@
   .cal-chip.done { opacity: 0.55; text-decoration: line-through; }
   .cal-chip .cal-time { color: var(--muted); font-variant-numeric: tabular-nums; }
 
+  /* Compliance items shown alongside operational tasks. A FILL of its own, not
+     another prep colour: the whole point of the source toggle is being able to
+     tell the two apart at a glance, and reusing blue/red/green would make a
+     compliance obligation look like a meeting with prep outstanding. Slate is
+     otherwise unused on this page.
+     Overdue is an EDGE MARKER rather than a red fill, matching the compliance
+     page's own calendar — most open items are overdue, so a red fill turns the
+     month into one colour and hides everything else. */
+  .cal-chip.is-compliance { background: var(--slate-bg); border-color: var(--border-strong); color: var(--text); }
+  .cal-chip.is-compliance .cal-dot { background: var(--navy); }
+  .cal-chip.is-compliance.over { box-shadow: inset 3px 0 0 var(--red); font-weight: var(--fw-semibold); }
+  .cal-chip.is-compliance.closed { opacity: 0.55; text-decoration: line-through; }
+
+  /* Source checkboxes. Sit between the date nav and the view segments. */
+  .cal-sources { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; font-size: var(--fs-sm); }
+  .cal-sources label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text); white-space: nowrap; }
+  .cal-sources input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--sky); cursor: pointer; }
+
+  /* Only shown once both sources are actually on screen — with one source the
+     colour split has nothing to explain. Swatches carry .cal-sw, never
+     .cal-chip, so no .cal-chip rule can accidentally match the legend. */
+  .cal-legend { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-bottom: var(--sp-3); font-size: var(--fs-xs); color: var(--muted); }
+  .cal-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .cal-sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; border: 1px solid var(--border); }
+  .cal-sw.sw-ops { background: var(--sky-bg); border-color: var(--sky); }
+  .cal-sw.sw-cmp { background: var(--slate-bg); border-color: var(--border-strong); }
+  .cal-sw.sw-over { background: var(--slate-bg); box-shadow: inset 3px 0 0 var(--red); }
+
   /* Week + day */
   .cal-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: start; }
   .cal-col { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); min-height: 120px; display: flex; flex-direction: column; }
@@ -114,12 +142,24 @@
         <button type="button" class="btn btn-ghost btn-small" id="cal-next" title="Next">›</button>
         <span class="cal-period" id="cal-period"></span>
       </div>
+      <!-- Two independent sources, not a segmented control: the useful default
+           is seeing both together, and either can be switched off. -->
+      <div class="cal-sources" id="cal-sources">
+        <label><input type="checkbox" id="src-ops" checked /> Operational tasks</label>
+        <label class="hidden" id="src-compliance-wrap"><input type="checkbox" id="src-compliance" checked /> Compliance</label>
+      </div>
       <div class="cal-seg" id="cal-views">
         <button type="button" data-v="month" class="active">Month</button>
         <button type="button" data-v="week">Week</button>
         <button type="button" data-v="day">Day</button>
         <button type="button" data-v="agenda">Agenda</button>
       </div>
+    </div>
+
+    <div class="cal-legend hidden" id="cal-legend">
+      <span><span class="cal-sw sw-ops"></span>Operational task</span>
+      <span><span class="cal-sw sw-cmp"></span>Compliance item</span>
+      <span><span class="cal-sw sw-over"></span>Overdue</span>
     </div>
 
     <p class="panel-status" id="cal-status"></p>
@@ -231,6 +271,28 @@
   let drawerMode = null, drawerTaskId = null, draft = null;
   const POLL_INTERVAL_MS = 45000;
 
+  // Compliance items are a SEPARATE store (`compliance_items`, one encrypted KV
+  // blob) with their own schema and their own two-signature workflow — not tasks
+  // with a category. They are shown here read-only and open on the Compliance
+  // page; nothing about them is editable from this calendar.
+  let allCompliance = [];
+  // The endpoint is 403 outside Frank's shared workspace (see
+  // handleAdminComplianceList), exactly like the sidebar's Compliance link. When
+  // that happens the checkbox is hidden rather than left on offer as a toggle
+  // that silently shows nothing.
+  let complianceAvailable = false;
+
+  // Which sources are on screen. Persisted per admin so the choice survives a
+  // reload; keyed by email so a shared machine doesn't inherit someone else's.
+  const SOURCE_KEY = `blueline_cal_sources:${SESSION.email || ''}`;
+  const showSources = (() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SOURCE_KEY) || 'null');
+      if (saved && typeof saved.ops === 'boolean' && typeof saved.compliance === 'boolean') return saved;
+    } catch { /* fall through to the default */ }
+    return { ops: true, compliance: true };
+  })();
+
   // Meeting types — a label you can tag a meeting with. They no longer auto-fill
   // the checklist or the title; you build your own prep list.
   const MEETING_TEMPLATES = {
@@ -264,7 +326,9 @@
   function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
   function startOfWeek(d) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - x.getDay()); return x; }
   function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-  function taskDate(t) { if (!t.due) return null; const d = new Date(t.due); return isNaN(d) ? null : d; }
+  // parseDue (shared.js) handles the date-only case as LOCAL midnight; a bare
+  // `new Date('2026-08-14')` is UTC midnight and put the task on the day before.
+  function taskDate(t) { return t.due ? parseDue(t.due) : null; }
   function hasTime(t) { return typeof t.due === 'string' && t.due.includes('T'); }
   function timeLabel(t) {
     const d = taskDate(t);
@@ -300,16 +364,52 @@
     sel.value = current || '';
   }
 
-  // Tasks that have a due date land on the calendar. Sorted by time then priority.
+  // A compliance item as this calendar needs to see it. Deliberately a VIEW,
+  // built on read and never stored: the real record keeps its own shape and its
+  // own endpoint, and flattening the two schemas into one store would put a
+  // two-signature compliance obligation and a meeting in the same bucket.
+  //
+  // `dueDate` is date-only ('YYYY-MM-DD'), so every compliance item is all-day.
+  // Parsed from its parts rather than `new Date(str)`, which reads a bare date
+  // as UTC midnight and renders as the day before in every US timezone.
+  function complianceAsEvent(item) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(item.dueDate || '').trim());
+    if (!m) return null;
+    return {
+      source: 'compliance',
+      id: item.id,
+      date: new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])),
+      title: item.item || '(untitled)',
+      closed: item.status === 'CLOSED',
+      area: item.complianceArea || '',
+      owner: item.owner || '',
+      workflow: item.workflow || '',
+    };
+  }
+
+  // Everything on one day, from whichever sources are switched on. Tasks sort by
+  // time then priority as before; compliance items are all-day, so they sort
+  // alongside the other untimed entries rather than being pinned to the top.
   function itemsForDay(date) {
     const pRank = { high: 0, medium: 1, low: 2 };
-    return allTasks
-      .filter((t) => { const d = taskDate(t); return d && sameDay(d, date); })
-      .sort((a, b) => {
-        const at = hasTime(a) ? taskDate(a).getTime() : -1, bt = hasTime(b) ? taskDate(b).getTime() : -1;
-        if (at !== bt) return at - bt;
-        return (pRank[a.priority] ?? 1) - (pRank[b.priority] ?? 1);
-      });
+    const ops = showSources.ops
+      ? allTasks
+        .filter((t) => { const d = taskDate(t); return d && sameDay(d, date); })
+        .map((t) => ({ source: 'ops', task: t, date: taskDate(t) }))
+      : [];
+    const cmp = showSources.compliance && complianceAvailable
+      ? allCompliance.map(complianceAsEvent).filter((e) => e && sameDay(e.date, date))
+      : [];
+    return ops.concat(cmp).sort((a, b) => {
+      const at = a.source === 'ops' && hasTime(a.task) ? a.date.getTime() : -1;
+      const bt = b.source === 'ops' && hasTime(b.task) ? b.date.getTime() : -1;
+      if (at !== bt) return at - bt;
+      // Among untimed entries, operational work leads: it is the thing you act
+      // on today, where a compliance item is a dated obligation.
+      if (a.source !== b.source) return a.source === 'ops' ? -1 : 1;
+      if (a.source === 'compliance') return a.title.localeCompare(b.title);
+      return (pRank[a.task.priority] ?? 1) - (pRank[b.task.priority] ?? 1);
+    });
   }
 
   function progress(list, key) {
@@ -318,7 +418,37 @@
   }
 
   // ---------- Rendering ----------
-  function chipHtml(t) {
+
+  // Overdue = due before today and not yet closed. Compared on local day
+  // boundaries so an item due today never reads as late.
+  function complianceOverdue(e) {
+    if (e.closed) return false;
+    const today = new Date();
+    return e.date < new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  }
+
+  function complianceChipTitle(e) {
+    const bits = [e.title];
+    if (e.area) bits.push(e.area);
+    if (e.owner) bits.push(`Owner: ${e.owner}`);
+    if (e.workflow) bits.push(e.workflow);
+    return `${bits.join(' — ')}\nCompliance item — opens on the Compliance page`;
+  }
+
+  // `data-cmp`, NOT `data-id`: the body's click delegation routes `data-id`
+  // straight into openDrawerEdit(), which looks the id up in allTasks. A
+  // compliance id would find nothing and the click would silently do nothing.
+  function complianceChipHtml(e) {
+    return `<div class="cal-chip is-compliance ${complianceOverdue(e) ? 'over' : ''} ${e.closed ? 'closed' : ''}"
+      data-cmp="${escapeHtml(e.id)}" title="${escapeHtml(complianceChipTitle(e))}">
+      <span class="cal-dot"></span>
+      <span class="cal-chip-title">${escapeHtml(e.title)}</span>
+    </div>`;
+  }
+
+  function chipHtml(entry) {
+    if (entry.source === 'compliance') return complianceChipHtml(entry);
+    const t = entry.task;
     const isMeeting = (t.category || 'other') === 'meeting';
     const tl = timeLabel(t);
     return `<div class="cal-chip prep-${prepStatus(t)} ${isMeeting ? 'is-meeting' : ''} ${t.status === 'done' ? 'done' : ''}" data-id="${escapeHtml(t.id)}" title="${escapeHtml(prepTitle(t))}">
@@ -328,8 +458,21 @@
     </div>`;
   }
 
+  const NO_SOURCES_MSG = 'Both sources are switched off — tick Operational tasks or Compliance above to see anything.';
+
+  // Every grid view renders empty cells when both sources are off, which reads
+  // as a broken page rather than a choice — the month/week/day views say so in
+  // the status line, the agenda in its own empty state.
+  function noSourcesOn() {
+    return !showSources.ops && !(showSources.compliance && complianceAvailable);
+  }
+
   function render() {
     document.querySelectorAll('#cal-views button').forEach((b) => b.classList.toggle('active', b.dataset.v === currentView));
+    if (noSourcesOn() && currentView !== 'agenda') setStatus(NO_SOURCES_MSG);
+    // Cleared only when this is the message actually on screen, so re-ticking a
+    // source can't wipe a "Failed to load" or "Last updated" line.
+    else if (document.getElementById('cal-status').textContent === NO_SOURCES_MSG) setStatus('');
     const body = document.getElementById('cal-body');
     const period = document.getElementById('cal-period');
     if (currentView === 'month') { period.textContent = viewDate.toLocaleDateString([], { month: 'long', year: 'numeric' }); body.innerHTML = renderMonth(); }
@@ -398,15 +541,29 @@
       if (!items.length) continue;
       any = true;
       out += `<div><div class="agenda-day-label ${sameDay(d, today) ? 'is-today' : ''}">${d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
-        ${items.map((t) => `<div class="agenda-row" data-id="${escapeHtml(t.id)}">
-          <span class="agenda-time">${escapeHtml(timeLabel(t) || '—')}</span>
-          <span class="cal-dot" style="width:8px;height:8px;border-radius:50%;background:${prepColorVar(t)}"></span>
-          <span class="agenda-title ${t.status === 'done' ? 'done' : ''}">${escapeHtml(t.title)}</span>
-          ${categoryBadge(t.category)}
-          <span class="cell-sub">${t.client ? escapeHtml(contactName(t.client)) : (t.category === 'meeting' ? 'Internal' : '')}</span>
-        </div>`).join('')}</div>`;
+        ${items.map((entry) => {
+          if (entry.source === 'compliance') {
+            return `<div class="agenda-row" data-cmp="${escapeHtml(entry.id)}" title="${escapeHtml(complianceChipTitle(entry))}">
+              <span class="agenda-time">${complianceOverdue(entry) ? 'Overdue' : 'All day'}</span>
+              <span class="cal-dot" style="width:8px;height:8px;border-radius:50%;background:${complianceOverdue(entry) ? 'var(--red)' : 'var(--navy)'}"></span>
+              <span class="agenda-title ${entry.closed ? 'done' : ''}">${escapeHtml(entry.title)}</span>
+              <span class="badge badge-gray">Compliance</span>
+              <span class="cell-sub">${escapeHtml(entry.area || entry.owner || '')}</span>
+            </div>`;
+          }
+          const t = entry.task;
+          return `<div class="agenda-row" data-id="${escapeHtml(t.id)}">
+            <span class="agenda-time">${escapeHtml(timeLabel(t) || '—')}</span>
+            <span class="cal-dot" style="width:8px;height:8px;border-radius:50%;background:${prepColorVar(t)}"></span>
+            <span class="agenda-title ${t.status === 'done' ? 'done' : ''}">${escapeHtml(t.title)}</span>
+            ${categoryBadge(t.category)}
+            <span class="cell-sub">${t.client ? escapeHtml(contactName(t.client)) : (t.category === 'meeting' ? 'Internal' : '')}</span>
+          </div>`;
+        }).join('')}</div>`;
     }
-    return `<div class="cal-agenda">${any ? out : '<p class="cal-empty">Nothing scheduled in the next 30 days. Click a day to add a meeting.</p>'}</div>`;
+    return `<div class="cal-agenda">${any ? out : `<p class="cal-empty">${escapeHtml(noSourcesOn()
+      ? NO_SOURCES_MSG
+      : 'Nothing scheduled in the next 30 days. Click a day to add a meeting.')}</p>`}</div>`;
   }
 
   // ---------- Navigation ----------
@@ -425,8 +582,36 @@
   document.getElementById('cal-refresh').addEventListener('click', () => loadData());
   document.getElementById('cal-new').addEventListener('click', () => openDrawerNew(ymd(new Date())));
 
+  // ---------- Source checkboxes ----------
+
+  function renderSourceControls() {
+    document.getElementById('src-compliance-wrap').classList.toggle('hidden', !complianceAvailable);
+    document.getElementById('src-ops').checked = showSources.ops;
+    document.getElementById('src-compliance').checked = showSources.compliance;
+    // The legend explains a colour split, so it only earns its space when both
+    // kinds are actually on screen together.
+    document.getElementById('cal-legend').classList.toggle(
+      'hidden', !(complianceAvailable && showSources.ops && showSources.compliance)
+    );
+  }
+
+  function setSource(key, on) {
+    showSources[key] = on;
+    try { localStorage.setItem(SOURCE_KEY, JSON.stringify(showSources)); } catch { /* private mode: the choice just won't persist */ }
+    renderSourceControls();
+    render();
+  }
+
+  document.getElementById('src-ops').addEventListener('change', (e) => setSource('ops', e.target.checked));
+  document.getElementById('src-compliance').addEventListener('change', (e) => setSource('compliance', e.target.checked));
+
   // Event delegation for the whole calendar body.
   document.getElementById('cal-body').addEventListener('click', (e) => {
+    // Compliance first: these are read-only here and belong to a different
+    // record with a different two-signature workflow, so they hand off to the
+    // Compliance page rather than opening the meeting drawer.
+    const cmp = e.target.closest('[data-cmp]');
+    if (cmp) { location.href = `/admin/compliance.html?item=${encodeURIComponent(cmp.dataset.cmp)}`; return; }
     const chip = e.target.closest('[data-id]');
     if (chip) { openDrawerEdit(chip.dataset.id); return; }
     const more = e.target.closest('[data-more]');
@@ -686,12 +871,23 @@
   async function loadData() {
     if (drawerMode) return; // don't refresh under an open panel
     try {
-      const [taskData, contactData] = await Promise.all([api('/api/admin/tasks'), api('/api/admin/contacts')]);
+      // Compliance is additive: it 403s outside Frank's shared workspace and is
+      // a separate store that could fail on its own, so it must never be able to
+      // stop the meetings from rendering. A rejection here means "not available
+      // to you", which hides the checkbox rather than failing the page.
+      const [taskData, contactData, cmpData] = await Promise.all([
+        api('/api/admin/tasks'),
+        api('/api/admin/contacts'),
+        api('/api/admin/compliance').catch(() => null),
+      ]);
       allTasks = taskData.tasks || [];
       allContacts = (contactData.contacts || []).filter((c) => !c.archived)
         .sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
       adminList = contactData.admins || [];
       registerStaff(Object.entries(contactData.adminNames || {}).map(([id, name]) => ({ id, name })));
+      complianceAvailable = !!cmpData;
+      allCompliance = (cmpData && cmpData.items) || [];
+      renderSourceControls();
       setStatus('');
       render();
     } catch (err) { setStatus(`Failed to load: ${err.message}`); }
@@ -710,6 +906,10 @@
   // Same type-to-search picker as Home and Operations — a meeting's contact is
   // picked from the same unscrollable list.
   initContactPicker('d-client');
+
+  // Reflect the persisted source choice before the first fetch, so a saved
+  // "compliance off" doesn't show as ticked for the second it takes to load.
+  renderSourceControls();
 
   setInterval(loadData, POLL_INTERVAL_MS);
   loadData();

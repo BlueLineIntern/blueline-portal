@@ -1089,6 +1089,45 @@ Client portal is untouched and keeps its own look.
   The dashboard **Upcoming Meetings** widget shows client, time, prep readiness,
   and the client's open-task count, linking to the meeting in the calendar.
   (No hour-grid, recurring meetings, or document upload yet.)
+- **Two sources on the Calendar: Operational tasks and Compliance** — two
+  independent checkboxes (not a segmented control: the useful default is both
+  on, and either can be switched off). Persisted per admin in
+  `blueline_cal_sources:<email>`.
+  - **Compliance items are NOT tasks with a category.** They are a separate
+    store (`compliance_items`, one encrypted KV blob) with their own schema and
+    their own two-signature workflow. `complianceAsEvent()` builds a read-only
+    VIEW of each for the grid; nothing is copied, and the real record keeps its
+    own shape and endpoint. Flattening the two would put a compliance obligation
+    and a meeting in the same bucket.
+  - They are **read-only here** and hand off to `compliance.html?item=<id>`,
+    which opens that item's drawer. Chips carry **`data-cmp`, never `data-id`** —
+    the body's click delegation routes `data-id` into `openDrawerEdit()`, which
+    looks the id up in `allTasks`, so a compliance id there would silently do
+    nothing. The `data-cmp` branch is checked first.
+  - `/api/admin/compliance` **403s outside Frank's shared workspace**, same as
+    the sidebar's Compliance link. The fetch is `.catch(() => null)` and a
+    failure hides the checkbox rather than leaving a toggle that shows nothing —
+    and can never stop the meetings from rendering.
+  - Compliance chips get a **slate fill of their own**, not another prep colour:
+    the whole point of the toggle is telling the two apart, and reusing
+    blue/red/green would make an obligation look like a meeting with prep
+    outstanding. Overdue is an **edge marker, not a red fill**, matching the
+    compliance page's own calendar — most open items are overdue, so a red fill
+    turns the month into one colour. The legend only appears when both sources
+    are on screen; with both off, the page says so instead of rendering an empty
+    grid.
+- **Date-only dues parse as LOCAL midnight** (`parseDue()` in shared.js). This
+  was a real bug, fixed 2026-08-14. `new Date('2026-08-14')` is UTC midnight,
+  which in every US timezone is the evening BEFORE — and date-only dues are the
+  **common** case, not an edge one: Home's Today/Tomorrow/In-a-week picker and
+  both quick-add forms (`<input type="date">`) all produce them. Symptoms were a
+  task set to "due today" reading **"Overdue · <yesterday>"** everywhere
+  `dueMeta()` is used, Home's Due Today / Overdue tiles disagreeing with each
+  other, and calendar chips sitting on the wrong day. Every `t.due` parse across
+  the admin pages goes through `parseDue()` now; `test-prospects.js` fails if a
+  bare `new Date(<x>.due)` comes back. Values carrying a time are unambiguous and
+  parse normally. Same trap as `fmtDateOnly()` in contacts.html, which already
+  documented it.
 - **Outlook calendar push** (`calendarOwners` on a `task:` record) — a meeting can
   be mirrored onto staff members' real Outlook calendars. The **"Add to Outlook
   calendars"** checkbox list in the meeting panel picks *which* mailboxes per

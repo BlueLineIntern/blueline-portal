@@ -340,4 +340,75 @@ adminPages.forEach((f) => {
 check(versions.size === 1,
   `every admin page requests the same shared.js/shared.css version (${[...versions].join(', ')})`);
 
+// ---------- 8. Date-only dues parse as LOCAL midnight ----------
+//
+// The bug this pins: `new Date('2026-08-14')` is UTC midnight, which in every US
+// timezone is the evening BEFORE. Date-only dues are the common case (Home's
+// Today/Tomorrow/In-a-week picker and both quick-add forms produce them), so a
+// task set to "due today" reported "Overdue - <yesterday>" and sat on the wrong
+// day of the calendar.
+const parseDue = eval('(' + extract(sharedJs, 'parseDue') + ')');
+const dueMeta = new Function(`
+  ${extract(sharedJs, 'parseDue')}
+  ${extract(sharedJs, 'isSameLocalDay')}
+  ${extract(sharedJs, 'dueMeta')}
+  return dueMeta;
+`)();
+
+const now = new Date();
+const pad = (n) => String(n).padStart(2, '0');
+const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
+const parsed = parseDue(todayStr);
+check(parsed.getFullYear() === now.getFullYear() && parsed.getMonth() === now.getMonth()
+  && parsed.getDate() === now.getDate() && parsed.getHours() === 0,
+  'a date-only due parses as local midnight on that calendar day, not UTC midnight');
+
+const todayMeta = dueMeta({ due: todayStr, status: 'open' });
+check(todayMeta.today === true && todayMeta.overdue === false,
+  'a task due today with a date-only due reads as "due today", not overdue');
+
+const timed = dueMeta({ due: `${todayStr}T14:00`, status: 'open' });
+check(timed.today === true, 'a due that carries a time still parses normally');
+check(dueMeta({ due: 'not-a-date', status: 'open' }).state === 'none',
+  'an unparseable due still degrades to no-due rather than throwing');
+
+check(!/new Date\((?:t|task|a|b|x)\.due\)/.test(sharedJs + ops + home + fs.readFileSync(path.join(root, 'public/admin/calendar.html'), 'utf8')),
+  'no admin page parses a task due with a bare new Date() any more');
+
+// ---------- 9. Calendar sources ----------
+
+const cal = fs.readFileSync(path.join(root, 'public/admin/calendar.html'), 'utf8');
+
+check(cal.includes("id=\"src-ops\"") && cal.includes("id=\"src-compliance\""),
+  'the calendar offers an Operational tasks and a Compliance checkbox');
+check(cal.includes("api('/api/admin/compliance').catch(() => null)"),
+  'compliance is additive: it can 403 or fail without stopping the meetings from rendering');
+check(cal.includes('complianceAvailable = !!cmpData'),
+  'a compliance failure marks the source unavailable rather than showing an empty toggle');
+check(cal.includes("document.getElementById('src-compliance-wrap').classList.toggle('hidden', !complianceAvailable)"),
+  'the Compliance checkbox is hidden outside the workspace that can read it');
+
+// A compliance chip carries data-cmp, never data-id. The body's click delegation
+// sends data-id into openDrawerEdit(), which looks the id up in allTasks — a
+// compliance id would find nothing and the click would silently do nothing.
+const cmpChip = cal.slice(cal.indexOf('function complianceChipHtml'), cal.indexOf('function chipHtml'));
+check(cmpChip.includes('data-cmp=') && !cmpChip.includes('data-id='),
+  'compliance chips are tagged data-cmp so they never fall into the meeting drawer');
+check(cal.indexOf("closest('[data-cmp]')") < cal.indexOf("closest('[data-id]')"),
+  'the click handler checks data-cmp before data-id');
+check(cal.includes('/admin/compliance.html?item='),
+  'a compliance chip hands off to the Compliance page rather than opening the meeting drawer');
+check(fs.readFileSync(path.join(root, 'public/admin/compliance.html'), 'utf8').includes("new URLSearchParams(location.search).get('item')"),
+  'the Compliance page honours ?item= so that hand-off lands on the right record');
+
+// Date-only again, this time on the compliance side: same trap, same fix.
+check(extract(cal, 'complianceAsEvent').includes('new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))'),
+  'a compliance dueDate is parsed from its parts, so it lands on the right day too');
+
+check(cal.includes('SOURCE_KEY') && cal.includes('localStorage.setItem(SOURCE_KEY'),
+  'the source choice persists per admin');
+check(cal.includes('NO_SOURCES_MSG'),
+  'switching both sources off explains itself rather than rendering an empty grid');
+
 console.log(`\n${passed} prospect checks passed`);

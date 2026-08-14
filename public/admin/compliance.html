@@ -1771,7 +1771,15 @@
     if (['dashboard', 'tracker', 'calendar'].includes(v)) currentView = v;
   })();
 
-  loadData();
+  // ?item=<id> opens that item's drawer once the list has loaded — the unified
+  // Calendar page links here when a compliance chip is clicked, since these
+  // items are a different record with a different workflow and have no business
+  // opening in the meeting drawer over there.
+  (async function init() {
+    await loadData();
+    const wanted = new URLSearchParams(location.search).get('item');
+    if (wanted && allItems.some((i) => i.id === wanted)) openDrawerEdit(wanted);
+  })();
 </script>
 </body>
 </html>
