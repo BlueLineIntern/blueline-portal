@@ -562,9 +562,17 @@ function icon(name) {
 // display label, so the two renames below (Dashboard -> Home, Operations ->
 // Tasks) change only what the advisor reads. Ids and hrefs stay put so no page
 // loses its active state and no existing bookmark breaks.
+//
+// `page` is the activePage key an item belongs to, defaulting to `id`. Clients
+// and Prospects are two nav entries over ONE page — contacts.html serving a
+// different segment — so they share `page: 'contacts'`. Everything keyed on the
+// page (the employee workspace filter, its saved-filter localStorage key, the
+// "leaving a filtered page" reset below) must key on `page`, never on the nav
+// id, or switching sides would look like leaving Contacts entirely.
 const NAV_ITEMS = [
   { id: 'dashboard', href: '/admin/', icon: 'home', label: 'Home' },
-  { id: 'contacts', href: '/admin/contacts.html', icon: 'users', label: 'Contacts' },
+  { id: 'clients', page: 'contacts', href: '/admin/contacts.html', icon: 'users', label: 'Clients' },
+  { id: 'prospects', page: 'contacts', href: '/admin/contacts.html?seg=prospects', icon: 'user', label: 'Prospects' },
   { id: 'operations', href: '/admin/operations.html', icon: 'check-square', label: 'Tasks' },
   { id: 'calendar', href: '/admin/calendar.html', icon: 'calendar', label: 'Calendar' },
   { id: 'compliance', href: '/admin/compliance.html', icon: 'shield', label: 'Compliance' },
@@ -823,7 +831,21 @@ function recentSidebarHtml() {
 
 // Builds the sidebar into #sidebar-root and wires logout, the global search
 // palette (Ctrl/Cmd-K), and the notification bell. Call once per page.
-function initShell(activePage) {
+// Move the sidebar highlight without reloading. Contacts needs this because its
+// segment can change in place — opening a prospect from a family, or converting
+// one to a client — and a sidebar still lighting up the side you just left is
+// worse than no highlight at all.
+function setActiveNav(navId) {
+  document.querySelectorAll('.sidebar-nav [data-nav-id]').forEach((a) => {
+    a.classList.toggle('active', a.dataset.navId === navId);
+  });
+}
+
+// `navId` names which sidebar entry lights up, for the one page that has more
+// than one (Contacts, as Clients / Prospects). Everything else keys on
+// activePage and is unaffected — see the note on NAV_ITEMS.
+function initShell(activePage, { navId } = {}) {
+  const activeNav = navId || activePage;
   const root = document.getElementById('sidebar-root');
   if (!root || !SESSION) return;
   if (EMPLOYEE_FILTER_PAGES.has(activePage)) {
@@ -841,7 +863,7 @@ function initShell(activePage) {
     </div>
     <nav class="sidebar-nav">
       ${NAV_ITEMS.map((n) =>
-        `<a href="${n.href}" data-nav-id="${n.id}" class="${n.id === activePage ? 'active' : ''}${n.id === 'compliance' ? ' hidden' : ''}"><span class="nav-icon">${icon(n.icon)}</span>${n.label}</a>`
+        `<a href="${n.href}" data-nav-id="${n.id}" data-nav-page="${n.page || n.id}" class="${n.id === activeNav ? 'active' : ''}${n.id === 'compliance' ? ' hidden' : ''}"><span class="nav-icon">${icon(n.icon)}</span>${n.label}</a>`
       ).join('')}
     </nav>
     ${recentSidebarHtml()}
@@ -915,8 +937,11 @@ async function loadWorkspaceContext(activePage) {
       // Leaving a filtered operational page for Home, Compliance, Learning, or
       // Settings returns supervisors to the shared firm context immediately,
       // avoiding a transient forbidden request before the destination reloads.
+      // Keyed on the PAGE, not the nav id: Clients and Prospects are two entries
+      // over contacts.html, and treating them as non-filter pages here would
+      // reset the employee filter every time someone switched sides.
       document.querySelectorAll('[data-nav-id]').forEach((link) => {
-        if (EMPLOYEE_FILTER_PAGES.has(link.dataset.navId)) return;
+        if (EMPLOYEE_FILTER_PAGES.has(link.dataset.navPage)) return;
         link.addEventListener('click', () => localStorage.setItem(ADMIN_WORKSPACE_KEY, sharedOwner));
       });
     }

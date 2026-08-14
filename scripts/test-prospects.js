@@ -550,4 +550,42 @@ check(/if \(view === 'list' \|\| view === 'board'\) currentView = view;/.test(op
   && /else if \(p\.has\('f'\) \|\| p\.has\('cat'\) \|\| p\.has\('q'\)\) currentView = 'list';/.test(ops),
   'an explicit ?view=, or any of ?f=/?cat=/?q=, still overrides the Board default');
 
+// ---------- 12. Clients and Prospects are separate sidebar entries ----------
+
+const navSrc = sharedJs.slice(sharedJs.indexOf('const NAV_ITEMS = ['), sharedJs.indexOf('];', sharedJs.indexOf('const NAV_ITEMS = [')));
+check(/id: 'clients'/.test(navSrc) && /id: 'prospects'/.test(navSrc) && !/id: 'contacts'/.test(navSrc),
+  'the sidebar has Clients and Prospects entries, not a single Contacts one');
+check(navSrc.indexOf("id: 'clients'") < navSrc.indexOf("id: 'prospects'"),
+  'Clients sits above Prospects in the sidebar');
+check(/id: 'prospects'[^}]*href: '\/admin\/contacts\.html\?seg=prospects'/.test(navSrc),
+  'Prospects points at the same page with ?seg=prospects — one page, two entries');
+
+// This is the load-bearing part. Both entries are the contacts PAGE, and every
+// page-keyed behaviour (the employee workspace filter, its saved-filter
+// localStorage key, the "leaving a filtered page" reset) must key on that.
+// Keying on the nav id instead would reset the employee filter every time
+// someone moved between Clients and Prospects.
+check(/id: 'clients', page: 'contacts'/.test(navSrc) && /id: 'prospects', page: 'contacts'/.test(navSrc),
+  'both entries declare page: contacts, so page-keyed behaviour is shared');
+check(sharedJs.includes("EMPLOYEE_FILTER_PAGES.has(link.dataset.navPage)"),
+  'the leaving-a-filtered-page reset keys on the page, never the nav id');
+check(sharedJs.includes("EMPLOYEE_FILTER_PAGES = new Set(['contacts', 'operations', 'calendar'])"),
+  'the employee-filter page list still names contacts, which both entries map to');
+check(/initShell\('contacts', \{/.test(html),
+  "contacts.html still identifies as the 'contacts' page, whichever side it is showing");
+
+// The segment can change without a navigation (opening a prospect from inside a
+// family, converting one), so the highlight has to be movable.
+check(sharedJs.includes('function setActiveNav('),
+  'the sidebar highlight can be moved without a reload');
+check(extract(html, 'renderSegmentChrome').includes('setActiveNav('),
+  'a segment change in place moves the sidebar highlight with it');
+
+// The in-page toggle is gone: two controls for one piece of state is how they
+// end up disagreeing.
+check(!html.includes('id="segment-toggle"'),
+  'the old in-page Clients/Prospects toggle is gone — the sidebar is the only switch');
+check(!/\.view-toggle \{/.test(html),
+  'its now-unused CSS went with it');
+
 console.log(`\n${passed} prospect checks passed`);

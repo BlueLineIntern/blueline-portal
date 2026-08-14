@@ -6,7 +6,7 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Contacts — BlueLine Admin</title>
 <link rel="stylesheet" href="/assets/style.css" />
-<link rel="stylesheet" href="/admin/shared.css?v=20260814-1" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260814-2" />
 <style>
   /* Client detail (module cards + charts come from style.css/render.js) */
   .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -243,17 +243,6 @@
   .assignment-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
   @media (max-width: 640px) { .assignment-items { grid-template-columns: 1fr; } }
 
-  /* Clients / Prospects segment toggle. Deliberately the same control as the
-     List/Board toggle on Operations — same markup, same rules — so the two
-     pages read as one product. Copied rather than shared because that one is
-     page-local too; if a third page wants it, move all three to style.css. */
-  .view-toggle { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
-  .view-toggle button {
-    border: none; background: var(--panel); color: var(--muted); padding: 7px 15px;
-    font-family: var(--font-sans); font-size: var(--fs-sm); font-weight: var(--fw-semibold); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
-  }
-  .view-toggle button + button { border-left: 1px solid var(--border-strong); }
-  .view-toggle button.active { background: var(--navy); color: #fff; }
 </style>
 </head>
 <body>
@@ -263,7 +252,7 @@
     <div id="list-view">
       <div class="page-head">
         <div>
-          <h1 id="list-title">Contacts</h1>
+          <h1 id="list-title">Clients</h1>
           <p class="sub" id="list-sub">People, families and companies. Click a person to open their profile;
           click a family or company to see who's in it, or its name to edit it.</p>
         </div>
@@ -276,15 +265,14 @@
         </div>
       </div>
 
-      <!-- Clients and prospects are the same contact records, split on status:
-           a prospect is a person whose status is 'prospect', everyone else is a
-           client. So this is a filter, not a second store — nothing is copied or
+      <!-- Clients and Prospects are two sidebar entries over THIS page, not two
+           pages: they are the same contact records split on status (a prospect
+           is a person whose status is 'prospect', everyone else is a client).
+           So it stays a filter, not a second store — nothing is copied or
            migrated when a prospect converts, and their notes, tasks, emails and
-           Additional Info come with them. -->
-      <div class="view-toggle" id="segment-toggle">
-        <button type="button" data-segment="clients" class="active">● Clients</button>
-        <button type="button" data-segment="prospects">○ Prospects</button>
-      </div>
+           Additional Info come with them. The in-page toggle that used to sit
+           here is gone; the sidebar is the only switch, so there is exactly one
+           control for which side you are on. -->
 
       <!-- Outside .list-cols so the table panel starts at the same y as the
            rail's first panel; inside .list-main it pushed the table down by
@@ -759,9 +747,15 @@
 </div>
 
 <script src="/assets/render.js"></script>
-<script src="/admin/shared.js?v=20260814-1"></script>
+<script src="/admin/shared.js?v=20260814-2"></script>
 <script>
-  initShell('contacts');
+  // Two sidebar entries, one page. `activePage` stays 'contacts' so the employee
+  // workspace filter and its saved-filter key are shared across both sides;
+  // navId only picks which entry lights up. Read from the URL before initShell
+  // so the first paint highlights the right one.
+  initShell('contacts', {
+    navId: new URLSearchParams(location.search).get('seg') === 'prospects' ? 'prospects' : 'clients',
+  });
 
   let allContacts = [];
   let allHouseholds = [];
@@ -1288,9 +1282,13 @@
   // the render path, which is how the two halves drift.
   function renderSegmentChrome() {
     const prospects = segment === 'prospects';
-    document.querySelectorAll('#segment-toggle button').forEach((b) =>
-      b.classList.toggle('active', (b.dataset.segment === 'prospects') === prospects));
-    document.getElementById('list-title').textContent = prospects ? 'Prospects' : 'Contacts';
+    // The sidebar is the switch now, so it has to follow a segment that changed
+    // in place — opening a prospect from inside a family, or converting one.
+    setActiveNav(prospects ? 'prospects' : 'clients');
+    document.getElementById('list-title').textContent = prospects ? 'Prospects' : 'Clients';
+    // One page serving two nav entries, so the browser tab has to say which —
+    // otherwise two tabs open on the two sides are indistinguishable.
+    document.title = `${prospects ? 'Prospects' : 'Clients'} — BlueLine Admin`;
     document.getElementById('list-sub').textContent = prospects
       ? 'People you are still trying to win. Click a prospect to open the same profile a client gets — notes, tasks, emails, meetings — plus the pipeline detail on Additional Info.'
       : "People, families and companies. Click a person to open their profile; click a family or company to see who's in it, or its name to edit it.";
@@ -1315,10 +1313,6 @@
     renderStatusFilters();
     renderContacts();
   }
-
-  document.querySelectorAll('#segment-toggle button').forEach((b) =>
-    b.addEventListener('click', () => setSegment(b.dataset.segment))
-  );
 
   document.getElementById('tag-filter').addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-tag]');

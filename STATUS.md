@@ -454,10 +454,25 @@ Client portal is untouched and keeps its own look.
   Log, Documents, Additional Info | Assessments** (incl. the assignment editor).
   The divider separates what's looked at on every visit from the record opened
   deliberately.
-- **Clients / Prospects toggle** (contacts.html, same `.view-toggle` control as
-  List/Board on Operations). This is a **filter over one contact list, not a
-  second store**: a prospect is a person whose `status` is `prospect`, everyone
-  else is a client. Nothing is copied or migrated when a prospect converts, and
+- **Clients and Prospects are two sidebar entries over ONE page** (changed
+  2026-08-14; this was previously a single **Contacts** nav item with an in-page
+  toggle, and that toggle is now gone — two controls for one piece of state is
+  how they end up disagreeing). Both point at `contacts.html`; Prospects adds
+  `?seg=prospects`. Still a **filter over one contact list, not a second store**:
+  a prospect is a person whose `status` is `prospect`, everyone else is a client.
+  - `NAV_ITEMS` entries carry an optional **`page`**, defaulting to `id`. Both of
+    these declare `page: 'contacts'`, and `initShell('contacts', { navId })`
+    keeps `activePage` as `contacts` while `navId` only decides which entry
+    lights up. **Everything keyed on the page must key on `page`, never the nav
+    id** — the employee workspace filter, its `blueline_admin_workspace:<page>`
+    saved-filter key, and the "leaving a filtered page resets to shared" listener
+    (which reads `data-nav-page`). Keying on the id would reset the employee
+    filter every time someone moved between the two sides.
+  - `setActiveNav(navId)` moves the highlight **without a reload**, because the
+    segment changes in place: opening a prospect who sits inside a family, or
+    converting one to a client. A `?c=<email>` deep link (search palette,
+    Recently Viewed, a task's contact link) carries no `?seg=`, so it paints
+    Clients first and `openProfile()` corrects it a moment later. Nothing is copied or migrated when a prospect converts, and
   their notes, tasks, emails, meetings, documents and Additional Info come with
   them untouched.
   - A contact record with **no status at all** (a portal account that never got a
@@ -471,12 +486,12 @@ Client portal is untouched and keeps its own look.
     roster, and dropping the row would make the member count disagree with the
     rows beneath it. That is the one deliberate overlap between the two sides.
   - The type filter (people/families/companies) and the archived toggle are
-    scoped to the segment on screen. The type filter is *hidden*, not reset, when
-    the toggle flips — `visibleRecords()` ignores it on the Prospects side, or
-    leaving it on "Families" would silently empty that list.
-  - `?seg=prospects` deep-links to the Prospects side (the dashboard's Prospects
-    stat tile uses it); `openProfile()` sets the segment from the record so Back
-    from a prospect lands on the right list however the profile was reached.
+    scoped to the side on screen. The type filter is *hidden*, not reset, on the
+    Prospects side — `visibleRecords()` ignores it there, or a value left on
+    "Families" would silently empty that list.
+  - `?seg=prospects` is what the Prospects nav entry and the dashboard's
+    Prospects stat tile use; `openProfile()` sets the segment from the record so
+    Back from a prospect lands on the right list however the profile was reached.
   - **`prospect` is no longer selectable in the New/Edit Contact form** — it is
     still a valid stored status, the dropdown just dropped it. A person becomes a
     prospect by being added from the Prospects side, and stops being one via
