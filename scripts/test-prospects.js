@@ -220,4 +220,75 @@ check(!modal.includes('value="prospect"'),
 check(worker.includes("const CONTACT_STATUSES = ['prospect', 'onboarding', 'active', 'inactive'];"),
   "'prospect' remains a valid stored status — the form dropped it, the data model did not");
 
+// ---------- 5. Linking a task to a prospect (Operations) ----------
+
+const ops = fs.readFileSync(path.join(root, 'public/admin/operations.html'), 'utf8');
+
+// The real functions from operations.html, over a tiny DOM stand-in. `select`
+// and `optgroup` are the only elements fillContactSelect touches.
+const opsScope = new Function(`
+  let allContacts = [];
+  const escapeHtml = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const SELECTS = {};
+  const document = { getElementById: (id) => SELECTS[id] };
+  ${extract(ops, 'contactIsProspect')}
+  ${extract(ops, 'fillContactSelect')}
+  return {
+    setContacts: (c) => { allContacts = c; },
+    contactIsProspect,
+    fill: (current) => {
+      SELECTS.sel = {
+        innerHTML: '', value: '',
+        querySelector: () => ({ outerHTML: '<option value="">— none —</option>' }),
+      };
+      fillContactSelect('sel', current);
+      return SELECTS.sel;
+    },
+  };
+`)();
+
+opsScope.setContacts([
+  { email: 'ada@example.com', name: 'Ada Whitfield', status: 'active' },
+  { email: 'ben@example.com', name: 'Ben Ortiz', status: 'onboarding' },
+  { email: 'dev@example.com', name: 'Dev Lindqvist', status: 'prospect' },
+  { email: 'fay@example.com', name: 'Fay Osei' }, // no status: a portal account with no CRM record
+]);
+
+check(opsScope.contactIsProspect('dev@example.com') === true
+  && opsScope.contactIsProspect('fay@example.com') === true,
+  'Operations reads a prospect (and a status-less record) the same way the Contacts page does');
+check(opsScope.contactIsProspect('ada@example.com') === false
+  && opsScope.contactIsProspect('ben@example.com') === false,
+  'a client is not treated as a prospect on a task');
+
+// The bug this pins: a task pointing at an email the page cannot see must NOT
+// borrow the "no status means prospect" default. Archived, deleted, or in
+// another workspace is unknown — badging it Prospect asserts something about a
+// record this page never loaded.
+check(opsScope.contactIsProspect('ghost@example.com') === false,
+  'a task pointing at a contact this page cannot see is not labelled a prospect');
+
+const filled = opsScope.fill('');
+check(/<optgroup label="Clients">[\s\S]*Ada Whitfield[\s\S]*Ben Ortiz[\s\S]*<\/optgroup>/.test(filled.innerHTML),
+  'the related-contact picker groups clients under a Clients optgroup');
+check(/<optgroup label="Prospects">[\s\S]*Dev Lindqvist[\s\S]*Fay Osei[\s\S]*<\/optgroup>/.test(filled.innerHTML),
+  'prospects are selectable on a task, under their own Prospects optgroup');
+check(filled.innerHTML.indexOf('label="Clients"') < filled.innerHTML.indexOf('label="Prospects"'),
+  'Clients comes before Prospects in the picker');
+
+// Same rule fillSelect already documents: a value that has fallen out of range
+// stays visible, or `sel.value = current` silently fails and the control resets
+// — which on a filter quietly widens the view and in the drawer misreports the
+// task's contact.
+const orphan = opsScope.fill('ghost@example.com');
+check(orphan.innerHTML.includes('ghost@example.com (unavailable)') && orphan.value === 'ghost@example.com',
+  "a task's contact that is no longer listed is kept as an explicit (unavailable) option");
+
+const known = opsScope.fill('dev@example.com');
+check(!known.innerHTML.includes('(unavailable)') && known.value === 'dev@example.com',
+  'a contact that IS listed is selected without a duplicate option');
+
+check(ops.includes("fillContactSelect('filter-client'") && ops.includes("fillContactSelect('d-client'"),
+  'both the task drawer and the list filter use the grouped picker');
+
 console.log(`\n${passed} prospect checks passed`);

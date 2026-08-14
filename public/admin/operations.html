@@ -226,8 +226,8 @@
       <div class="f-panel hidden" id="list-panel">
         <div class="f-grid">
           <div class="f-field">
-            <label for="filter-client">Client</label>
-            <select class="input" id="filter-client"><option value="">All clients</option></select>
+            <label for="filter-client">Contact</label>
+            <select class="input" id="filter-client"><option value="">All contacts</option></select>
           </div>
           <div class="f-field">
             <label for="filter-assignee">Assignee</label>
@@ -293,7 +293,7 @@
         <select id="d-assignee"><option value="">Unassigned</option></select>
       </div>
       <div class="field">
-        <label for="d-client">Related client</label>
+        <label for="d-client">Related contact</label>
         <select id="d-client"><option value="">— none —</option></select>
       </div>
     </div>
@@ -474,6 +474,20 @@
     return (c && c.name) || email;
   }
 
+  // A contact record with no status at all is a portal account that never got a
+  // CRM record — buildContactList() in worker.js defaults those to 'prospect',
+  // so a record we CAN see reads the same way as it does in contacts.html.
+  //
+  // A task pointing at an email that isn't in the list at all is different, and
+  // must not borrow that default: the contact may be archived, deleted, or in
+  // another workspace. Unknown is not the same as prospect, and badging it as
+  // one would assert something about a record this page cannot actually see.
+  function contactIsProspect(email) {
+    const c = allContacts.find((x) => x.email === email);
+    if (!c) return false;
+    return (c.status || 'prospect') === 'prospect';
+  }
+
   // dueInfo was this page's own copy of the due-date logic; shared.js's dueMeta
   // returns a superset of the same shape ({text, overdue, today, thisWeek} plus
   // state/pillClass/textClass), so the filters and renderers below are unchanged.
@@ -529,7 +543,7 @@
     // card dragged between boards should never depend on which column it's
     // currently sitting in to say who owns it.
     metaBits.push(assigneeBadge(t.assignee));
-    if (t.client) metaBits.push(`<span class="kc-client">◗ ${escapeHtml(contactName(t.client))}</span>`);
+    if (t.client) metaBits.push(`<span class="kc-client">◗ ${escapeHtml(contactName(t.client))}${contactIsProspect(t.client) ? ' <span class="badge badge-amber">Prospect</span>' : ''}</span>`);
     if (cp) metaBits.push(`<span class="kc-check" title="${cp.done}/${cp.total} checklist items">
       <span class="kc-bar"><span style="width:${cp.pct}%"></span></span>${cp.done}/${cp.total}</span>`);
     if (t.repeat) metaBits.push(`<span class="kc-repeat" title="Repeats ${escapeHtml(t.repeat)}">↻</span>`);
@@ -718,9 +732,31 @@
     sel.value = current || '';
   }
 
+  // Same "keep the current value visible even if it fell out of range" rule as
+  // fillSelect, but split into two optgroups so a prospect isn't just another
+  // row lost in an alphabetical list of everyone — a task tied to "Dana Reed"
+  // reads very differently depending on which side of the pipeline she's on.
+  function fillContactSelect(id, current) {
+    const sel = document.getElementById(id);
+    const first = sel.querySelector('option').outerHTML;
+    const clients = [];
+    const prospects = [];
+    allContacts.forEach((c) => {
+      (contactIsProspect(c.email) ? prospects : clients).push(c);
+    });
+    const optHtml = (c) => `<option value="${escapeHtml(c.email)}">${escapeHtml(c.name || c.email)}</option>`;
+    const group = (label, list) => (list.length ? `<optgroup label="${escapeHtml(label)}">${list.map(optHtml).join('')}</optgroup>` : '');
+    const known = new Set(allContacts.map((c) => c.email));
+    const missing = current && !known.has(current)
+      ? `<option value="${escapeHtml(current)}">${escapeHtml(current)} (unavailable)</option>`
+      : '';
+    sel.innerHTML = first + group('Clients', clients) + group('Prospects', prospects) + missing;
+    sel.value = current || '';
+  }
+
   function refreshDrawerSelects(current) {
     fillSelect('d-assignee', assignableOptions(), current && current.assignee, true);
-    fillSelect('d-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), current && current.client, true);
+    fillContactSelect('d-client', current && current.client);
     fillSelect('d-list', customListOptions(), current && current.list, true);
   }
 
@@ -1144,7 +1180,7 @@
   function renderChips() {
     const f = listFilters;
     const chips = [];
-    if (f.client) chips.push({ k: 'client', label: `Client: ${contactName(f.client)}` });
+    if (f.client) chips.push({ k: 'client', label: `${contactIsProspect(f.client) ? 'Prospect' : 'Client'}: ${contactName(f.client)}` });
     if (f.assignee) chips.push({ k: 'assignee', label: `Assignee: ${staffLabel(f.assignee)}` });
     if (f.priority) chips.push({ k: 'priority', label: `Priority: ${f.priority}` });
     if (f.category) chips.push({ k: 'category', label: `Category: ${categoryLabel(f.category)}` });
@@ -1228,8 +1264,10 @@
 
     list.innerHTML = items.length
       ? items.map((t) => {
+          // openProfile() sets the Clients/Prospects toggle from the contact's
+          // own status once it lands, so the link needs nothing beyond ?c=.
           const clientBit = t.client
-            ? `<a href="/admin/contacts.html?c=${encodeURIComponent(t.client)}">${escapeHtml(contactName(t.client))}</a>`
+            ? `<a href="/admin/contacts.html?c=${encodeURIComponent(t.client)}">${escapeHtml(contactName(t.client))}</a>${contactIsProspect(t.client) ? ' <span class="badge badge-amber">Prospect</span>' : ''}`
             : '';
           const assigneeBit = assigneeBadge(t.assignee);
           const autoBit = t.createdBy === 'auto' ? ' <span class="badge badge-navy">auto</span>' : '';
@@ -1445,7 +1483,7 @@
       // List-view filter selects (board uses its own pill row). Seeded from
       // listFilters, not from the control's current value, so a filter set by a
       // deep link or a chip removal survives the rebuild.
-      fillSelect('filter-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), listFilters.client, true);
+      fillContactSelect('filter-client', listFilters.client);
       fillSelect('filter-assignee', assignableOptions(), listFilters.assignee, true);
       fillSelect('filter-list', boardLists.map((l) => ({ value: l.id, label: l.type === 'person' ? staffLabel(l.account) : l.name })), listFilters.list, true);
       syncFilterControls();

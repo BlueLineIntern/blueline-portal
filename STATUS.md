@@ -933,6 +933,34 @@ Client portal is untouched and keeps its own look.
   **Operations page** now (Board + List views — see below); the contact profile
   still has a Tasks tab with quick-add. Display names come from `staffLabel()`
   in shared.js.
+- **A task's related contact can be a prospect, not just a client.** `client` on
+  the task record is any contact email and always was — `sanitizeTaskFields()`
+  and `contactBelongsToWorkspace()` never looked at status, so **no backend
+  change was needed** for this and none should be added. What changed is the
+  picker: `fillContactSelect()` in operations.html (and its twin in
+  calendar.html) splits the list into **Clients** and **Prospects** optgroups
+  instead of one alphabetical run, so "Dana Reed" can't be picked without seeing
+  which side of the pipeline she's on. Used by the task drawer (`d-client`), the
+  list-view filter (`filter-client`), and the calendar's meeting drawer — a
+  discovery meeting with a prospect is one of the most common things on that
+  calendar.
+  - The label is **"Related contact"** / **"Contact"**, not "Client", because it
+    is now genuinely either.
+  - A prospect-linked task carries an amber **Prospect** badge on the board card
+    and the list row, and the filter chip reads `Prospect: <name>` rather than
+    `Client: <name>`. (Amber matches `STATUS_BADGE.prospect` on the Contacts
+    page — same chip, same meaning, per the vocabulary rule in style.css. It does
+    sit near the amber `OPEN` status badge in the list row; they are separated by
+    other meta and are semantically distinct.)
+  - **`contactIsProspect()` returns false for an email that isn't in the loaded
+    list.** It must NOT borrow the "a record with no status is a prospect"
+    default that `buildContactList()` applies — that default is only meaningful
+    for a record we can actually see. A task can point at a contact that is
+    archived, deleted, or in another workspace, and badging that Prospect would
+    assert something about a record the page never loaded. This was a real bug
+    caught in review; `scripts/test-prospects.js` pins it.
+  - The contact profile's own Tasks tab needed nothing — it fixes `client` to the
+    contact being viewed, so a prospect's Tasks tab already worked.
 - **Notes** (`note:<client>:<invTs>-<rand>` KV, **encrypted**): body (plain
   text), tags, pinned, author. CRUD under `/api/admin/notes[/:id]`
   (`?client=` filter). Creating one writes a `note-added` timeline event.

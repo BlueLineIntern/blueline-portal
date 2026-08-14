@@ -153,7 +153,7 @@
     </div>
     <div class="field-row">
       <div class="field">
-        <label for="d-client">Client</label>
+        <label for="d-client">Contact</label>
         <select id="d-client"><option value="">— none (internal) —</option></select>
       </div>
       <div class="field">
@@ -272,6 +272,33 @@
     return hasTime(t) ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'All day';
   }
   function contactName(email) { const c = allContacts.find((x) => x.email === email); return (c && c.name) || email; }
+
+  // Mirrors contactIsProspect()/fillContactSelect() in operations.html: a
+  // discovery meeting with a prospect is one of the most common things on this
+  // calendar, so the picker separates the two rather than burying prospects in
+  // one alphabetical run. An email not in the list is unknown, NOT a prospect —
+  // don't borrow the "no status means prospect" default for a record this page
+  // never loaded (here that also covers archived contacts, filtered out above).
+  function contactIsProspect(email) {
+    const c = allContacts.find((x) => x.email === email);
+    if (!c) return false;
+    return (c.status || 'prospect') === 'prospect';
+  }
+
+  function fillContactSelect(id, current) {
+    const sel = document.getElementById(id);
+    const first = sel.querySelector('option').outerHTML;
+    const clients = [];
+    const prospects = [];
+    allContacts.forEach((c) => { (contactIsProspect(c.email) ? prospects : clients).push(c); });
+    const optHtml = (c) => `<option value="${escapeHtml(c.email)}">${escapeHtml(c.name || c.email)}</option>`;
+    const group = (label, list) => (list.length ? `<optgroup label="${escapeHtml(label)}">${list.map(optHtml).join('')}</optgroup>` : '');
+    const missing = current && !allContacts.some((c) => c.email === current)
+      ? `<option value="${escapeHtml(current)}">${escapeHtml(current)} (unavailable)</option>`
+      : '';
+    sel.innerHTML = first + group('Clients', clients) + group('Prospects', prospects) + missing;
+    sel.value = current || '';
+  }
 
   // Tasks that have a due date land on the calendar. Sorted by time then priority.
   function itemsForDay(date) {
@@ -451,7 +478,7 @@
     document.getElementById('d-title').value = draft.title;
     document.getElementById('d-description').value = draft.description;
     fillSelect('d-type', Object.keys(MEETING_TEMPLATES).map((k) => ({ value: k, label: MEETING_TEMPLATES[k] })), draft.meetingType, true);
-    fillSelect('d-client', allContacts.map((c) => ({ value: c.email, label: c.name || c.email })), draft.client, true);
+    fillContactSelect('d-client', draft.client);
     fillSelect('d-assignee', adminList.map((a) => ({ value: a, label: staffLabel(a) })), draft.assignee, true);
     renderCalendarOwners();
     document.getElementById('d-due').value = draft.due ? String(draft.due).slice(0, 16) : '';
