@@ -593,8 +593,8 @@
     Object.keys(byCol).forEach((key) => {
       byCol[key].sort((a, b) => {
         if (key === SPECIAL.COMPLETED) return String(b.completedAt || '').localeCompare(String(a.completedAt || ''));
-        const ad = a.due ? new Date(a.due).getTime() : Infinity;
-        const bd = b.due ? new Date(b.due).getTime() : Infinity;
+        const ad = a.due ? parseDue(a.due).getTime() : Infinity;
+        const bd = b.due ? parseDue(b.due).getTime() : Infinity;
         if (ad !== bd) return ad - bd;
         return (pRank[a.priority] ?? 1) - (pRank[b.priority] ?? 1);
       });
@@ -1128,7 +1128,7 @@
     if (listFilters.period === 'today') return d.today;
     if (listFilters.period === 'week') return d.today || d.thisWeek;
     if (listFilters.period === '30') {
-      const ms = new Date(t.due).getTime() - Date.now();
+      const ms = parseDue(t.due).getTime() - Date.now();
       return ms < 30 * 86400e3; // includes overdue: "next 30 days" of work to do
     }
     return true;
@@ -1247,8 +1247,8 @@
     } else {
       const pRank = { high: 0, medium: 1, low: 2 };
       items.sort((a, b) => {
-        const ad = a.due ? new Date(a.due).getTime() : Infinity;
-        const bd = b.due ? new Date(b.due).getTime() : Infinity;
+        const ad = a.due ? parseDue(a.due).getTime() : Infinity;
+        const bd = b.due ? parseDue(b.due).getTime() : Infinity;
         if (ad !== bd) return ad - bd;
         return (pRank[a.priority] ?? 1) - (pRank[b.priority] ?? 1);
       });

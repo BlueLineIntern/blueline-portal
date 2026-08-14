@@ -3909,8 +3909,8 @@
       // them), and within an equal date the higher priority wins.
       const P_RANK = { high: 0, medium: 1, low: 2 };
       const byUrgency = (a, b) => {
-        const ad = a.due ? new Date(a.due).getTime() : Infinity;
-        const bd = b.due ? new Date(b.due).getTime() : Infinity;
+        const ad = a.due ? parseDue(a.due).getTime() : Infinity;
+        const bd = b.due ? parseDue(b.due).getTime() : Infinity;
         if (ad !== bd) return ad - bd;
         return (P_RANK[a.priority] ?? 1) - (P_RANK[b.priority] ?? 1);
       };
@@ -4117,7 +4117,7 @@
       if (selectedEmail !== email) return; // profile changed while loading
       const meetings = (data.tasks || []).filter((t) => t.client === email && t.category === 'meeting');
       const now = Date.now();
-      const dueMs = (t) => (t.due ? new Date(t.due).getTime() : NaN);
+      const dueMs = (t) => (t.due ? parseDue(t.due).getTime() : NaN);
       // Undated meetings are still real work, so surface them with upcoming
       // rather than hiding them in a date-sorted past list.
       const upcoming = meetings
@@ -4944,7 +4944,7 @@
       const openTasks = mine.filter((t) => t.status === 'open' && t.category !== 'meeting').length;
       const now = Date.now();
       const upcoming = mine.filter((t) => t.category === 'meeting' && t.status !== 'done'
-        && (!t.due || new Date(t.due).getTime() >= now)).length;
+        && (!t.due || parseDue(t.due).getTime() >= now)).length;
       const ot = document.getElementById('g-open-tasks');
       const um = document.getElementById('g-upcoming-meetings');
       if (ot) { ot.textContent = String(openTasks); ot.className = ''; }
@@ -5067,8 +5067,8 @@
       const mine = (data.tasks || []).filter((t) => emails.includes(t.client) && t.category !== 'meeting');
       const P_RANK = { high: 0, medium: 1, low: 2 };
       const byUrgency = (a, b) => {
-        const ad = a.due ? new Date(a.due).getTime() : Infinity;
-        const bd = b.due ? new Date(b.due).getTime() : Infinity;
+        const ad = a.due ? parseDue(a.due).getTime() : Infinity;
+        const bd = b.due ? parseDue(b.due).getTime() : Infinity;
         if (ad !== bd) return ad - bd;
         return (P_RANK[a.priority] ?? 1) - (P_RANK[b.priority] ?? 1);
       };
@@ -5255,7 +5255,7 @@
       if (selectedGroupId !== hh.id) return;
       const meetings = (data.tasks || []).filter((t) => emails.includes(t.client) && t.category === 'meeting');
       const now = Date.now();
-      const dueMs = (t) => (t.due ? new Date(t.due).getTime() : NaN);
+      const dueMs = (t) => (t.due ? parseDue(t.due).getTime() : NaN);
       const upcoming = meetings
         .filter((t) => t.status !== 'done' && (isNaN(dueMs(t)) || dueMs(t) >= now))
         .sort((a, b) => (dueMs(a) || Infinity) - (dueMs(b) || Infinity));

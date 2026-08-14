@@ -472,11 +472,27 @@ function isSameLocalDay(a, b) {
 //
 // "soon" is today or tomorrow — the window where something is actionable now.
 // A done task is never overdue; finished work shouldn't glow red forever.
+// A task `due` as a local Date.
+//
+// Date-only dues ('2026-08-14', no time) are the COMMON case, not an edge one:
+// Home's Today/Tomorrow/In-a-week picker and both quick-add forms all produce
+// them. `new Date('2026-08-14')` parses that as UTC midnight, which in every US
+// timezone is the evening BEFORE — so a task set to "due today" came back as
+// "Overdue · Aug 13" and sat on the wrong day of the calendar. Parsed from its
+// own parts here, as fmtDateOnly() in contacts.html already does for the same
+// reason. Values that carry a time are unambiguous and parse normally.
+function parseDue(due) {
+  const s = String(due || '').trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(s);
+  return isNaN(d) ? null : d;
+}
+
 function dueMeta(task) {
   const none = { text: '', state: 'none', overdue: false, today: false, thisWeek: false, pillClass: 'due-none', textClass: '' };
   if (!task || !task.due) return none;
-  const d = new Date(task.due);
-  if (isNaN(d)) return none;
+  const d = parseDue(task.due);
+  if (!d) return none;
   const now = new Date();
   const done = task.status === 'done';
   const today = isSameLocalDay(d, now);
@@ -967,8 +983,8 @@ async function refreshNotifications() {
     notifState.seen = seenData.seen;
     notifState.overdue = (taskData.tasks || []).filter((t) => {
       if (t.status !== 'open' || !t.due) return false;
-      const d = new Date(t.due);
-      return !isNaN(d) && d < now;
+      const d = parseDue(t.due);
+      return !!d && d < now;
     });
     notifState.fresh = (actData.entries || []).filter(
       (e) => !notifState.seen || String(e.ts) > String(notifState.seen)
