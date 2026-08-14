@@ -2738,6 +2738,9 @@ while ($listener.IsListening) {
             if ($done) { Write-Audit $adminEmail 'compliance-outlook-sync' @{ total = $mine.Count } }
             Send-Json $ctx 200 @{
                 processed = $end; total = $mine.Count; synced = $synced; cleared = $cleared
+                # Always 0 here: there is no real Graph behind the mock, so no
+                # call can be rejected. Present so the client's shape matches.
+                failed = 0
                 unmapped = @($unmapped)
                 done = $done; nextOffset = $(if ($done) { $null } else { $end })
             }

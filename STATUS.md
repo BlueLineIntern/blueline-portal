@@ -1129,11 +1129,25 @@ Client portal is untouched and keeps its own look.
   parse normally. Same trap as `fmtDateOnly()` in contacts.html, which already
   documented it.
 - **Compliance items go to Outlook too** (added 2026-08-14). Every **OPEN**
-  compliance item is mirrored as an **all-day event on its due date** onto the
-  real Outlook calendars of the people responsible for it, through the same app
-  registration, the same `Calendars.ReadWrite.All` application permission and the
-  same `reconcileOutlookEvents()` as meetings — a compliance item is just another
+  compliance item is mirrored onto the real Outlook calendars of the people
+  responsible for it, through the same app registration, the same
+  `Calendars.ReadWrite.All` application permission and the same
+  `reconcileOutlookEvents()` as meetings — a compliance item is just another
   record with a date and a set of mailboxes.
+  - **06:00–07:00 local on the due date** (`COMPLIANCE_OUTLOOK_TIME`), not an
+    all-day event. An all-day entry collapses into the banner strip at the top of
+    the day, which is easy to scroll past, and with a dozen items due in one week
+    that strip is all anyone sees; a timed block sits above the working day where
+    it reads as work. Time zone is `OUTLOOK_TIMEZONE` (default Eastern), sent as
+    naive wall-clock plus a named zone like every other event here.
+  - **No reminder** (`isReminderOn: false`). Outlook's default fires 15 minutes
+    before, i.e. **05:45**, and there are ~100 of these — the 06:00 slot exists
+    to place the item where it is seen at the start of the day, not to raise an
+    alarm before it. Flip the flag (or set `reminderMinutesBeforeStart`) in
+    `complianceOutlookPayload()` if the firm decides it wants the prompt.
+  - Items synced **before** this change are all-day; re-running the button
+    PATCHes them to the 06:00 slot. `isAllDay`, `start` and `end` go in one
+    request, which is what Graph requires to change that flag.
   - **Owner AND reviewer both get a copy.** An item cannot close without the
     reviewer's sign-off, so a deadline only the owner can see is one the reviewer
     finds out about late. Reviewer `N/A` closes on the owner alone, so that case
@@ -1165,6 +1179,12 @@ Client portal is untouched and keeps its own look.
     from the last completed batch. **Idempotent**: each item's `outlookEvents`
     map records what it already has, so re-running PATCHes rather than
     duplicating (verified: 201 events, unchanged across two runs).
+  - **Rejected Graph calls are counted, not just logged.** `failed` rides back
+    from `reconcileOutlookEvents()` beside the fields — deliberately NOT merged
+    into them, since it describes the attempt rather than the record — and the
+    button says how many were refused. Without it a run where every PATCH was
+    rejected reports "0 added or updated", which reads identically to
+    "everything was already up to date": the opposite conclusion.
   - Imports do **not** push the rows they create — an import can be a hundred
     rows, far past one request's Graph budget. They are picked up by the button.
   - `getGraphToken()` now **caches the token** in module scope until it expires.

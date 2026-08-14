@@ -304,7 +304,7 @@
       </div>
       <div class="page-actions">
         <button type="button" class="btn btn-primary btn-small" id="cmp-new">+ Add item</button>
-        <button type="button" class="btn btn-ghost btn-small" id="cmp-outlook" title="Put every open item on the owner's and reviewer's real Outlook calendars">📅 Sync to Outlook</button>
+        <button type="button" class="btn btn-ghost btn-small" id="cmp-outlook" title="Put every open item at 6:00 AM on its due date, on the owner's and reviewer's real Outlook calendars">📅 Sync to Outlook</button>
         <button type="button" class="btn btn-ghost btn-small" id="cmp-refresh">↻ Refresh</button>
       </div>
     </div>
@@ -1751,13 +1751,15 @@
   // re-run patches them instead of creating duplicates.
   document.getElementById('cmp-outlook').addEventListener('click', async () => {
     const open = allItems.filter((i) => i.status !== 'CLOSED').length;
-    if (!confirm(`Put every open compliance item on Outlook?\n\n${open} open item${open === 1 ? '' : 's'} will appear as all-day events on the owner's and reviewer's real Outlook calendars. Completed items are skipped, and completing an item later removes its events.\n\nSafe to run more than once — it updates existing entries rather than duplicating them.`)) return;
+    const one = open === 1;
+    if (!confirm(`Put every open compliance item on Outlook?\n\n${open} open item${one ? '' : 's'} will appear at 6:00 AM on the day ${one ? 'it is' : 'they are'} due, on the owner's and reviewer's real Outlook calendars. No reminder is set. Completed items are skipped, and completing an item later removes its events.\n\nSafe to run more than once — it updates existing entries rather than duplicating them.`)) return;
     const btn = document.getElementById('cmp-outlook');
     btn.disabled = true;
     const original = btn.textContent;
     let offset = 0;
     let synced = 0;
     let cleared = 0;
+    let failed = 0;
     const unmapped = new Set();
     try {
       // Bounded rather than `while (true)`: a server that always reported
@@ -1768,6 +1770,7 @@
         });
         synced += res.synced || 0;
         cleared += res.cleared || 0;
+        failed += res.failed || 0;
         (res.unmapped || []).forEach((n) => unmapped.add(n));
         btn.textContent = `Syncing ${res.processed}/${res.total}…`;
         setStatus(`Syncing to Outlook — ${res.processed} of ${res.total} checked, ${synced} on calendars.`);
@@ -1787,7 +1790,13 @@
       const warn = unmapped.size
         ? ` Warning: no mailbox on record for ${[...unmapped].map((n) => `"${n}"`).join(', ')} — every item owned or reviewed by ${unmapped.size === 1 ? 'that name is' : 'those names are'} NOT on any calendar.`
         : '';
-      setStatus(`Outlook sync finished — ${synced} item${synced === 1 ? '' : 's'} added or updated${cleared ? `, ${cleared} removed` : ''}.${warn}`);
+      // Rejected Graph calls, said plainly. "0 added or updated" with no other
+      // signal reads as "everything was already up to date" — the opposite
+      // conclusion to "every write was refused".
+      const bad = failed
+        ? ` ${failed} calendar ${failed === 1 ? 'write was' : 'writes were'} rejected by Outlook — press again to retry.`
+        : '';
+      setStatus(`Outlook sync finished — ${synced} item${synced === 1 ? '' : 's'} added or updated${cleared ? `, ${cleared} removed` : ''}.${bad}${warn}`);
     } catch (err) {
       setStatus(`Outlook sync failed after ${offset} item${offset === 1 ? '' : 's'}: ${err.message}. Press again to resume — items already synced are updated, not duplicated.`);
     } finally {

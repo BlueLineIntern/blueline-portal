@@ -420,6 +420,9 @@ const complianceOutlook = new Function(`
   ${extract(worker, 'outlookTimeZone')}
   const OUTLOOK_DEFAULT_TIMEZONE = 'Eastern Standard Time';
   ${worker.match(/const COMPLIANCE_MAILBOX = \{[\s\S]*?\n\};/)[0]}
+  ${/* Sourced from worker.js so the function runs, while the assertions below
+       stay hardcoded to 06:00 — changing the slot SHOULD fail this suite. */
+    worker.match(/const COMPLIANCE_OUTLOOK_TIME = '[^']*';/)[0]}
   ${extract(worker, 'complianceMailboxFor')}
   ${extract(worker, 'complianceReviewerRequired')}
   ${extract(worker, 'complianceSignedOff')}
@@ -465,10 +468,18 @@ check(complianceOutlook.complianceCalendarOwners({ ...openItem, owner: 'Dana', r
   'an owner with no mailbox on record is skipped, never guessed at');
 
 const payload = complianceOutlook.complianceOutlookPayload({}, openItem);
-check(payload.isAllDay === true,
-  'a compliance item is an all-day event: it is due on a day, not at a time');
-check(payload.start.dateTime === '2026-09-30T00:00:00' && payload.end.dateTime === '2026-10-01T00:00:00',
-  "the all-day end is the NEXT day, because Graph treats an all-day end as exclusive");
+// 06:00 rather than the all-day banner: an all-day strip is easy to scroll past,
+// and with a dozen due in one week the strip is all anyone sees.
+check(payload.isAllDay === false,
+  'a compliance item is a timed block, not an all-day banner entry');
+check(payload.start.dateTime === '2026-09-30T06:00:00' && payload.end.dateTime === '2026-09-30T07:00:00',
+  'it sits at 06:00-07:00 on the day it is due');
+check(payload.start.timeZone === 'Eastern Standard Time' && payload.end.timeZone === payload.start.timeZone,
+  '06:00 is local wall-clock in the configured zone, not UTC');
+// ~100 events each firing Outlook's default 15-minute reminder would mean ~100
+// alerts at 05:45. The slot exists to place the item, not to raise an alarm.
+check(payload.isReminderOn === false,
+  'no reminder is set, so nothing fires at 05:45 across a hundred items');
 check(payload.subject.startsWith('[Compliance] '),
   'the subject is prefixed so it is distinguishable from a meeting in Outlook');
 check(/Owner: Jennifer/.test(payload.body.content) && /Reviewer: Frank/.test(payload.body.content)
@@ -497,6 +508,18 @@ check(worker.indexOf("'/api/admin/compliance/outlook-sync'") < worker.indexOf('c
   'the outlook-sync route is matched before the greedy /compliance/(.+) item route');
 check(extract(worker, 'handleAdminComplianceOutlookSync').includes("workspace !== FRANK_ADMIN_EMAIL"),
   'the backfill is refused outside the workspace allowed to read compliance');
+
+// A rejected Graph write must be reported, not just logged: "0 added or updated"
+// with no other signal reads as "everything was already up to date", which is
+// the opposite conclusion to "every write was refused".
+check(extract(worker, 'reconcileOutlookEvents').includes('failed += 1'),
+  'rejected Graph calls are counted, not only logged to the console');
+check(/return \{ fields: \{[^}]*\}, failed \};/.test(extract(worker, 'syncComplianceToOutlook')),
+  'the failure count is returned beside the fields, never merged into the stored record');
+check(!/outlookEvents: next, outlookSyncedAt: [^}]*failed/.test(worker),
+  'nothing writes a transient failure count onto the compliance item itself');
+check(fs.readFileSync(path.join(root, 'public/admin/compliance.html'), 'utf8').includes('rejected by Outlook'),
+  'the sync button reports rejected writes rather than silently under-counting');
 
 // Deleting an item must take its calendar copies with it: nothing else would
 // ever remove them, since the record holding their ids is about to be gone.

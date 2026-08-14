@@ -3718,6 +3718,15 @@ function complianceCalendarOwners(item) {
 // Shaped into the same fields outlookEventBody reads. A bare YYYY-MM-DD due with
 // no `T` is treated as all-day by outlookEventTimes, which is exactly right: a
 // compliance obligation is due on a day, not at a time.
+// Compliance items land at 06:00 on their due date rather than in the all-day
+// banner at the top of the day. An all-day event collapses into a strip that is
+// easy to scroll past, and with a dozen due in a week that strip is all anyone
+// sees; a timed block sits above the working day where it reads as work.
+//
+// 06:00 local (OUTLOOK_TIMEZONE, default Eastern) — outlookEventTimes gives it
+// the standard OUTLOOK_DEFAULT_DURATION_MIN, so 06:00–07:00.
+const COMPLIANCE_OUTLOOK_TIME = '06:00';
+
 function complianceOutlookPayload(env, item) {
   const lines = [];
   if (item.whatToDo) lines.push(String(item.whatToDo));
@@ -3728,13 +3737,21 @@ function complianceOutlookPayload(env, item) {
   if (complianceReviewerRequired(item) && item.reviewer) lines.push(`Reviewer: ${item.reviewer}`);
   if (item.source) lines.push(`Source: ${item.source}`);
   lines.push('', 'Tracked in the BlueLine portal — Compliance. Sign-off happens there, not here.');
-  return outlookEventBody({
+  const payload = outlookEventBody({
     // Prefixed so a compliance obligation is distinguishable from a meeting at a
     // glance in Outlook, where there is no other context to tell them apart.
     title: `[Compliance] ${String(item.item || '').trim() || '(untitled)'}`,
     description: lines.join('\n'),
-    due: String(item.dueDate).trim(),
+    due: `${String(item.dueDate).trim()}T${COMPLIANCE_OUTLOOK_TIME}`,
   }, outlookTimeZone(env));
+  if (!payload) return null;
+  // No reminder. Outlook's default would fire 15 minutes before — i.e. 05:45 —
+  // on every one of these, and there are ~100 of them. The 06:00 slot exists to
+  // put the item where it will be seen at the start of the day, not to raise an
+  // alarm before it. Flip to true (or set reminderMinutesBeforeStart) if the
+  // firm decides it wants the prompt.
+  payload.isReminderOn = false;
+  return payload;
 }
 
 function complianceOutlookEvents(item) {
@@ -3747,21 +3764,25 @@ function complianceOutlookEvents(item) {
   return out;
 }
 
-// Returns the fields to merge onto the item, or null when nothing changed.
+// Returns `{ fields, failed }` — the fields to merge onto the item (null when
+// nothing changed) and how many Graph calls errored on this attempt. The two are
+// kept apart deliberately: `failed` describes the attempt, not the record, and
+// merging it in would persist it onto the stored item.
+//
 // Best-effort like every other push here: a Graph outage must never block saving
 // a compliance item, which is the record that actually matters.
 async function syncComplianceToOutlook(env, item) {
-  if (!outlookConfigured(env)) return null;
+  if (!outlookConfigured(env)) return { fields: null, failed: 0 };
   try {
     const wanted = complianceCalendarOwners(item);
     const existing = complianceOutlookEvents(item);
     const payload = wanted.length ? complianceOutlookPayload(env, item) : null;
-    const { events: next, changed } = await reconcileOutlookEvents(env, wanted, existing, payload);
-    if (!changed && JSON.stringify(next) === JSON.stringify(existing)) return null;
-    return { outlookEvents: next, outlookSyncedAt: new Date().toISOString() };
+    const { events: next, changed, failed } = await reconcileOutlookEvents(env, wanted, existing, payload);
+    if (!changed && JSON.stringify(next) === JSON.stringify(existing)) return { fields: null, failed };
+    return { fields: { outlookEvents: next, outlookSyncedAt: new Date().toISOString() }, failed };
   } catch (err) {
     console.error('Error syncing compliance item to Outlook:', err);
-    return null;
+    return { fields: null, failed: 1 };
   }
 }
 
@@ -4021,7 +4042,7 @@ async function handleAdminComplianceCreate(request, env, cors) {
   Object.assign(base, await pushComplianceToSharePoint(env, base));
   // Same reason: capture the event ids on the first write rather than leaving
   // the item unsynced until someone edits it.
-  Object.assign(base, await syncComplianceToOutlook(env, base) || {});
+  Object.assign(base, (await syncComplianceToOutlook(env, base)).fields || {});
 
   await saveComplianceItems(env, items);
   await logAudit(env, adminEmail, 'compliance-create', { id: base.id, item: base.item });
@@ -4084,7 +4105,7 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
   // logic above so completing an item withdraws its events in the same save:
   // complianceCalendarOwners() returns nothing for a CLOSED item, and the
   // reconcile deletes every mailbox that is no longer wanted.
-  Object.assign(next, await syncComplianceToOutlook(env, next) || {});
+  Object.assign(next, (await syncComplianceToOutlook(env, next)).fields || {});
 
   await saveComplianceItems(env, items);
   // created is always 0 now: completing an item no longer materialises its next
@@ -4127,6 +4148,10 @@ async function handleAdminComplianceOutlookSync(request, env, cors) {
   const slice = mine.slice(offset, offset + COMPLIANCE_OUTLOOK_BATCH);
   let synced = 0;
   let cleared = 0;
+  // Graph calls that errored. Without this a run where every PATCH was rejected
+  // reports "0 added or updated", which reads the same as "everything was
+  // already up to date" — the opposite conclusion.
+  let failed = 0;
   // Names this deployment has no mailbox for. An item owned by someone not in
   // COMPLIANCE_MAILBOX silently gets no calendar entry, which is the one failure
   // mode that looks identical to success — so it is counted and named rather
@@ -4143,9 +4168,10 @@ async function handleAdminComplianceOutlookSync(request, env, cors) {
         .filter(Boolean)
         .forEach((n) => { if (!complianceMailboxFor(n)) unmapped.add(String(n).trim()); });
     }
-    const changes = await syncComplianceToOutlook(env, item);
-    if (!changes) continue;
-    items[i] = { ...item, ...changes };
+    const { fields, failed: itemFailed } = await syncComplianceToOutlook(env, item);
+    failed += itemFailed;
+    if (!fields) continue;
+    items[i] = { ...item, ...fields };
     if (wanted.length) synced += 1; else cleared += 1;
   }
   // Written once per batch rather than per item: this is one KV blob, and a
@@ -4161,6 +4187,7 @@ async function handleAdminComplianceOutlookSync(request, env, cors) {
     total: mine.length,
     synced,
     cleared,
+    failed,
     unmapped: [...unmapped],
     done,
     nextOffset: done ? null : offset + slice.length,
@@ -6359,6 +6386,10 @@ function taskOutlookEvents(task) {
 async function reconcileOutlookEvents(env, wanted, existing, payload) {
   const next = {};
   let changed = false;
+  // Graph calls that came back an error. Counted rather than only logged: a
+  // bulk run writes to live calendars, and "23 of 109 synced" with no
+  // explanation is indistinguishable from "the rest were already up to date".
+  let failed = 0;
   const targets = payload ? wanted : [];
 
   for (const owner of targets) {
@@ -6373,6 +6404,7 @@ async function reconcileOutlookEvents(env, wanted, existing, payload) {
         // would orphan it on someone's calendar forever.
         console.error('Outlook event update failed:', owner, res.status, await res.text());
         next[owner] = priorId;
+        failed += 1;
         continue;
       }
       // 404 — deleted in Outlook; fall through and recreate it.
@@ -6380,6 +6412,7 @@ async function reconcileOutlookEvents(env, wanted, existing, payload) {
     const res = await graphCalendarFetch(env, 'POST', `/users/${encodeURIComponent(owner)}/events`, payload);
     if (!res.ok) {
       console.error('Outlook event create failed:', owner, res.status, await res.text());
+      failed += 1;
       continue;
     }
     const created = await res.json();
@@ -6392,7 +6425,7 @@ async function reconcileOutlookEvents(env, wanted, existing, payload) {
     changed = true;
   }
 
-  return { events: next, changed };
+  return { events: next, changed, failed };
 }
 
 async function syncTaskToOutlook(env, task) {
