@@ -189,8 +189,8 @@
     </div>
 
     <div class="view-toggle" id="view-toggle">
-      <button type="button" data-view="list" class="active">☰ List</button>
-      <button type="button" data-view="board">▦ Board</button>
+      <button type="button" data-view="board" class="active">▦ Board</button>
+      <button type="button" data-view="list">☰ List</button>
     </div>
 
     <p class="panel-status" id="ops-status"></p>
@@ -409,7 +409,7 @@
   let boardLists = [];   // board columns: [{id, type:'person'|'custom', account?, name?}]
   let listAddType = 'person'; // which add-mode the Lists modal is showing
   let activeFilter = 'all';       // board filter pill
-  let currentView = 'list';      // 'board' | 'list'
+  let currentView = 'board';     // 'board' | 'list'
   let listQuickFilter = 'my-open'; // list quick-filter pill
   let listSearch = '';
   let dragTaskId = null;
@@ -1504,10 +1504,11 @@
   // Deep links. Board (Home stat tiles and queues): ?filter=today|week|overdue|mine.
   // List (dashboard queues / search / old Tasks links, via tasks.html redirect):
   // ?view=list&f=<quick>&cat=<category>&q=<search>.
-  // List opens by default now, so a ?filter= link with no explicit ?view= lands
-  // on list — filter and QUICK_FILTERS share ids for today/week/overdue, so it's
-  // applied there too and the dashboard's "Due Today"/"Overdue" tiles still
-  // filter correctly without needing to force board.
+  // Board opens by default, so a ?filter= link with no explicit ?view= lands on
+  // board — which is where that parameter was always aimed. `filter` and
+  // QUICK_FILTERS share ids for today/week/overdue and BOTH are set below, so
+  // the same link still filters correctly if it does end up on list (an
+  // explicit ?view=list, or a ?f=/?cat=/?q= that forces it).
   (function applyUrlParams() {
     const p = new URLSearchParams(location.search);
     const view = p.get('view');

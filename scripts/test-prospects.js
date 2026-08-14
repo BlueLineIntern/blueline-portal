@@ -531,4 +531,23 @@ check(/for \(const it of removedItems\) \{[\s\S]*?deleteOutlookEvent/.test(worke
 check(extract(worker, 'getGraphToken').includes('graphTokenCache'),
   'the Graph token is cached, halving subrequests per Graph call');
 
+// ---------- 11. Operations opens on Board ----------
+
+const toggle = ops.slice(ops.indexOf('<div class="view-toggle" id="view-toggle">'), ops.indexOf('</div>', ops.indexOf('id="view-toggle"')));
+check(toggle.indexOf('data-view="board"') < toggle.indexOf('data-view="list"'),
+  'the Tasks toggle reads Board | List, in that order');
+check(/data-view="board" class="active"/.test(toggle) && !/data-view="list" class="active"/.test(toggle),
+  'Board is the button marked active in the markup');
+check(/let currentView = 'board';/.test(ops),
+  'Board is the view the page actually opens on, not just the highlighted button');
+
+// The stub keeps every legacy link on List. If this ever flips, the dashboard
+// queues, the search palette and the contacts "full task manager" link all
+// silently land on a Kanban board instead of the filtered list they asked for.
+check(fs.readFileSync(path.join(root, 'public/admin/tasks.html'), 'utf8').includes("operations.html?view=list"),
+  'the tasks.html stub still pins legacy links to List');
+check(/if \(view === 'list' \|\| view === 'board'\) currentView = view;/.test(ops)
+  && /else if \(p\.has\('f'\) \|\| p\.has\('cat'\) \|\| p\.has\('q'\)\) currentView = 'list';/.test(ops),
+  'an explicit ?view=, or any of ?f=/?cat=/?q=, still overrides the Board default');
+
 console.log(`\n${passed} prospect checks passed`);

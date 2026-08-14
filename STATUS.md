@@ -1052,9 +1052,17 @@ Client portal is untouched and keeps its own look.
 - **Operations** (`operations.html`, sidebar "Operations") is the single task
   workspace — the old separate Tasks page was merged in as a **List view**. A
   Board/List toggle switches between them; both are views over the same `task:`
-  records. `tasks.html` is now a redirect stub → `operations.html?view=list&…`
-  so every old link (dashboard queues, search palette, contacts "full task
-  manager") keeps working. **List view**: quick filters (My/All Open/Due
+  records. **The toggle reads `▦ Board | ☰ List` and opens on Board** (changed
+  2026-08-14 — it previously read List first and opened there). `tasks.html` is
+  now a redirect stub → `operations.html?view=list&…` so every old link
+  (dashboard queues, search palette, contacts "full task manager") keeps working
+  and still lands on List.
+  - Consequence worth knowing: Home's **Due Today / Overdue** tiles use
+    `?filter=`, which carries no explicit view, so they now land on **Board**
+    with that filter pill active rather than on List. `filter` and
+    `QUICK_FILTERS` share ids for today/week/overdue and `applyUrlParams` sets
+    **both**, so the same link still filters correctly in whichever view it
+    lands on. **List view**: quick filters (My/All Open/Due
   Today/This Week/Overdue/Completed) + client/assignee/priority/category filters
   + search + rows with complete/edit/delete (edit opens the same drawer).
 - **Operations board** view: a Kanban **view over the same `task:` records** — no
