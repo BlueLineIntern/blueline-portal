@@ -961,6 +961,35 @@ Client portal is untouched and keeps its own look.
     caught in review; `scripts/test-prospects.js` pins it.
   - The contact profile's own Tasks tab needed nothing — it fixes `client` to the
     contact being viewed, so a prospect's Tasks tab already worked.
+  - **Home's two "Related To" fields** (`t-client` on the Task composer,
+    `e-client` on the Event composer) are grouped the same way by `fillPickers()`
+    in index.html, and keep a since-archived contact listed as
+    `<email> (unavailable)` for the same reason the other pickers do.
+- **Searchable contact picker** (`initContactPicker()` in shared.js, `.cp*` in
+  shared.css). Once the whole book is loaded a "Related to" dropdown is hundreds
+  of names long and scrolling it is not a way to find anyone, so this is a
+  type-to-search combobox over the list — filtered, still grouped into Clients
+  and Prospects. Attached to Home (both composers), Operations (task drawer +
+  list filter) and the Calendar meeting drawer.
+  - **The `<select>` stays in the DOM and remains the source of truth**; the
+    combobox is only a view over it. That is deliberate and load-bearing: the
+    select keeps its id, so every existing `getElementById(id).value` read,
+    every `sel.value = x` write and every `addEventListener('change')` binding
+    keeps working — **including listeners bound at boot, before the picker is
+    attached** (Operations' `FILTER_CONTROLS` loop is exactly this). Picking a
+    row sets `select.value` and dispatches `change`, as a native click would.
+    Replacing the element instead would silently break those bindings.
+  - A `MutationObserver` re-syncs the visible text when the options are rebuilt
+    (contact sync, workspace switch, `↻ Refresh`), so callers never have to
+    remember to refresh it. It fires as a microtask, i.e. after the caller's
+    usual `innerHTML = …; value = …` pair, so it reads the settled value.
+  - The placeholder option is never offered as a search hit — clearing is what
+    the ✕ button is for. Blur and Escape leave the selection alone: half-typed
+    text is a search that was never finished, not a change.
+  - `shared.js` and `shared.css` are cache-busted by `?v=`. **Bump it on every
+    admin page together** when either changes, or a page serves the old
+    picker-less copy against the new markup. `test-prospects.js` fails if the
+    versions ever disagree.
 - **Notes** (`note:<client>:<invTs>-<rand>` KV, **encrypted**): body (plain
   text), tags, pinned, author. CRUD under `/api/admin/notes[/:id]`
   (`?client=` filter). Creating one writes a `note-added` timeline event.

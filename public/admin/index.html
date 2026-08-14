@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Home — BlueLine Admin</title>
-<link rel="stylesheet" href="/admin/shared.css" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260814-1" />
 <style>
   .task-check { width: 16px; height: 16px; accent-color: var(--sky); cursor: pointer; margin-top: 2px; flex-shrink: 0; }
   .alert-item { display: flex; gap: var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); align-items: flex-start; }
@@ -211,7 +211,7 @@
   </main>
 </div>
 
-<script src="/admin/shared.js?v=20260813-1"></script>
+<script src="/admin/shared.js?v=20260814-1"></script>
 <script>
   initShell('dashboard');
 
@@ -228,6 +228,11 @@
 
   let contactsCache = [];      // for the @mention picker and feed name lookups
   let adminEmails = [];        // assignable accounts for the Task form
+
+  // Type-to-search over both "Related To" fields. Attached once at boot: the
+  // picker reads the <select> it wraps and re-syncs itself when fillPickers()
+  // rebuilds the options, so it does not need re-attaching on every load.
+  ['t-client', 'e-client'].forEach((id) => initContactPicker(id));
   let feedCursor = null;       // server cursor for the next older page
   let feedExtra = [];          // entries pulled by "Load older activity"
 
@@ -505,15 +510,32 @@
 
   // Contact picker shared by both forms. Rebuilt whenever contacts reload so a
   // newly synced client is selectable without a page refresh.
+  //
+  // Split into Clients and Prospects, matching the task drawer on Operations —
+  // a task related to "Dana Reed" reads very differently depending on which side
+  // of the pipeline she is on. Same rule as contactIsProspect() there: a record
+  // with no status at all is the 'prospect' default buildContactList() applies,
+  // but this list only ever holds records we actually loaded, so there is no
+  // unknown-email case to guard here.
   function fillPickers() {
-    const opts = '<option value="">— none —</option>' +
-      contactsCache.map((c) =>
-        `<option value="${escapeHtml(c.email)}">${escapeHtml(c.name || c.email)}</option>`
-      ).join('');
+    const clients = [];
+    const prospects = [];
+    contactsCache.forEach((c) => {
+      ((c.status || 'prospect') === 'prospect' ? prospects : clients).push(c);
+    });
+    const optHtml = (c) => `<option value="${escapeHtml(c.email)}">${escapeHtml(c.name || c.email)}</option>`;
+    const group = (label, list) => (list.length ? `<optgroup label="${escapeHtml(label)}">${list.map(optHtml).join('')}</optgroup>` : '');
+    const opts = '<option value="">— none —</option>' + group('Clients', clients) + group('Prospects', prospects);
     ['t-client', 'e-client'].forEach((id) => {
       const el = document.getElementById(id);
       const keep = el.value;
-      el.innerHTML = opts;
+      // A task already related to someone who has since been archived (and so
+      // dropped from contactsCache) keeps them listed, or `el.value = keep`
+      // silently fails and the form quietly reports the wrong contact.
+      const missing = keep && !contactsCache.some((c) => c.email === keep)
+        ? `<option value="${escapeHtml(keep)}">${escapeHtml(keep)} (unavailable)</option>`
+        : '';
+      el.innerHTML = opts + missing;
       if (keep) el.value = keep;
     });
     const assignee = document.getElementById('t-assignee');

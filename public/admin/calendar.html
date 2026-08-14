@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Calendar — BlueLine Admin</title>
-<link rel="stylesheet" href="/admin/shared.css" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260814-1" />
 <style>
   /* Calendar is a view over the same task: records (meetings are tasks with
      category 'meeting'; every task with a due date appears). No new store. */
@@ -219,7 +219,7 @@
   </div>
 </aside>
 
-<script src="/admin/shared.js?v=20260813-1"></script>
+<script src="/admin/shared.js?v=20260814-1"></script>
 <script>
   initShell('calendar');
 
@@ -706,6 +706,10 @@
     const open = p.get('task');
     if (open) setTimeout(() => openDrawerEdit(open), 400); // open a specific meeting after load
   })();
+
+  // Same type-to-search picker as Home and Operations — a meeting's contact is
+  // picked from the same unscrollable list.
+  initContactPicker('d-client');
 
   setInterval(loadData, POLL_INTERVAL_MS);
   loadData();

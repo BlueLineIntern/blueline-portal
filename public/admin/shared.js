@@ -262,6 +262,206 @@ function assigneeBadge(email) {
   return `<span class="assignee-badge" title="Assigned to ${escapeHtml(staffLabel(email))}">${escapeHtml(staffLabel(email))}</span>`;
 }
 
+// ---------- Searchable contact picker ----------
+//
+// A type-to-search combobox over an existing <select>. Once the whole book is
+// loaded, a "Related to" dropdown is hundreds of names long and scrolling it is
+// not a way to find anyone — but the grouping into Clients / Prospects is worth
+// keeping, so this is a filter over the real list rather than a flat autocomplete.
+//
+// **The <select> stays in the DOM and remains the source of truth.** It keeps
+// its id, so every existing `getElementById(id).value` read, every
+// `sel.value = x` write, and every `addEventListener('change')` binding on the
+// page keeps working untouched — including listeners bound at boot, before this
+// ever runs. The combobox is only a view over it: picking a row sets
+// `select.value` and dispatches `change`, exactly as a user click on the native
+// control would.
+//
+// A MutationObserver re-syncs when the options are rebuilt (a contact sync
+// landing, a workspace switch), so callers never have to remember to refresh.
+// The observer fires as a microtask, i.e. after the caller's usual
+// `innerHTML = …; value = …` pair has finished, so it reads the settled value.
+function initContactPicker(selectId) {
+  const sel = document.getElementById(selectId);
+  if (!sel || sel.dataset.cpReady) return null;
+  sel.dataset.cpReady = '1';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'cp';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'cp-input';
+  input.autocomplete = 'off';
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-expanded', 'false');
+  input.setAttribute('aria-autocomplete', 'list');
+  const menu = document.createElement('div');
+  menu.className = 'cp-menu hidden';
+  menu.setAttribute('role', 'listbox');
+  wrap.append(input, menu);
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(sel);
+  sel.classList.add('cp-native');
+  // The label's `for` still points at the select, which is now visually hidden;
+  // move the association to the control the advisor actually types into.
+  const label = sel.id && document.querySelector(`label[for="${CSS.escape(sel.id)}"]`);
+  if (label) {
+    if (!input.id) input.id = `${sel.id}-cp`;
+    label.setAttribute('for', input.id);
+  }
+
+  let rows = [];      // flattened {value,label,group} in select order
+  let matches = [];
+  let cursor = -1;
+  let open = false;
+
+  // The placeholder option ("— none —") is the empty choice, not a contact, so
+  // it is never offered as a search hit — clearing is what the ✕ button is for.
+  function readRows() {
+    rows = [];
+    [...sel.children].forEach((node) => {
+      if (node.tagName === 'OPTGROUP') {
+        [...node.children].forEach((o) => rows.push({ value: o.value, label: o.textContent, group: node.label }));
+      } else if (node.value) {
+        rows.push({ value: node.value, label: node.textContent, group: '' });
+      }
+    });
+  }
+
+  function placeholderText() {
+    const first = sel.querySelector('option[value=""]');
+    return first ? first.textContent.trim() : '— none —';
+  }
+
+  function currentLabel() {
+    const hit = rows.find((r) => r.value === sel.value);
+    return hit ? hit.label : '';
+  }
+
+  // Closed state shows the selection (or the placeholder as greyed prompt text).
+  function syncInput() {
+    input.value = currentLabel();
+    input.placeholder = placeholderText();
+    wrap.classList.toggle('cp-has-value', !!sel.value);
+  }
+
+  function filter(q) {
+    const needle = q.trim().toLowerCase();
+    matches = needle
+      ? rows.filter((r) => r.label.toLowerCase().includes(needle) || r.value.toLowerCase().includes(needle))
+      : rows.slice();
+  }
+
+  function renderMenu() {
+    if (!matches.length) {
+      menu.innerHTML = '<div class="cp-empty">No matches</div>';
+      return;
+    }
+    let html = '';
+    let lastGroup = null;
+    matches.forEach((r, i) => {
+      if (r.group !== lastGroup) {
+        lastGroup = r.group;
+        if (r.group) html += `<div class="cp-group">${escapeHtml(r.group)}</div>`;
+      }
+      // Email as a subtitle only when it isn't already the label, so two people
+      // with the same display name stay tellable apart.
+      const sub = r.label === r.value ? '' : `<span class="cp-sub">${escapeHtml(r.value)}</span>`;
+      html += `<div class="cp-opt${i === cursor ? ' sel' : ''}" role="option" aria-selected="${i === cursor}" data-i="${i}">
+        <span class="cp-name">${escapeHtml(r.label)}</span>${sub}</div>`;
+    });
+    menu.innerHTML = html;
+    const active = menu.querySelector('.cp-opt.sel');
+    if (active) active.scrollIntoView({ block: 'nearest' });
+  }
+
+  function openMenu(showAll) {
+    readRows();
+    filter(showAll ? '' : input.value);
+    // Start on the current selection, so reopening and pressing Enter re-picks
+    // what is already there instead of jumping to the top of the list. With
+    // nothing selected yet the first row leads, as a combobox normally does.
+    cursor = matches.findIndex((r) => r.value === sel.value);
+    if (cursor < 0) cursor = matches.length ? 0 : -1;
+    open = true;
+    menu.classList.remove('hidden');
+    input.setAttribute('aria-expanded', 'true');
+    renderMenu();
+  }
+
+  function closeMenu() {
+    open = false;
+    menu.classList.add('hidden');
+    input.setAttribute('aria-expanded', 'false');
+    syncInput();
+  }
+
+  function choose(i) {
+    const r = matches[i];
+    if (!r) return;
+    sel.value = r.value;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    closeMenu();
+  }
+
+  function clear() {
+    sel.value = '';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    closeMenu();
+  }
+
+  input.addEventListener('focus', () => openMenu(true));
+  input.addEventListener('input', () => {
+    if (!open) openMenu(false);
+    else { filter(input.value); cursor = matches.length ? 0 : -1; renderMenu(); }
+  });
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (!open) return openMenu(true);
+      if (!matches.length) return;
+      cursor = ev.key === 'ArrowDown'
+        ? (cursor + 1) % matches.length
+        : (cursor - 1 + matches.length) % matches.length;
+      renderMenu();
+    } else if (ev.key === 'Enter') {
+      if (!open) return;
+      ev.preventDefault();
+      choose(cursor);
+    } else if (ev.key === 'Escape') {
+      if (!open) return;
+      ev.stopPropagation(); // don't also close the drawer/modal behind the menu
+      closeMenu();
+    } else if (ev.key === 'Tab') {
+      if (open) closeMenu();
+    }
+  });
+  // mousedown, not click: blur fires first on click and would close the menu
+  // before the row it was aimed at ever received the event.
+  menu.addEventListener('mousedown', (ev) => {
+    const opt = ev.target.closest('.cp-opt');
+    if (!opt) return;
+    ev.preventDefault();
+    choose(Number(opt.dataset.i));
+  });
+  // Abandoning the field leaves the selection alone — half-typed text is a
+  // search that was never completed, not a change.
+  input.addEventListener('blur', () => { if (open) closeMenu(); });
+
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.className = 'cp-clear';
+  clearBtn.textContent = '×';
+  clearBtn.title = 'Clear';
+  clearBtn.addEventListener('mousedown', (ev) => { ev.preventDefault(); clear(); });
+  wrap.appendChild(clearBtn);
+
+  new MutationObserver(() => { readRows(); syncInput(); }).observe(sel, { childList: true, subtree: true });
+  readRows();
+  syncInput();
+  return { refresh: () => { readRows(); syncInput(); } };
+}
+
 function isSameLocalDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }

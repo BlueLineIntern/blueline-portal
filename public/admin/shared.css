@@ -168,6 +168,43 @@ a:hover { text-decoration: underline; }
 .palette-result .pr-sub { color: var(--muted); font-size: var(--fs-sm); }
 .palette-empty { color: var(--muted); padding: var(--sp-5); text-align: center; }
 
+/* Searchable contact picker (initContactPicker in shared.js). The <select> it
+   wraps stays in the DOM as the value carrier and is hidden here rather than
+   removed — see the comment on that function for why. Visually it borrows the
+   palette's result styling above so a filtered list of contacts looks the same
+   whether it came from Ctrl-K or from a "Related to" field. */
+.cp { position: relative; }
+.cp-native { position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; }
+.cp-input { width: 100%; box-sizing: border-box; }
+/* The clear button only earns its space once there is a selection to clear. */
+.cp-clear {
+  position: absolute; right: 1px; top: 1px; bottom: 1px; width: 28px; display: none;
+  border: none; background: none; color: var(--muted); font-size: var(--fs-lg);
+  line-height: 1; cursor: pointer; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.cp-has-value .cp-clear { display: block; }
+.cp-has-value .cp-input { padding-right: 30px; }
+.cp-clear:hover { color: var(--red); }
+.cp-menu {
+  position: absolute; z-index: 60; top: calc(100% + 2px); left: 0; right: 0;
+  max-height: 260px; overflow-y: auto; padding: var(--sp-2);
+  background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+}
+.cp-group {
+  color: var(--muted); font-size: var(--fs-xs); text-transform: uppercase;
+  letter-spacing: var(--ls-caps); font-weight: var(--fw-semibold);
+  padding: var(--sp-2) var(--sp-2) 2px;
+}
+.cp-opt {
+  display: flex; align-items: baseline; gap: var(--sp-2); justify-content: space-between;
+  padding: var(--sp-2); border-radius: var(--radius-sm); cursor: pointer;
+}
+.cp-opt:hover, .cp-opt.sel { background: var(--sky-bg); }
+.cp-name { font-weight: var(--fw-medium); }
+.cp-sub { color: var(--muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-empty { color: var(--muted); padding: var(--sp-4); text-align: center; font-size: var(--fs-sm); }
+
 .sidebar-foot {
   padding: var(--sp-4); border-top: 1px solid rgba(255,255,255,0.09);
   font-size: var(--fs-sm);

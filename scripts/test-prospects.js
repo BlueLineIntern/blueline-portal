@@ -291,4 +291,53 @@ check(!known.innerHTML.includes('(unavailable)') && known.value === 'dev@example
 check(ops.includes("fillContactSelect('filter-client'") && ops.includes("fillContactSelect('d-client'"),
   'both the task drawer and the list filter use the grouped picker');
 
+// ---------- 6. Home's "Related To" is grouped the same way ----------
+
+const home = fs.readFileSync(path.join(root, 'public/admin/index.html'), 'utf8');
+const fillPickers = home.slice(home.indexOf('function fillPickers'), home.indexOf('const assignee = document.getElementById'));
+
+check(/optgroup label="\$\{escapeHtml\(label\)\}"/.test(fillPickers)
+  && fillPickers.includes("group('Clients', clients)") && fillPickers.includes("group('Prospects', prospects)"),
+  "Home's Related To fields split into Clients and Prospects optgroups");
+check(fillPickers.includes("(c.status || 'prospect') === 'prospect'"),
+  'Home classifies a status-less contact as a prospect, same as everywhere else');
+check(fillPickers.includes('(unavailable)'),
+  "a task related to a since-archived contact keeps them listed on Home rather than silently re-pointing the form");
+
+// ---------- 7. The searchable picker ----------
+
+const sharedJs = fs.readFileSync(path.join(root, 'public/admin/shared.js'), 'utf8');
+check(sharedJs.includes('function initContactPicker('),
+  'the searchable contact picker lives in shared.js, so all three pages get one implementation');
+
+// The <select> staying put is what keeps every existing `.value` read and
+// boot-time change listener working. If a future edit replaces the element
+// instead, Operations' FILTER_CONTROLS bindings silently stop firing.
+const picker = extract(sharedJs, 'initContactPicker');
+check(picker.includes("sel.dispatchEvent(new Event('change', { bubbles: true }))"),
+  'picking a contact dispatches change on the original select, so existing listeners still fire');
+check(picker.includes('wrap.appendChild(sel)') && !/sel\.remove\(\)|removeChild\(sel\)/.test(picker),
+  'the picker keeps the <select> in the DOM as the value carrier rather than replacing it');
+check(picker.includes('new MutationObserver'),
+  'the picker re-syncs itself when the options are rebuilt, so callers never have to refresh it');
+check(picker.includes("label.setAttribute('for', input.id)"),
+  "the field's label is re-pointed at the search box, not left on the hidden select");
+check(/if \(!c\) return false/.test(extract(ops, 'contactIsProspect')),
+  'the unknown-contact guard is still in place after the picker rework');
+
+for (const [file, src] of [['index.html', home], ['operations.html', ops], ['calendar.html', fs.readFileSync(path.join(root, 'public/admin/calendar.html'), 'utf8')]]) {
+  check(src.includes('initContactPicker('), `${file} attaches the searchable picker`);
+}
+
+// shared.js/shared.css are cache-busted by query string; a bump that misses a
+// page serves it the old picker-less copy against the new markup.
+const adminPages = fs.readdirSync(path.join(root, 'public/admin')).filter((f) => f.endsWith('.html') && f !== 'tasks.html');
+const versions = new Set();
+adminPages.forEach((f) => {
+  const src = fs.readFileSync(path.join(root, 'public/admin', f), 'utf8');
+  (src.match(/shared\.(?:js|css)\?v=([\w-]+)/g) || []).forEach((v) => versions.add(v.split('=')[1]));
+});
+check(versions.size === 1,
+  `every admin page requests the same shared.js/shared.css version (${[...versions].join(', ')})`);
+
 console.log(`\n${passed} prospect checks passed`);

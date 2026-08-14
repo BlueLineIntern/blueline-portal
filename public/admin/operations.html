@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Tasks — BlueLine Admin</title>
-<link rel="stylesheet" href="/admin/shared.css" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260814-1" />
 <style>
   /* Board is a horizontal row of employee columns; the same task: records as
      the Tasks page, grouped by assignee. Board-only styling lives here; the
@@ -399,7 +399,7 @@
   </div>
 </div>
 
-<script src="/admin/shared.js?v=20260813-1"></script>
+<script src="/admin/shared.js?v=20260814-1"></script>
 <script>
   initShell('operations');
 
@@ -1447,6 +1447,12 @@
       renderQuickFilters(); renderChips(); renderTasks();
     });
   });
+  // Type-to-search over the contact list, which is unscrollable once the whole
+  // book is loaded. Attached AFTER the change listeners above deliberately: the
+  // picker keeps the <select> in place and dispatches `change` on it, so those
+  // listeners keep firing either way — but binding first makes that ordering
+  // independence explicit rather than accidental.
+  ['filter-client', 'd-client'].forEach((id) => initContactPicker(id));
   document.getElementById('task-search').addEventListener('input', (e) => {
     listSearch = e.target.value;
     renderQuickFilters(); renderChips(); renderTasks();
