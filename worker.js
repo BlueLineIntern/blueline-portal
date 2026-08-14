@@ -2348,7 +2348,23 @@ async function handleAdminAudit(request, env, cors) {
 // Fetch contacts from the BlueLineCRM SharePoint list and upsert them into KV.
 // Pull-only: SharePoint is a read source, app edits are the source of truth.
 
+// Client-credentials tokens are valid for about an hour, and every Graph call
+// used to mint a fresh one — two subrequests per call instead of one. That was
+// merely wasteful for a single meeting push; it halves how many compliance items
+// fit in one batch (see handleAdminComplianceOutlookSync), which is what made it
+// worth fixing. Cached in module scope, so it survives across requests handled by
+// the same isolate and is dropped whenever that isolate is recycled.
+//
+// Keyed by tenant + client id so a config change can't serve a token minted for
+// the previous credentials. Expiry is taken from the response with a 60s margin
+// rather than assumed.
+let graphTokenCache = null;
+
 async function getGraphToken(env) {
+  const cacheKey = `${env.OUTLOOK_TENANT_ID}:${env.OUTLOOK_CLIENT_ID}`;
+  if (graphTokenCache && graphTokenCache.key === cacheKey && graphTokenCache.expires > Date.now()) {
+    return graphTokenCache.token;
+  }
   const body = new URLSearchParams({
     client_id: env.OUTLOOK_CLIENT_ID,
     client_secret: env.OUTLOOK_CLIENT_SECRET,
@@ -2362,6 +2378,12 @@ async function getGraphToken(env) {
   });
   if (!response.ok) throw new Error('Failed to get Graph token: ' + response.statusText);
   const data = await response.json();
+  const ttl = Number(data.expires_in);
+  graphTokenCache = {
+    key: cacheKey,
+    token: data.access_token,
+    expires: Date.now() + (Number.isFinite(ttl) && ttl > 120 ? (ttl - 60) * 1000 : 0),
+  };
   return data.access_token;
 }
 
@@ -3657,6 +3679,92 @@ function complianceWorkflow(item) {
   return 'Open';
 }
 
+// ---------- Compliance -> Outlook ----------
+// Every OPEN compliance item is mirrored onto the real Outlook calendars of the
+// people responsible for it, as an all-day event on its due date. Same app
+// registration, same Calendars.ReadWrite.All application permission and the same
+// reconcile as meetings (reconcileOutlookEvents) — a compliance item is just
+// another record with a date and a set of mailboxes.
+//
+// Owner AND reviewer both get a copy. An item cannot close without the
+// reviewer's sign-off, so a deadline only the owner can see is a deadline the
+// reviewer discovers late. Reviewer 'N/A' means the item closes on the owner
+// alone, so that case is owner-only.
+//
+// `owner`/`reviewer` are display names in this record ('Frank', 'Jennifer'), not
+// addresses — the tracker was seeded from a spreadsheet that used first names.
+// Anything not in this map is skipped rather than guessed at: inventing a
+// mailbox would write a real event onto the wrong person's calendar.
+const COMPLIANCE_MAILBOX = {
+  frank: FRANK_ADMIN_EMAIL,
+  jennifer: JENN_ADMIN_EMAIL,
+};
+
+function complianceMailboxFor(name) {
+  return COMPLIANCE_MAILBOX[String(name || '').trim().toLowerCase()] || '';
+}
+
+// CLOSED items get no calendar entry: finished work on a calendar is noise, and
+// completing an item is what withdraws its events (reconcile deletes any mailbox
+// that is no longer wanted). Undated items likewise can't be placed.
+function complianceCalendarOwners(item) {
+  if (complianceStatus(item) === 'CLOSED') return [];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(item.dueDate || '').trim())) return [];
+  const names = [item.owner];
+  if (complianceReviewerRequired(item)) names.push(item.reviewer);
+  return [...new Set(names.map(complianceMailboxFor).filter(Boolean))];
+}
+
+// Shaped into the same fields outlookEventBody reads. A bare YYYY-MM-DD due with
+// no `T` is treated as all-day by outlookEventTimes, which is exactly right: a
+// compliance obligation is due on a day, not at a time.
+function complianceOutlookPayload(env, item) {
+  const lines = [];
+  if (item.whatToDo) lines.push(String(item.whatToDo));
+  if (item.complianceArea) lines.push(`Area: ${item.complianceArea}`);
+  if (item.frequency) lines.push(`Frequency: ${item.frequency}`);
+  if (item.requirement) lines.push(`Requirement: ${item.requirement}`);
+  if (item.owner) lines.push(`Owner: ${item.owner}`);
+  if (complianceReviewerRequired(item) && item.reviewer) lines.push(`Reviewer: ${item.reviewer}`);
+  if (item.source) lines.push(`Source: ${item.source}`);
+  lines.push('', 'Tracked in the BlueLine portal — Compliance. Sign-off happens there, not here.');
+  return outlookEventBody({
+    // Prefixed so a compliance obligation is distinguishable from a meeting at a
+    // glance in Outlook, where there is no other context to tell them apart.
+    title: `[Compliance] ${String(item.item || '').trim() || '(untitled)'}`,
+    description: lines.join('\n'),
+    due: String(item.dueDate).trim(),
+  }, outlookTimeZone(env));
+}
+
+function complianceOutlookEvents(item) {
+  if (!item.outlookEvents || typeof item.outlookEvents !== 'object') return {};
+  const out = {};
+  for (const [owner, id] of Object.entries(item.outlookEvents)) {
+    const key = String(owner || '').trim().toLowerCase();
+    if (key && id) out[key] = String(id);
+  }
+  return out;
+}
+
+// Returns the fields to merge onto the item, or null when nothing changed.
+// Best-effort like every other push here: a Graph outage must never block saving
+// a compliance item, which is the record that actually matters.
+async function syncComplianceToOutlook(env, item) {
+  if (!outlookConfigured(env)) return null;
+  try {
+    const wanted = complianceCalendarOwners(item);
+    const existing = complianceOutlookEvents(item);
+    const payload = wanted.length ? complianceOutlookPayload(env, item) : null;
+    const { events: next, changed } = await reconcileOutlookEvents(env, wanted, existing, payload);
+    if (!changed && JSON.stringify(next) === JSON.stringify(existing)) return null;
+    return { outlookEvents: next, outlookSyncedAt: new Date().toISOString() };
+  } catch (err) {
+    console.error('Error syncing compliance item to Outlook:', err);
+    return null;
+  }
+}
+
 function withComplianceStatus(item) {
   return {
     ...item,
@@ -3911,6 +4019,9 @@ async function handleAdminComplianceCreate(request, env, cors) {
   // Runs before the KV write so a successful push's item id is captured
   // immediately rather than being left null until the next edit.
   Object.assign(base, await pushComplianceToSharePoint(env, base));
+  // Same reason: capture the event ids on the first write rather than leaving
+  // the item unsynced until someone edits it.
+  Object.assign(base, await syncComplianceToOutlook(env, base) || {});
 
   await saveComplianceItems(env, items);
   await logAudit(env, adminEmail, 'compliance-create', { id: base.id, item: base.item });
@@ -3969,12 +4080,91 @@ async function handleAdminComplianceUpdate(request, env, cors, id) {
 
   // Best-effort disaster-recovery mirror — see pushComplianceToSharePoint.
   Object.assign(next, await pushComplianceToSharePoint(env, next));
+  // And the owner's/reviewer's real Outlook calendars. Runs AFTER the status
+  // logic above so completing an item withdraws its events in the same save:
+  // complianceCalendarOwners() returns nothing for a CLOSED item, and the
+  // reconcile deletes every mailbox that is no longer wanted.
+  Object.assign(next, await syncComplianceToOutlook(env, next) || {});
 
   await saveComplianceItems(env, items);
   // created is always 0 now: completing an item no longer materialises its next
   // occurrence. Kept in the response so the client's `if (res.created)` reload
   // path stays valid rather than reading undefined.
   return json({ item: withComplianceStatus(next), created: 0 }, 200, cors);
+}
+
+// Bring a SLICE of the tracker in line with Outlook, and report where to resume.
+//
+// Batched deliberately. A Worker has a bounded subrequest budget and wall clock,
+// and the tracker is ~128 items each needing up to two Graph calls (owner +
+// reviewer) — one request could not finish, and a half-finished bulk write to
+// real calendars is the worst outcome available. The client loops, so progress
+// is visible and a failure resumes from the last completed batch instead of
+// starting the whole thing again.
+//
+// Idempotent: each item's own `outlookEvents` map records what it already has,
+// so re-running patches existing events rather than creating duplicates. That is
+// what makes it safe to press the button twice.
+const COMPLIANCE_OUTLOOK_BATCH = 12;
+
+async function handleAdminComplianceOutlookSync(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
+  if (workspace !== FRANK_ADMIN_EMAIL) return json({ error: "Compliance is only available in Frank's shared view" }, 403, cors);
+  if (!outlookConfigured(env)) return json({ error: 'Outlook is not configured for this deployment' }, 400, cors);
+
+  const body = await request.json().catch(() => ({}));
+  const offset = Math.max(0, Number(body && body.offset) || 0);
+
+  const items = await getComplianceItems(env);
+  // Index within the FULL list so the offset the client sends back stays valid;
+  // filtering first would renumber the slice under it.
+  const mine = [];
+  items.forEach((it, i) => { if (recordWorkspace(it) === workspace) mine.push(i); });
+
+  const slice = mine.slice(offset, offset + COMPLIANCE_OUTLOOK_BATCH);
+  let synced = 0;
+  let cleared = 0;
+  // Names this deployment has no mailbox for. An item owned by someone not in
+  // COMPLIANCE_MAILBOX silently gets no calendar entry, which is the one failure
+  // mode that looks identical to success — so it is counted and named rather
+  // than left for someone to notice months later. Legacy 'Both' rows are
+  // migrated away by getComplianceItems before they reach here; a third staff
+  // member added as an owner is the case this actually catches.
+  const unmapped = new Set();
+  for (const i of slice) {
+    const item = items[i];
+    const isOpen = complianceStatus(item) !== 'CLOSED';
+    const wanted = complianceCalendarOwners(item);
+    if (isOpen && !wanted.length && /^\d{4}-\d{2}-\d{2}$/.test(String(item.dueDate || '').trim())) {
+      [item.owner, complianceReviewerRequired(item) ? item.reviewer : '']
+        .filter(Boolean)
+        .forEach((n) => { if (!complianceMailboxFor(n)) unmapped.add(String(n).trim()); });
+    }
+    const changes = await syncComplianceToOutlook(env, item);
+    if (!changes) continue;
+    items[i] = { ...item, ...changes };
+    if (wanted.length) synced += 1; else cleared += 1;
+  }
+  // Written once per batch rather than per item: this is one KV blob, and a
+  // write per item would be 12 read-modify-writes of the whole tracker.
+  if (synced || cleared) await saveComplianceItems(env, items);
+
+  const done = offset + slice.length >= mine.length;
+  if (done) {
+    await logAudit(env, adminEmail, 'compliance-outlook-sync', { total: mine.length });
+  }
+  return json({
+    processed: offset + slice.length,
+    total: mine.length,
+    synced,
+    cleared,
+    unmapped: [...unmapped],
+    done,
+    nextOffset: done ? null : offset + slice.length,
+  }, 200, cors);
 }
 
 async function handleAdminComplianceDelete(request, env, cors, id) {
@@ -4009,6 +4199,14 @@ async function handleAdminComplianceDelete(request, env, cors, id) {
   // Promise.all: a whole series can be dozens of rows, and this must never
   // fire that many concurrent Graph calls at once.
   for (const it of removedItems) await deleteComplianceFromSharePoint(env, it);
+  // The calendar copies go with it. Nothing else would ever remove them — the
+  // record carrying their ids is about to be gone — so they would sit on real
+  // calendars forever, pointing at an item that no longer exists.
+  for (const it of removedItems) {
+    for (const [owner, eventId] of Object.entries(complianceOutlookEvents(it))) {
+      await deleteOutlookEvent(env, owner, eventId);
+    }
+  }
   await saveComplianceItems(env, items);
   await logAudit(env, adminEmail, 'compliance-delete', {
     id, item: target.item, series: wholeSeries, removed: removedCount,
@@ -4086,6 +4284,16 @@ async function handleAdminComplianceImport(request, env, cors) {
   // below returns immediately without a network call. Kept rather than removed
   // so this stays correct if imports ever preserve completion.
   for (const it of dropped) await deleteComplianceFromSharePoint(env, it);
+  // Dropped rows lose their calendar copies for the same reason a deleted item
+  // does. The newly created rows are NOT pushed to Outlook here: an import can
+  // be a hundred rows, which is far past what one request's Graph budget and
+  // wall-clock allow. They are picked up by the Sync to Outlook button on the
+  // Compliance page, which batches (see handleAdminComplianceOutlookSync).
+  for (const it of dropped) {
+    for (const [owner, eventId] of Object.entries(complianceOutlookEvents(it))) {
+      await deleteOutlookEvent(env, owner, eventId);
+    }
+  }
   for (let i = 0; i < created.length; i += 1) {
     created[i] = await pushComplianceToSharePoint(env, created[i]);
   }
@@ -6137,51 +6345,63 @@ function taskOutlookEvents(task) {
 //
 // Always returns the legacy singular fields blanked once it writes, so a record
 // has exactly one source of truth after its first save under this code.
+// Bring the set of Outlook events for ONE record in line with the mailboxes it
+// should currently be on. Set-based: each wanted mailbox is created or patched,
+// and any mailbox no longer wanted has its copy deleted — so removing one name
+// withdraws only that person's event.
+//
+// Shared by meetings and compliance items rather than written twice: the retry,
+// 404-recreate and orphan-avoidance rules below are subtle enough that a second
+// copy would drift from this one within a release.
+//
+// A null `payload` means "this can't be an event at all" (no usable date, or
+// nobody selected) and withdraws every copy rather than leaving stale ones.
+async function reconcileOutlookEvents(env, wanted, existing, payload) {
+  const next = {};
+  let changed = false;
+  const targets = payload ? wanted : [];
+
+  for (const owner of targets) {
+    const priorId = existing[owner];
+    if (priorId) {
+      const res = await graphCalendarFetch(
+        env, 'PATCH', `/users/${encodeURIComponent(owner)}/events/${encodeURIComponent(priorId)}`, payload
+      );
+      if (res.ok) { next[owner] = priorId; continue; }
+      if (res.status !== 404) {
+        // Keep the id: the event probably still exists and dropping it here
+        // would orphan it on someone's calendar forever.
+        console.error('Outlook event update failed:', owner, res.status, await res.text());
+        next[owner] = priorId;
+        continue;
+      }
+      // 404 — deleted in Outlook; fall through and recreate it.
+    }
+    const res = await graphCalendarFetch(env, 'POST', `/users/${encodeURIComponent(owner)}/events`, payload);
+    if (!res.ok) {
+      console.error('Outlook event create failed:', owner, res.status, await res.text());
+      continue;
+    }
+    const created = await res.json();
+    if (created.id) { next[owner] = created.id; changed = true; }
+  }
+
+  for (const [owner, id] of Object.entries(existing)) {
+    if (next[owner]) continue;
+    await deleteOutlookEvent(env, owner, id);
+    changed = true;
+  }
+
+  return { events: next, changed };
+}
+
 async function syncTaskToOutlook(env, task) {
   if (!outlookConfigured(env)) return null;
   try {
     const wanted = taskCalendarOwners(task);
     const existing = taskOutlookEvents(task);
     const payload = wanted.length ? outlookEventBody(task, outlookTimeZone(env)) : null;
-    const next = {};
-    let changed = false;
-
-    // No usable date (or nobody selected) means this can't be an event at all —
-    // withdraw every copy rather than leaving stale ones behind.
-    const targets = payload ? wanted : [];
-
-    for (const owner of targets) {
-      const priorId = existing[owner];
-      if (priorId) {
-        const res = await graphCalendarFetch(
-          env, 'PATCH', `/users/${encodeURIComponent(owner)}/events/${encodeURIComponent(priorId)}`, payload
-        );
-        if (res.ok) { next[owner] = priorId; continue; }
-        if (res.status !== 404) {
-          // Keep the id: the event probably still exists and dropping it here
-          // would orphan it on someone's calendar forever.
-          console.error('Outlook event update failed:', owner, res.status, await res.text());
-          next[owner] = priorId;
-          continue;
-        }
-        // 404 — deleted in Outlook; fall through and recreate it.
-      }
-      const res = await graphCalendarFetch(env, 'POST', `/users/${encodeURIComponent(owner)}/events`, payload);
-      if (!res.ok) {
-        console.error('Outlook event create failed:', owner, res.status, await res.text());
-        continue;
-      }
-      const created = await res.json();
-      if (created.id) { next[owner] = created.id; changed = true; }
-    }
-
-    // Mailboxes that were unticked (or all of them, if this stopped being an
-    // event) lose their copy.
-    for (const [owner, id] of Object.entries(existing)) {
-      if (next[owner]) continue;
-      await deleteOutlookEvent(env, owner, id);
-      changed = true;
-    }
+    const { events: next, changed } = await reconcileOutlookEvents(env, wanted, existing, payload);
 
     const hadLegacy = task.outlookEventId || task.outlookSyncedOwner || task.calendarOwner;
     if (!changed && !hadLegacy && JSON.stringify(next) === JSON.stringify(existing)) return null;
@@ -7249,6 +7469,11 @@ export default {
       // swallow "import" as an item id and route it into the update handler.
       if (url.pathname === '/api/admin/compliance/import' && request.method === 'POST') {
         return await handleAdminComplianceImport(request, env, cors);
+      }
+      // Same reason as /import: before the greedy /compliance/(.+) below, which
+      // would otherwise take "outlook-sync" for an item id.
+      if (url.pathname === '/api/admin/compliance/outlook-sync' && request.method === 'POST') {
+        return await handleAdminComplianceOutlookSync(request, env, cors);
       }
       const complianceMatch = url.pathname.match(/^\/api\/admin\/compliance\/(.+)$/);
       if (complianceMatch && request.method === 'POST') {

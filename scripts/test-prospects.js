@@ -411,4 +411,101 @@ check(cal.includes('SOURCE_KEY') && cal.includes('localStorage.setItem(SOURCE_KE
 check(cal.includes('NO_SOURCES_MSG'),
   'switching both sources off explains itself rather than rendering an empty grid');
 
+// ---------- 10. Compliance -> Outlook ----------
+
+const complianceOutlook = new Function(`
+  const FRANK_ADMIN_EMAIL = 'fsabin@blueline-advisors.com';
+  const JENN_ADMIN_EMAIL = 'jyoung@blueline-advisors.com';
+  const OUTLOOK_DEFAULT_DURATION_MIN = 60;
+  ${extract(worker, 'outlookTimeZone')}
+  const OUTLOOK_DEFAULT_TIMEZONE = 'Eastern Standard Time';
+  ${worker.match(/const COMPLIANCE_MAILBOX = \{[\s\S]*?\n\};/)[0]}
+  ${extract(worker, 'complianceMailboxFor')}
+  ${extract(worker, 'complianceReviewerRequired')}
+  ${extract(worker, 'complianceSignedOff')}
+  ${extract(worker, 'complianceStatus')}
+  ${extract(worker, 'complianceCalendarOwners')}
+  ${extract(worker, 'outlookEventTimes')}
+  ${extract(worker, 'outlookEventBody')}
+  ${extract(worker, 'complianceOutlookPayload')}
+  ${extract(worker, 'complianceOutlookEvents')}
+  return { complianceCalendarOwners, complianceOutlookPayload, complianceOutlookEvents, complianceStatus };
+`)();
+
+const openItem = {
+  id: 'c001', dueDate: '2026-09-30', item: 'Quarterly fee and billing review',
+  whatToDo: 'Check valuation methods, billing frequency, fee rates, and rebates.',
+  complianceArea: 'Fees & Client Accounts', frequency: 'Quarterly', requirement: 'Required',
+  owner: 'Jennifer', reviewer: 'Frank', source: 'Compliance Manual',
+  ownerCompleted: '', reviewerCompleted: '', completedAt: '',
+};
+
+check(complianceOutlook.complianceCalendarOwners(openItem).sort().join(',')
+  === 'fsabin@blueline-advisors.com,jyoung@blueline-advisors.com',
+  'an open item lands on BOTH the owner and the reviewer (an item cannot close without the reviewer)');
+
+check(complianceOutlook.complianceCalendarOwners({ ...openItem, reviewer: 'N/A' }).join(',')
+  === 'jyoung@blueline-advisors.com',
+  "reviewer 'N/A' means the item closes on the owner alone, so only the owner gets it");
+
+// Completing an item is what withdraws its events: the owner list goes empty and
+// reconcileOutlookEvents deletes every mailbox no longer wanted.
+const closed = { ...openItem, ownerCompleted: '2026-09-28', reviewerCompleted: '2026-09-29', completedAt: '2026-09-29' };
+check(complianceOutlook.complianceStatus(closed) === 'CLOSED'
+  && complianceOutlook.complianceCalendarOwners(closed).length === 0,
+  'a completed item wants no calendar entry, so completing it removes the events');
+
+check(complianceOutlook.complianceCalendarOwners({ ...openItem, dueDate: '' }).length === 0,
+  'an undated item cannot be placed on a calendar and is skipped');
+
+// The failure mode that looks exactly like success: an owner nobody has a
+// mailbox for silently gets no event. Skipped rather than guessed at — inventing
+// an address would write a real event onto the wrong person's calendar.
+check(complianceOutlook.complianceCalendarOwners({ ...openItem, owner: 'Dana', reviewer: 'N/A' }).length === 0,
+  'an owner with no mailbox on record is skipped, never guessed at');
+
+const payload = complianceOutlook.complianceOutlookPayload({}, openItem);
+check(payload.isAllDay === true,
+  'a compliance item is an all-day event: it is due on a day, not at a time');
+check(payload.start.dateTime === '2026-09-30T00:00:00' && payload.end.dateTime === '2026-10-01T00:00:00',
+  "the all-day end is the NEXT day, because Graph treats an all-day end as exclusive");
+check(payload.subject.startsWith('[Compliance] '),
+  'the subject is prefixed so it is distinguishable from a meeting in Outlook');
+check(/Owner: Jennifer/.test(payload.body.content) && /Reviewer: Frank/.test(payload.body.content)
+  && /Area: Fees & Client Accounts/.test(payload.body.content),
+  'the event body carries who owns it, who reviews it, and which area it belongs to');
+check(!('attendees' in payload),
+  'no attendees are sent — Graph emails an invitation to every attendee it is given');
+
+check(Object.keys(complianceOutlook.complianceOutlookEvents({ outlookEvents: { 'A@B.com': 'x', '': 'y', 'c@d.com': '' } })).join(',') === 'a@b.com',
+  'stored event ids are read back lowercased, with blanks dropped');
+
+// The reconcile is shared with meetings rather than copied — the retry,
+// 404-recreate and orphan-avoidance rules are subtle enough that a second copy
+// would drift.
+check(worker.includes('async function reconcileOutlookEvents(')
+  && extract(worker, 'syncTaskToOutlook').includes('reconcileOutlookEvents(')
+  && extract(worker, 'syncComplianceToOutlook').includes('reconcileOutlookEvents('),
+  'meetings and compliance items share one Outlook reconcile implementation');
+
+// Bulk safety.
+check(worker.includes('const COMPLIANCE_OUTLOOK_BATCH ='),
+  'the backfill is batched — a Worker cannot finish 128 items of Graph calls in one request');
+check(extract(worker, 'handleAdminComplianceOutlookSync').includes('nextOffset'),
+  'the backfill reports where to resume, so a failure does not restart the whole run');
+check(worker.indexOf("'/api/admin/compliance/outlook-sync'") < worker.indexOf('const complianceMatch = url.pathname.match'),
+  'the outlook-sync route is matched before the greedy /compliance/(.+) item route');
+check(extract(worker, 'handleAdminComplianceOutlookSync').includes("workspace !== FRANK_ADMIN_EMAIL"),
+  'the backfill is refused outside the workspace allowed to read compliance');
+
+// Deleting an item must take its calendar copies with it: nothing else would
+// ever remove them, since the record holding their ids is about to be gone.
+check(/for \(const it of removedItems\) \{[\s\S]*?deleteOutlookEvent/.test(worker),
+  'deleting a compliance item withdraws its Outlook events');
+
+// Token caching is what makes the batch size viable: without it every Graph
+// call costs two subrequests.
+check(extract(worker, 'getGraphToken').includes('graphTokenCache'),
+  'the Graph token is cached, halving subrequests per Graph call');
+
 console.log(`\n${passed} prospect checks passed`);

@@ -2685,6 +2685,63 @@ while ($listener.IsListening) {
         # /compliance/(.+) route, which would swallow "import" as an item id.
         # Completed items are KEPT — a closed item is the evidence a filing was
         # signed off, and no fresh import can reconstruct that.
+        # Mirrors handleAdminComplianceOutlookSync. There is no real Graph behind
+        # the mock, so nothing is actually written to a calendar — this exists so
+        # the button's batching loop, its progress reporting and the resume path
+        # can be exercised locally. Batch size matches the worker's so the loop
+        # runs the same number of times against both.
+        elseif ($path -eq '/api/admin/compliance/outlook-sync' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $workspace = Get-AdminWorkspace $ctx $adminEmail
+            if (-not $workspace) { Send-Json $ctx 403 @{ error = 'You do not have access to that workspace' }; continue }
+            if ($workspace -ne $frankAdminEmail) { Send-Json $ctx 403 @{ error = "Compliance is only available in Frank's shared view" }; continue }
+            $body = Read-Body $ctx
+            $offset = 0
+            if ($body -and $null -ne $body.offset) { $offset = [int]$body.offset }
+            if ($offset -lt 0) { $offset = 0 }
+            $mine = @($complianceItems | Where-Object { (Get-RecordWorkspace $_) -eq $workspace })
+            $batch = 12
+            $end = [Math]::Min($offset + $batch, $mine.Count)
+            $synced = 0; $cleared = 0
+            $unmapped = [System.Collections.Generic.HashSet[string]]::new()
+            for ($i = $offset; $i -lt $end; $i++) {
+                $it = $mine[$i]
+                # Same rule as complianceCalendarOwners: CLOSED or undated items
+                # get no calendar entry, and losing one counts as a clear.
+                $isClosed = (Get-ComplianceStatus $it) -eq 'CLOSED'
+                $dated = ([string]$it.dueDate) -match '^\d{4}-\d{2}-\d{2}$'
+                $had = $it.PSObject.Properties.Name -contains 'outlookEvents' -and $it.outlookEvents -and $it.outlookEvents.Count -gt 0
+                if ((-not $isClosed) -and $dated) {
+                    $owners = @($it.owner)
+                    if (([string]$it.reviewer).Trim() -ne 'N/A') { $owners += $it.reviewer }
+                    $map = [ordered]@{}
+                    foreach ($n in ($owners | Sort-Object -Unique)) {
+                        $mbx = switch (([string]$n).Trim().ToLower()) {
+                            'frank' { 'fsabin@blueline-advisors.com' }
+                            'jennifer' { 'jyoung@blueline-advisors.com' }
+                            default { '' }
+                        }
+                        if ($mbx) { $map[$mbx] = "mock-evt-$($it.id)-$($map.Count)" }
+                        else { $null = $unmapped.Add(([string]$n).Trim()) }
+                    }
+                    $it | Add-Member -NotePropertyName outlookEvents -NotePropertyValue $map -Force
+                    $it | Add-Member -NotePropertyName outlookSyncedAt -NotePropertyValue ((Get-Date).ToString('o')) -Force
+                    if ($map.Count) { $synced++ }
+                }
+                elseif ($had) {
+                    $it | Add-Member -NotePropertyName outlookEvents -NotePropertyValue ([ordered]@{}) -Force
+                    $cleared++
+                }
+            }
+            $done = $end -ge $mine.Count
+            if ($done) { Write-Audit $adminEmail 'compliance-outlook-sync' @{ total = $mine.Count } }
+            Send-Json $ctx 200 @{
+                processed = $end; total = $mine.Count; synced = $synced; cleared = $cleared
+                unmapped = @($unmapped)
+                done = $done; nextOffset = $(if ($done) { $null } else { $end })
+            }
+        }
         elseif ($path -eq '/api/admin/compliance/import' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }

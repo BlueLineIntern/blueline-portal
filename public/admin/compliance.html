@@ -304,6 +304,7 @@
       </div>
       <div class="page-actions">
         <button type="button" class="btn btn-primary btn-small" id="cmp-new">+ Add item</button>
+        <button type="button" class="btn btn-ghost btn-small" id="cmp-outlook" title="Put every open item on the owner's and reviewer's real Outlook calendars">📅 Sync to Outlook</button>
         <button type="button" class="btn btn-ghost btn-small" id="cmp-refresh">↻ Refresh</button>
       </div>
     </div>
@@ -1740,6 +1741,60 @@
     b.addEventListener('click', () => { currentView = b.dataset.view; render(); })
   );
   document.getElementById('cmp-refresh').addEventListener('click', () => loadData({ showStatus: true }));
+
+  // ---------- Sync to Outlook ----------
+  // Writes real events onto real calendars, so it is a deliberate press with a
+  // confirmation rather than something that happens on load. The endpoint works
+  // a slice at a time (a Worker cannot finish 128 items' worth of Graph calls in
+  // one request), so this loops until it reports done, showing progress as it
+  // goes. Safe to press again: each item records the events it already has, so a
+  // re-run patches them instead of creating duplicates.
+  document.getElementById('cmp-outlook').addEventListener('click', async () => {
+    const open = allItems.filter((i) => i.status !== 'CLOSED').length;
+    if (!confirm(`Put every open compliance item on Outlook?\n\n${open} open item${open === 1 ? '' : 's'} will appear as all-day events on the owner's and reviewer's real Outlook calendars. Completed items are skipped, and completing an item later removes its events.\n\nSafe to run more than once — it updates existing entries rather than duplicating them.`)) return;
+    const btn = document.getElementById('cmp-outlook');
+    btn.disabled = true;
+    const original = btn.textContent;
+    let offset = 0;
+    let synced = 0;
+    let cleared = 0;
+    const unmapped = new Set();
+    try {
+      // Bounded rather than `while (true)`: a server that always reported
+      // "not done" would otherwise spin forever against live calendars.
+      for (let guard = 0; guard < 200; guard += 1) {
+        const res = await api('/api/admin/compliance/outlook-sync', {
+          method: 'POST', body: JSON.stringify({ offset }),
+        });
+        synced += res.synced || 0;
+        cleared += res.cleared || 0;
+        (res.unmapped || []).forEach((n) => unmapped.add(n));
+        btn.textContent = `Syncing ${res.processed}/${res.total}…`;
+        setStatus(`Syncing to Outlook — ${res.processed} of ${res.total} checked, ${synced} on calendars.`);
+        if (res.done) break;
+        offset = res.nextOffset;
+      }
+      // Reload FIRST, then report: loadData() ends with setStatus('') on a
+      // silent refresh, so setting the message before it left the advisor
+      // staring at a blank status line after a two-minute sync.
+      await loadData();
+      // An unmapped owner is the one failure that looks exactly like success —
+      // the item simply never appears on anyone's calendar. Named here so it
+      // can't go unnoticed.
+      // Names, not item counts — one bad name can account for many items, so
+      // "1 item" would understate it. Naming who is unmapped is the actionable
+      // part anyway.
+      const warn = unmapped.size
+        ? ` Warning: no mailbox on record for ${[...unmapped].map((n) => `"${n}"`).join(', ')} — every item owned or reviewed by ${unmapped.size === 1 ? 'that name is' : 'those names are'} NOT on any calendar.`
+        : '';
+      setStatus(`Outlook sync finished — ${synced} item${synced === 1 ? '' : 's'} added or updated${cleared ? `, ${cleared} removed` : ''}.${warn}`);
+    } catch (err) {
+      setStatus(`Outlook sync failed after ${offset} item${offset === 1 ? '' : 's'}: ${err.message}. Press again to resume — items already synced are updated, not duplicated.`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
   document.getElementById('cmp-new').addEventListener('click', openDrawerNew);
   document.getElementById('tr-search').addEventListener('input', renderTracker);
   document.getElementById('tr-export').addEventListener('click', exportTracker);

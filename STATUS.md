@@ -1128,6 +1128,49 @@ Client portal is untouched and keeps its own look.
   bare `new Date(<x>.due)` comes back. Values carrying a time are unambiguous and
   parse normally. Same trap as `fmtDateOnly()` in contacts.html, which already
   documented it.
+- **Compliance items go to Outlook too** (added 2026-08-14). Every **OPEN**
+  compliance item is mirrored as an **all-day event on its due date** onto the
+  real Outlook calendars of the people responsible for it, through the same app
+  registration, the same `Calendars.ReadWrite.All` application permission and the
+  same `reconcileOutlookEvents()` as meetings — a compliance item is just another
+  record with a date and a set of mailboxes.
+  - **Owner AND reviewer both get a copy.** An item cannot close without the
+    reviewer's sign-off, so a deadline only the owner can see is one the reviewer
+    finds out about late. Reviewer `N/A` closes on the owner alone, so that case
+    is owner-only.
+  - **CLOSED items get no entry, and completing an item removes its events** —
+    `complianceCalendarOwners()` returns nothing for a closed item and the
+    reconcile deletes every mailbox no longer wanted. Deleting an item (or
+    dropping one on import) withdraws its copies too; nothing else ever would,
+    since the record holding the event ids is about to be gone.
+  - `owner`/`reviewer` are **display names** in this record (`Frank`,
+    `Jennifer`), not addresses — the tracker was seeded from a spreadsheet that
+    used first names. `COMPLIANCE_MAILBOX` maps them. **A name that isn't in that
+    map is skipped, never guessed at**: inventing an address would write a real
+    event onto the wrong person's calendar. That is the one failure that looks
+    exactly like success, so the sync endpoint returns the unmapped names and the
+    button reports them by name. Legacy `owner: 'Both'` rows are migrated away by
+    `getComplianceItems()` before they reach here; a third staff member added as
+    an owner is what this actually catches.
+  - Subject is prefixed **`[Compliance] `** so an obligation is distinguishable
+    from a meeting in Outlook, where there is no other context. The body carries
+    what-to-do, area, frequency, requirement, owner, reviewer and source.
+  - **Backfill is a button, not automatic**: **📅 Sync to Outlook** on the
+    Compliance page, behind a confirm that names how many items will be written.
+    `POST /api/admin/compliance/outlook-sync` processes
+    `COMPLIANCE_OUTLOOK_BATCH` (12) items per call and returns `nextOffset`; the
+    client loops until `done`. **Batched deliberately** — a Worker cannot finish
+    ~128 items × up to 2 Graph calls in one request, and a half-finished bulk
+    write to live calendars is the worst outcome available. A failure resumes
+    from the last completed batch. **Idempotent**: each item's `outlookEvents`
+    map records what it already has, so re-running PATCHes rather than
+    duplicating (verified: 201 events, unchanged across two runs).
+  - Imports do **not** push the rows they create — an import can be a hundred
+    rows, far past one request's Graph budget. They are picked up by the button.
+  - `getGraphToken()` now **caches the token** in module scope until it expires.
+    Every Graph call used to mint a fresh one, i.e. two subrequests per call;
+    that was merely wasteful for a single meeting but halved how many compliance
+    items fit in a batch.
 - **Outlook calendar push** (`calendarOwners` on a `task:` record) — a meeting can
   be mirrored onto staff members' real Outlook calendars. The **"Add to Outlook
   calendars"** checkbox list in the meeting panel picks *which* mailboxes per
