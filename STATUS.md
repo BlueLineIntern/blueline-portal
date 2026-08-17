@@ -492,6 +492,29 @@ Client portal is untouched and keeps its own look.
   - `?seg=prospects` is what the Prospects nav entry and the dashboard's
     Prospects stat tile use; `openProfile()` sets the segment from the record so
     Back from a prospect lands on the right list however the profile was reached.
+- **Row selection for a targeted CSV export** (added 2026-08-17). Every person
+  and grouping row carries a checkbox, with a select-all in the header. With
+  anything ticked, **Export CSV** becomes **Export selected (N)** and writes only
+  those rows; with nothing ticked it still writes exactly what is listed, as
+  before.
+  - Keys are the contact's email, or **`hh:<id>`** for a family/company — the two
+    id spaces must stay distinct or a grouping could collide with a contact and
+    export in its place.
+  - The selection is a **`Set` in state, never the DOM**. The list re-renders on
+    a 20s background poll, which throws every checkbox away and rebuilds it; the
+    Set is what makes a half-built list survive that.
+  - **Deliberately NOT cleared when the search or tag filter changes** — search,
+    tick a few, search again, tick a few more is how a list actually gets built,
+    so the export resolves the selection against *all* records rather than the
+    visible ones. Because that means a selection can reach off-screen, the count
+    says so (`3 selected (1 not shown here)`), and select-all renders
+    **indeterminate** when only part of the view is ticked.
+  - **IS cleared when the segment or the lens changes**: that is a different
+    population, and a carried-over selection would export rows no longer
+    reachable from the list on screen.
+  - Select-all acts on **what is in view only** — one that swept up rows behind a
+    search filter would be impossible to review before exporting. The checkbox
+    stops propagation, so ticking a row doesn't also open the contact.
 - **HNW / Businesses / Vendors lens** (`.view-toggle` slider on both sides, added
   2026-08-14). What KIND of contact, independent of pipeline stage — a business or
   a vendor can be a prospect as easily as a client, so the lens is orthogonal to

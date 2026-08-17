@@ -852,6 +852,53 @@ check(extract(learning, 'setAddMode').includes("submitBtn.textContent = note ? '
 check(learning.includes("uploadError.textContent = 'Write something in the body first.'"),
   'the form refuses an empty body before sending');
 
+// ---------- 13f. Row selection for a targeted CSV export ----------
+
+check(html.includes('id="sel-all"') && html.includes("class=\"sel-col\""),
+  'the list has a select-all and a checkbox column');
+check(extract(html, 'selCell').includes('data-sel=') && extract(html, 'selCell').includes("selected.has(key) ? ' checked' : ''"),
+  'each row renders its checkbox already reflecting the current selection');
+
+// The keyspace has to separate a grouping id from an email, or a family could
+// collide with a contact and one would export in place of the other.
+check(extract(html, 'selKey').includes("r.id ? `hh:${r.id}` : r.email"),
+  'groupings and people use distinct selection keys');
+
+// Ticking a box must not also navigate: the row's own click opens the profile.
+check(/body\.querySelectorAll\('\.row-sel'\)[\s\S]*?ev\.stopPropagation\(\)/.test(html),
+  'ticking a checkbox does not open the contact behind it');
+
+// A checkbox is markup that is thrown away and rebuilt on every render (the
+// list re-renders on a 20s poll), so the Set is the state, never the DOM.
+check(html.includes('const selected = new Set();'),
+  'the selection lives in state, so a background refresh cannot silently drop it');
+
+// Selection deliberately survives a search change — building a list across
+// several searches is the point — so the export resolves against ALL records,
+// not the visible ones.
+const exportBlock = html.slice(html.indexOf("document.getElementById('export-btn').addEventListener"), html.indexOf('downloadCsv(`contacts-'));
+check(exportBlock.includes('households = allHouseholds.filter((h) => selected.has(selKey(h)))')
+  && exportBlock.includes('people = allContacts.filter((c) => selected.has(selKey(c)))'),
+  'the export writes the selection even where it reaches beyond the current view');
+check(exportBlock.includes('if (selected.size) {'),
+  'with nothing ticked the export still writes exactly what is listed, as before');
+
+// ...but a selection reaching off-screen must be visible, or the file quietly
+// contains rows nobody remembers picking.
+check(extract(html, 'renderSelectionBar').includes('not shown here'),
+  'the count says when the selection includes rows outside the current view');
+check(extract(html, 'renderSelectionBar').includes('box.indeterminate = shownSelected > 0 && shownSelected < inView.length'),
+  'a partial selection shows select-all as indeterminate, not ticked');
+
+// Changing segment or lens changes the population entirely.
+check(extract(html, 'setSegment').includes('selected.clear();')
+  && extract(html, 'setCategory').includes('selected.clear();'),
+  'switching between Clients/Prospects or between lenses drops the selection');
+
+// The empty-state row has to span the new column count or it renders short.
+check(html.includes('colspan="5"') && !html.includes('colspan="4" class="empty"'),
+  'the empty-state row spans the checkbox column too');
+
 // ---------- 14. No cross-script global collisions ----------
 //
 // Every admin page loads render.js, then shared.js, then its own inline script,

@@ -6,7 +6,7 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Contacts — BlueLine Admin</title>
 <link rel="stylesheet" href="/assets/style.css" />
-<link rel="stylesheet" href="/admin/shared.css?v=20260817-3" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260817-4" />
 <style>
   /* Client detail (module cards + charts come from style.css/render.js) */
   .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -243,6 +243,13 @@
   .assignment-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
   @media (max-width: 640px) { .assignment-items { grid-template-columns: 1fr; } }
 
+  /* Row selection for a targeted CSV export. The column is pinned narrow so it
+     doesn't steal width from Name on a small screen. */
+  .sel-col { width: 34px; padding-right: 0; }
+  .sel-col input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--sky); cursor: pointer; }
+  .sel-bar { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); color: var(--navy); font-weight: var(--fw-semibold); }
+  .sel-bar .btn-link { font-weight: var(--fw-medium); }
+
 </style>
 </head>
 <body>
@@ -304,6 +311,12 @@
           <span class="type-legend-item"><span class="type-dot dot-company"></span>Company</span>
         </div>
         <div class="filter-row" id="status-filters"></div>
+        <!-- Only present while something is ticked, so the toolbar isn't
+             carrying a permanently-empty control. -->
+        <div class="sel-bar hidden" id="sel-bar">
+          <span id="sel-count"></span>
+          <button type="button" class="btn-link" id="sel-clear">Clear selection</button>
+        </div>
       </div>
 
       <div class="list-cols">
@@ -314,6 +327,7 @@
               <table class="data-table">
                 <thead>
                   <tr>
+                    <th class="sel-col"><input type="checkbox" id="sel-all" title="Select everything in view" /></th>
                     <th>Name</th>
                     <th>Phone</th>
                     <th>Email</th>
@@ -766,7 +780,7 @@
 </div>
 
 <script src="/assets/render.js"></script>
-<script src="/admin/shared.js?v=20260817-3"></script>
+<script src="/admin/shared.js?v=20260817-4"></script>
 <script>
   // Two sidebar entries, one page. `activePage` stays 'contacts' so the employee
   // workspace filter and its saved-filter key are shared across both sides;
@@ -870,6 +884,27 @@
   // same default here keeps the two sides of the toggle agreeing on the total.
   function isProspect(c) {
     return (c && c.status ? c.status : 'prospect') === 'prospect';
+  }
+
+  // ---------- Row selection (for exporting a specific list) ----------
+  //
+  // Keys are a contact's email, or `hh:<id>` for a family/company — the two id
+  // spaces are separate, and an email can never contain a colon before the @.
+  //
+  // Deliberately NOT cleared when the search or tag filter changes: building a
+  // list by searching, ticking a few, searching again and ticking a few more is
+  // the point. It IS cleared when the segment or the HNW/Businesses/Vendors lens
+  // changes, because that is a different population altogether and a carried-over
+  // selection would silently export rows the advisor can no longer see.
+  const selected = new Set();
+
+  function selKey(r) {
+    return r.id ? `hh:${r.id}` : r.email;
+  }
+
+  function selCell(key) {
+    return `<td class="sel-col"><input type="checkbox" class="row-sel" data-sel="${escapeHtml(key)}"`
+      + `${selected.has(key) ? ' checked' : ''} aria-label="Select for export" /></td>`;
   }
 
   // Same defaulting rule the server applies on read (CONTACT_CATEGORIES in
@@ -1036,6 +1071,7 @@
       ? `${count} ${count === 1 ? meta.noun : meta.nounPlural}`
       : `no ${meta.nounPlural} yet`;
     return `<tr class="row-click group-row kind-${kind}" data-hh="${escapeHtml(h.id)}">
+      ${selCell(`hh:${h.id}`)}
       <td>
         <div class="name-cell">
           <button type="button" class="acc-caret ${open ? 'open' : ''}" data-toggle="${escapeHtml(h.id)}"
@@ -1067,6 +1103,7 @@
     const cls = `row-click member-row kind-${kind}${isLast ? ' member-last' : ''}`;
     if (!c) {
       return `<tr class="member-row kind-${kind}${isLast ? ' member-last' : ''}">
+        <td class="sel-col"></td>
         <td>
           <div class="name-cell">
             <span class="row-avatar avatar-person">${icon('user')}</span>
@@ -1082,6 +1119,7 @@
       </tr>`;
     }
     return `<tr class="${cls}" data-email="${escapeHtml(c.email)}">
+      ${selCell(c.email)}
       <td>
         <div class="name-cell">
           <span class="row-avatar avatar-person">${icon('user')}</span>
@@ -1106,6 +1144,7 @@
     const hh = groupsForEmail(c.email)[0];
     const sub = hh ? escapeHtml(hh.name) : escapeHtml(c.household || '');
     return `<tr class="row-click contact-row" data-email="${escapeHtml(c.email)}">
+      ${selCell(c.email)}
       <td>
         <div class="name-cell">
           <span class="row-avatar avatar-person">${icon('user')}</span>
@@ -1272,9 +1311,19 @@
       : `No ${CATEGORY_NOUN[categoryFilter]} clients yet — add one with New Person${categoryFilter === 'business' ? ' or New Company' : ''}, or switch the ${lens} filter above.`;
     body.innerHTML = all.length
       ? all.map((r) => r.html).join('')
-      : `<tr><td colspan="4" class="empty">${total ? 'Nothing matches.' : emptyMsg}</td></tr>`;
+      : `<tr><td colspan="5" class="empty">${total ? 'Nothing matches.' : emptyMsg}</td></tr>`;
 
     // Person rows (top-level and nested) open the profile.
+    // stopPropagation on the checkbox: the row's own click opens the profile,
+    // and ticking a box must not also navigate away from the list being built.
+    body.querySelectorAll('.row-sel').forEach((box) => {
+      box.addEventListener('click', (ev) => ev.stopPropagation());
+      box.addEventListener('change', () => {
+        if (box.checked) selected.add(box.dataset.sel);
+        else selected.delete(box.dataset.sel);
+        renderSelectionBar();
+      });
+    });
     body.querySelectorAll('.contact-row, .member-row[data-email]').forEach((tr) => {
       tr.addEventListener('click', () => openProfile(tr.dataset.email));
     });
@@ -1311,8 +1360,59 @@
       : '';
     const allOpen = groups.length > 0 && groups.every((h) => expandedGroups.has(h.id));
     expandBtn.textContent = allOpen ? 'Collapse all' : 'Expand all';
+    renderSelectionBar();
     renderTagFilter();
   }
+
+  // Everything selectable in the current view, in the order it renders.
+  function selectableInView() {
+    const { groups, people } = visibleRecords();
+    return groups.map(selKey).concat(people.map(selKey));
+  }
+
+  // The count, the select-all's state, and the Export button's label all derive
+  // from `selected` — nothing stores "how many" separately.
+  function renderSelectionBar() {
+    const inView = selectableInView();
+    const shownSelected = inView.filter((k) => selected.has(k)).length;
+    const box = document.getElementById('sel-all');
+    box.checked = inView.length > 0 && shownSelected === inView.length;
+    // Some-but-not-all reads as a dash rather than ticked or empty, so
+    // "select all" never looks like it already happened.
+    box.indeterminate = shownSelected > 0 && shownSelected < inView.length;
+
+    // Selections can survive a search change, so some may not be on screen.
+    // Saying so is the difference between a useful cross-search list and an
+    // export that quietly contains rows nobody remembers picking.
+    const hidden = selected.size - shownSelected;
+    const bar = document.getElementById('sel-bar');
+    bar.classList.toggle('hidden', selected.size === 0);
+    document.getElementById('sel-count').textContent = selected.size
+      ? `${selected.size} selected${hidden > 0 ? ` (${hidden} not shown here)` : ''}`
+      : '';
+
+    const exportBtn = document.getElementById('export-btn');
+    exportBtn.querySelector('strong').textContent = selected.size
+      ? `Export selected (${selected.size})`
+      : 'Export CSV';
+    exportBtn.querySelector('span').textContent = selected.size
+      ? 'Only the rows you ticked'
+      : "Downloads exactly what's listed, filters included";
+  }
+
+  document.getElementById('sel-all').addEventListener('change', (ev) => {
+    const inView = selectableInView();
+    // Acts on what is in view only — a select-all that swept up rows behind a
+    // search filter would be impossible to review before exporting.
+    if (ev.target.checked) inView.forEach((k) => selected.add(k));
+    else inView.forEach((k) => selected.delete(k));
+    renderContacts();
+  });
+
+  document.getElementById('sel-clear').addEventListener('click', () => {
+    selected.clear();
+    renderContacts();
+  });
 
   function toggleGroup(id) {
     // While filtering, every grouping is force-open; a click then means "close
@@ -1381,6 +1481,9 @@
     // Groupings only exist on the clients side; leaving rows expanded means
     // coming back to a list someone else's click opened.
     expandedGroups.clear();
+    // A different population entirely — carrying a selection over would export
+    // rows that are no longer reachable from this list.
+    selected.clear();
     renderSegmentChrome();
     renderStatusFilters();
     renderContacts();
@@ -1412,8 +1515,9 @@
     categoryFilter = next;
     try { localStorage.setItem(CATEGORY_KEY, next); } catch { /* private mode: just won't persist */ }
     // Groupings differ per lens, so a set of expanded ids from the previous one
-    // is meaningless here.
+    // is meaningless here — and so is a selection made against it.
     expandedGroups.clear();
+    selected.clear();
     renderSegmentChrome(); // ends by calling renderCategoryChrome()
     renderStatusFilters();
     renderContacts();
@@ -1496,7 +1600,14 @@
     // `people` is every person on screen — including members nested inside a
     // collapsed family. Exporting only the expanded ones would make the file
     // depend on which carets happened to be open.
-    const { groups: households, people } = visibleRecords();
+    let { groups: households, people } = visibleRecords();
+    // A selection wins over the view. It can legitimately include rows behind a
+    // search filter — that is how a list gets built across several searches —
+    // so it is resolved against ALL records rather than the visible ones.
+    if (selected.size) {
+      households = allHouseholds.filter((h) => selected.has(selKey(h)));
+      people = allContacts.filter((c) => selected.has(selKey(c)));
+    }
     const lines = [IO_COLUMNS.join(',')];
     people
       .slice()
@@ -1526,7 +1637,8 @@
         ].map(csvCell).join(','));
       });
     downloadCsv(`contacts-${new Date().toISOString().slice(0, 10)}.csv`, lines);
-    setIoStatus(`Exported ${people.length + households.length} row${people.length + households.length === 1 ? '' : 's'}.`);
+    const n = people.length + households.length;
+    setIoStatus(`Exported ${n} row${n === 1 ? '' : 's'}${selected.size ? ' from your selection' : ''}.`);
   });
 
   // A groupings-only sheet for the key-document dates, deliberately narrow: four
