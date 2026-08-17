@@ -1366,11 +1366,20 @@ Client portal is untouched and keeps its own look.
     directly, so a file uploaded in SharePoint appears on the next refresh with no
     sync step to wait for. The listing itself is read-only — the one write is the
     upload below, which adds a file rather than editing an existing one.
-  - **Add video** (`+ Add video`) uploads a video into the library from the app
-    with a Name (Title), Category and optional Description. Two endpoints, because
-    a training video is far too large for one request:
-    - `POST /api/admin/learning/upload` validates the extension (mp4, mov, m4v,
-      avi, wmv, webm, mkv), the 2 GB cap, the name, and the category against the
+  - **Add resource** (`+ Add resource`) uploads a file into the library from the
+    app with a Name (Title), Category and optional Description. **Video or
+    document** — SOPs, checklists and policy PDFs are training material as much
+    as a recording is (broadened from video-only 2026-08-17). Two endpoints,
+    because a training video is far too large for one request:
+    - Accepted types are `LEARNING_UPLOAD_EXTS` = `LEARNING_VIDEO_EXTS` (mp4,
+      mov, m4v, avi, wmv, webm, mkv) + `LEARNING_DOC_EXTS` (pdf, doc, docx, txt,
+      rtf, md, xls, xlsx, csv, ppt, pptx). An **allowlist, never a denylist**:
+      this endpoint writes into the firm's own tenant, so archives and anything
+      runnable (.zip, .exe, .msi, .js, .html) stay out. It matches `KIND_BY_EXT`
+      in learning.html exactly, so nothing uploadable renders as an unlabelled
+      row — `test-prospects.js` fails if the two ever diverge.
+    - `POST /api/admin/learning/upload` validates the extension, the 2 GB cap,
+      the name, and the category against the
       column's Choice values, then opens a Graph **upload session** on the
       library's drive (`conflictBehavior: rename` — an upload never silently
       overwrites someone else's file of the same name).

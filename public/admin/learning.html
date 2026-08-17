@@ -6,7 +6,7 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Learning — BlueLine Admin</title>
 <link rel="stylesheet" href="/assets/style.css" />
-<link rel="stylesheet" href="/admin/shared.css?v=20260817-1" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260817-2" />
 <style>
   /* File-type marker on each row. Deliberately a letterform rather than an icon
      set: the extension itself is the clearest signal of what will open, and it
@@ -54,13 +54,13 @@
     <div class="page-head">
       <div>
         <h1>Learning</h1>
-        <p class="sub">Training videos and documents from the SharePoint <strong>Learning Resources</strong>
-        library. Links open in SharePoint in a new tab. Add a video below, or upload a file straight to the
-        library in SharePoint and it appears here on the next refresh.</p>
+        <p class="sub">Training videos and documents — SOPs, checklists, policies — from the SharePoint
+        <strong>Learning Resources</strong> library. Links open in SharePoint in a new tab. Add a file below,
+        or upload one straight to the library in SharePoint and it appears here on the next refresh.</p>
       </div>
       <div class="page-actions">
         <button type="button" class="btn btn-ghost btn-small" id="lr-refresh">↻ Refresh</button>
-        <button type="button" class="btn btn-primary btn-small hidden" id="lr-add">+ Add video</button>
+        <button type="button" class="btn btn-primary btn-small hidden" id="lr-add">+ Add resource</button>
       </div>
     </div>
 
@@ -78,11 +78,16 @@
 
 <div class="modal-backdrop hidden" id="lr-modal-backdrop">
   <div class="modal">
-    <h2>Add learning video</h2>
+    <h2>Add learning resource</h2>
     <div class="field">
-      <label for="lr-file">Video file</label>
-      <input type="file" id="lr-file" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-ms-wmv,video/webm,video/x-matroska,.mp4,.mov,.m4v,.avi,.wmv,.webm,.mkv" />
-      <p class="field-note">MP4, MOV, M4V, AVI, WMV, WEBM or MKV — up to 2 GB.</p>
+      <label for="lr-file">File</label>
+      <!-- Extensions rather than MIME types for the documents: browsers disagree
+           on what they report for Office files (docx in particular), and an
+           accept= that misses the real type greys out the file the advisor is
+           trying to pick. The server's allowlist is the actual gate. -->
+      <input type="file" id="lr-file" accept=".mp4,.mov,.m4v,.avi,.wmv,.webm,.mkv,.pdf,.doc,.docx,.txt,.rtf,.md,.xls,.xlsx,.csv,.ppt,.pptx" />
+      <p class="field-note">Video (MP4, MOV, M4V, AVI, WMV, WEBM, MKV) or a document —
+      PDF, Word, Excel, PowerPoint, TXT, RTF, MD, CSV. Up to 2 GB.</p>
     </div>
     <div class="field">
       <label for="lr-title">Name</label>
@@ -110,7 +115,7 @@
   </div>
 </div>
 
-<script src="/admin/shared.js?v=20260817-1"></script>
+<script src="/admin/shared.js?v=20260817-2"></script>
 <script>
   initShell('learning');
 
@@ -131,11 +136,15 @@
   const CATEGORY_NEW = '__new__';
 
   // Extension -> the badge class and label shown in the row's square marker.
-  // Anything unrecognised still renders, just with its bare extension.
+  // Anything unrecognised still renders, just with its bare extension. Covers
+  // every type LEARNING_UPLOAD_EXTS in worker.js accepts, so nothing uploaded
+  // from here can land as an unlabelled row.
   const KIND_BY_EXT = {
     mp4: ['video', 'MP4'], mov: ['video', 'MOV'], m4v: ['video', 'M4V'],
     avi: ['video', 'AVI'], wmv: ['video', 'WMV'], webm: ['video', 'WEBM'],
+    mkv: ['video', 'MKV'],
     pdf: ['doc', 'PDF'], doc: ['doc', 'DOC'], docx: ['doc', 'DOC'], txt: ['doc', 'TXT'],
+    rtf: ['doc', 'RTF'], md: ['doc', 'MD'],
     xls: ['sheet', 'XLS'], xlsx: ['sheet', 'XLS'], csv: ['sheet', 'CSV'],
     ppt: ['slides', 'PPT'], pptx: ['slides', 'PPT'],
   };
@@ -255,7 +264,7 @@
   document.getElementById('lr-refresh').addEventListener('click', () => loadData({ showStatus: true }));
   document.getElementById('lr-search').addEventListener('input', renderList);
 
-  // ---------- Add video ----------
+  // ---------- Add resource ----------
 
   const modal = document.getElementById('lr-modal-backdrop');
   const fileInput = document.getElementById('lr-file');
@@ -351,11 +360,11 @@
     }
   });
 
-  async function uploadVideo() {
+  async function uploadResource() {
     const file = fileInput.files && fileInput.files[0];
     uploadError.textContent = '';
-    if (!file) { uploadError.textContent = 'Choose a video file.'; return; }
-    if (!titleInput.value.trim()) { uploadError.textContent = 'Give the video a name.'; return; }
+    if (!file) { uploadError.textContent = 'Choose a file.'; return; }
+    if (!titleInput.value.trim()) { uploadError.textContent = 'Give the resource a name.'; return; }
     // "+ Add a new category…" with nothing typed would silently upload with no
     // category at all, which is not what picking that option asks for.
     if (categoryIsCustom() && !catText.value.trim()) {
@@ -420,7 +429,7 @@
     }
   }
 
-  submitBtn.addEventListener('click', uploadVideo);
+  submitBtn.addEventListener('click', uploadResource);
 
   loadData();
 </script>

@@ -2964,10 +2964,14 @@ while ($listener.IsListening) {
             $b = Read-Body $ctx
             $fname = [IO.Path]::GetFileName([string]$b.filename)
             $ext = ([IO.Path]::GetExtension($fname)).TrimStart('.').ToLower()
-            $allowed = @('mp4', 'mov', 'm4v', 'avi', 'wmv', 'webm', 'mkv')
+            # Mirrors LEARNING_UPLOAD_EXTS in worker.js: recordings AND written
+            # procedure (SOPs, checklists, policies). Allowlist, never a denylist —
+            # archives and executables stay out.
+            $allowed = @('mp4', 'mov', 'm4v', 'avi', 'wmv', 'webm', 'mkv',
+                'pdf', 'doc', 'docx', 'txt', 'rtf', 'md', 'xls', 'xlsx', 'csv', 'ppt', 'pptx')
             if (-not $fname) { Send-Json $ctx 400 @{ error = 'A file is required' }; continue }
             if ($allowed -notcontains $ext) {
-                Send-Json $ctx 400 @{ error = "Unsupported video format `".$ext`" - use $($allowed -join ', ')" }; continue
+                Send-Json $ctx 400 @{ error = "Unsupported file type `".$ext`" - use $($allowed -join ', ')" }; continue
             }
             if (-not ([string]$b.title).Trim()) { Send-Json $ctx 400 @{ error = 'A name is required' }; continue }
             $cat = ([string]$b.category).Trim()

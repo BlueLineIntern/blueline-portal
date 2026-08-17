@@ -3399,7 +3399,18 @@ async function handleAdminLearningFields(request, env, cors) {
 
 const LEARNING_UPLOAD_CHUNK = 5 * 1024 * 1024; // multiple of 320 KiB, as Graph requires
 const LEARNING_MAX_UPLOAD = 2 * 1024 * 1024 * 1024; // 2 GB
+// The library holds training material of both kinds: recordings and written
+// procedure (SOPs, checklists, policy PDFs). Kept as two lists because the UI
+// names them separately in its help text, and joined for the actual check.
 const LEARNING_VIDEO_EXTS = ['mp4', 'mov', 'm4v', 'avi', 'wmv', 'webm', 'mkv'];
+const LEARNING_DOC_EXTS = ['pdf', 'doc', 'docx', 'txt', 'rtf', 'md', 'xls', 'xlsx', 'csv', 'ppt', 'pptx'];
+// An ALLOWLIST, deliberately — never a denylist of dangerous types. Everything
+// here opens in SharePoint/Office; archives and anything executable (.zip, .exe,
+// .msi, .js, .htm) stay out, so this endpoint can't be used to put runnable
+// content into the firm's tenant. It matches the extensions the listing already
+// knows how to badge (KIND_BY_EXT in learning.html), so nothing uploadable
+// renders as an unknown type.
+const LEARNING_UPLOAD_EXTS = [...LEARNING_VIDEO_EXTS, ...LEARNING_DOC_EXTS];
 
 // SharePoint rejects " * : < > ? / \ | and leading/trailing dots or spaces.
 function sanitizeLearningFilename(raw) {
@@ -3423,8 +3434,8 @@ async function handleAdminLearningUploadStart(request, env, cors) {
 
   if (!filename) return json({ error: 'A file is required' }, 400, cors);
   const ext = (filename.match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase();
-  if (!LEARNING_VIDEO_EXTS.includes(ext)) {
-    return json({ error: `Unsupported video format ".${ext}" — use ${LEARNING_VIDEO_EXTS.join(', ')}` }, 400, cors);
+  if (!LEARNING_UPLOAD_EXTS.includes(ext)) {
+    return json({ error: `Unsupported file type ".${ext}" — use ${LEARNING_UPLOAD_EXTS.join(', ')}` }, 400, cors);
   }
   if (!Number.isFinite(size) || size <= 0) return json({ error: 'File size is missing' }, 400, cors);
   if (size > LEARNING_MAX_UPLOAD) return json({ error: 'File is larger than the 2 GB limit' }, 400, cors);

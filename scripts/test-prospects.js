@@ -760,6 +760,41 @@ check(learning.includes("uploadError.textContent = 'Type the new category, or pi
 check(mock.includes('$learningCategoryAllowsCustom'),
   'the local mock mirrors the setting so the picker can be exercised offline');
 
+// ---------- 13d. Learning accepts documents, not just video ----------
+
+const LEARNING_VIDEO_EXTS = eval(worker.match(/const LEARNING_VIDEO_EXTS = (\[[^\]]*\]);/)[1]);
+const LEARNING_DOC_EXTS = eval(worker.match(/const LEARNING_DOC_EXTS = (\[[^\]]*\]);/)[1]);
+const LEARNING_UPLOAD_EXTS = [...LEARNING_VIDEO_EXTS, ...LEARNING_DOC_EXTS];
+const accepts = (f) => LEARNING_UPLOAD_EXTS.includes((f.match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase());
+
+check(['sop.docx', 'policy.pdf', 'checklist.xlsx', 'deck.pptx', 'notes.md', 'readme.txt', 'doc.rtf', 'data.csv'].every(accepts),
+  'an SOP or other written procedure can be uploaded, not only video');
+check(['clip.mp4', 'recording.mkv', 'demo.mov'].every(accepts),
+  'video still uploads as before');
+
+// An ALLOWLIST, never a denylist: this endpoint writes into the firm's own
+// SharePoint tenant, so nothing runnable may go through it.
+check(!['malware.exe', 'bundle.zip', 'page.html', 'script.js', 'lib.dll', 'installer.msi', 'x.bat', 'y.ps1'].some(accepts),
+  'executables, scripts and archives are still refused');
+check(worker.includes('if (!LEARNING_UPLOAD_EXTS.includes(ext))'),
+  'the upload gate checks the combined list');
+
+// Every uploadable type must have a badge, or a file added from here renders as
+// an unlabelled row in the very list it was added to.
+const kindMap = learning.slice(learning.indexOf('const KIND_BY_EXT = {'), learning.indexOf('};', learning.indexOf('const KIND_BY_EXT = {')));
+const badged = new Set([...kindMap.matchAll(/(\w+):\s*\[/g)].map((m) => m[1]));
+const unbadged = LEARNING_UPLOAD_EXTS.filter((e) => !badged.has(e));
+check(unbadged.length === 0,
+  `every uploadable extension has a row badge${unbadged.length ? ` (missing: ${unbadged.join(', ')})` : ''}`);
+
+// Anchored on the learning route's own list — `$allowed = @(` also appears
+// earlier for the workspace check, and slicing from the first match compared
+// against entirely the wrong array.
+const mockLearningStart = mock.indexOf("$allowed = @('mp4'");
+const mockAllowed = mock.slice(mockLearningStart, mock.indexOf(')', mockLearningStart));
+check(LEARNING_UPLOAD_EXTS.every((e) => mockAllowed.includes(`'${e}'`)),
+  'the local mock accepts the same set, so dev and production agree');
+
 // ---------- 14. No cross-script global collisions ----------
 //
 // Every admin page loads render.js, then shared.js, then its own inline script,
