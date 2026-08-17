@@ -1374,6 +1374,27 @@ Client portal is untouched and keeps its own look.
       column's Choice values, then opens a Graph **upload session** on the
       library's drive (`conflictBehavior: rename` — an upload never silently
       overwrites someone else's file of the same name).
+  - **New categories can be typed in** when the library's Category column has
+    SharePoint's **"Can add values manually"** ticked (added 2026-08-17). Graph
+    reports that as `choice.allowTextEntry`; `resolveLearningColumns()` surfaces
+    it as `categoryAllowsCustom`, the listing returns it, and the picker then
+    offers a **`+ Add a new category…`** option that reveals a text box.
+    - **Read from the column, never assumed.** Sending an unlisted value to a
+      column that does not allow one fails the PATCH, which would strand an
+      already-uploaded file with no category. With the flag off, the picker is a
+      plain dropdown and the server still rejects unlisted values (with an error
+      naming the SharePoint setting to change). With no Choice facet at all, the
+      column is free text and the picker is a plain text box — both unchanged.
+    - The dropdown lists **the column's choices plus any category already in
+      use**. A manually-added value is stored on the file but is *not* written
+      back into the column's choices — that is what the SharePoint setting
+      means — so without that union a category typed once would be unpickable
+      the next time the dialog opened.
+    - `GET /api/admin/learning/fields` now also returns the resolved
+      `categoryColumn` (internal + display name, `isChoice`, `allowsCustom`,
+      `choices`). If the free-text option doesn't appear, that is where to see
+      whether Graph actually reports the setting, and whether it is on the
+      column this library uses.
     - `PUT /api/admin/learning/upload/chunk` proxies one 5 MiB slice (a multiple
       of the 320 KiB Graph requires), sequentially — Graph tracks a single expected
       byte range per session, so parallel PUTs would fight over it.

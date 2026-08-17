@@ -6,7 +6,7 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Learning — BlueLine Admin</title>
 <link rel="stylesheet" href="/assets/style.css" />
-<link rel="stylesheet" href="/admin/shared.css?v=20260814-4" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260817-1" />
 <style>
   /* File-type marker on each row. Deliberately a letterform rather than an icon
      set: the extension itself is the clearest signal of what will open, and it
@@ -110,7 +110,7 @@
   </div>
 </div>
 
-<script src="/admin/shared.js?v=20260814-4"></script>
+<script src="/admin/shared.js?v=20260817-1"></script>
 <script>
   initShell('learning');
 
@@ -121,6 +121,14 @@
   // column; otherwise it's free text and the picker becomes an input.
   let categoryChoices = [];
   let categoryIsChoice = false;
+  // SharePoint's "Can add values manually" on the Category column, reported by
+  // Graph as choice.allowTextEntry. Read from the column rather than assumed:
+  // offering a free-text box against a column that doesn't allow one would let
+  // someone upload a file and only then have the labelling rejected.
+  let categoryAllowsCustom = false;
+  // The sentinel option that reveals the text box. Not a value anyone could
+  // legitimately type, so it can never collide with a real category.
+  const CATEGORY_NEW = '__new__';
 
   // Extension -> the badge class and label shown in the row's square marker.
   // Anything unrecognised still renders, just with its bare extension.
@@ -223,6 +231,7 @@
       categories = data.categories || [];
       categoryChoices = data.categoryChoices || [];
       categoryIsChoice = Boolean(data.categoryIsChoice);
+      categoryAllowsCustom = Boolean(data.categoryAllowsCustom);
       // Hidden until the library's columns resolve — without them an upload
       // can't be named or categorised, so offering the button would mislead.
       document.getElementById('lr-add').classList.toggle('hidden', !data.canUpload);
@@ -253,6 +262,13 @@
   const titleInput = document.getElementById('lr-title');
   const catSelect = document.getElementById('lr-category');
   const catText = document.getElementById('lr-category-text');
+
+  catSelect.addEventListener('change', () => {
+    // Backing out of "+ Add a new category…" discards what was typed, so a
+    // half-written name can't be submitted alongside a picked one.
+    if (!categoryIsCustom()) catText.value = '';
+    syncCategoryInputs();
+  });
   const descInput = document.getElementById('lr-description');
   const uploadError = document.getElementById('lr-upload-error');
   const progressWrap = document.getElementById('lr-progress-wrap');
@@ -262,8 +278,22 @@
 
   let uploading = false;
 
+  // Three shapes: free-text column (text box only), Choice column (dropdown
+  // only), and Choice column that allows manual values (dropdown whose last
+  // option reveals the text box).
+  function categoryIsCustom() {
+    return categoryIsChoice && categoryAllowsCustom && catSelect.value === CATEGORY_NEW;
+  }
+
   function chosenCategory() {
-    return (categoryIsChoice ? catSelect.value : catText.value).trim();
+    if (!categoryIsChoice || categoryIsCustom()) return catText.value.trim();
+    return catSelect.value.trim();
+  }
+
+  // Text box on screen only while it can actually be used.
+  function syncCategoryInputs() {
+    catText.classList.toggle('hidden', categoryIsChoice && !categoryIsCustom());
+    if (categoryIsCustom()) catText.focus();
   }
 
   function openModal() {
@@ -278,15 +308,25 @@
     // The picker mirrors the column: a dropdown for a Choice column, free text
     // otherwise. Categories seen in the data fill the gap if the column
     // declares no choices at all.
-    const options = categoryIsChoice ? categoryChoices : [];
     if (categoryIsChoice) {
+      // The column's own Choice values, plus any category already in use that
+      // the column no longer lists. A manually-added one is stored on the file
+      // but NOT written back into the column's choices — that is what
+      // "add values manually" means in SharePoint — so without this union it
+      // would be untypeable-again the moment the modal reopened.
+      const seen = new Set(categoryChoices);
+      const extra = categories.filter((c) => c && !seen.has(c));
       catSelect.innerHTML = '<option value="">— none —</option>'
-        + options.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+        + categoryChoices.concat(extra).map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')
+        + (categoryAllowsCustom ? `<option value="${CATEGORY_NEW}">+ Add a new category…</option>` : '');
     }
     catSelect.classList.toggle('hidden', !categoryIsChoice);
-    catText.classList.toggle('hidden', categoryIsChoice);
+    catSelect.value = '';
+    syncCategoryInputs();
     document.getElementById('lr-category-note').textContent = categoryIsChoice
-      ? 'From the library’s Category column.'
+      ? (categoryAllowsCustom
+        ? 'From the library’s Category column — or add a new one.'
+        : 'From the library’s Category column.')
       : (categories.length ? `Already in use: ${categories.join(', ')}` : '');
 
     modal.classList.remove('hidden');
@@ -316,6 +356,12 @@
     uploadError.textContent = '';
     if (!file) { uploadError.textContent = 'Choose a video file.'; return; }
     if (!titleInput.value.trim()) { uploadError.textContent = 'Give the video a name.'; return; }
+    // "+ Add a new category…" with nothing typed would silently upload with no
+    // category at all, which is not what picking that option asks for.
+    if (categoryIsCustom() && !catText.value.trim()) {
+      uploadError.textContent = 'Type the new category, or pick one from the list.';
+      return;
+    }
 
     uploading = true;
     submitBtn.disabled = true;

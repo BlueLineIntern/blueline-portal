@@ -3224,6 +3224,13 @@ async function resolveLearningColumns(env, token) {
     // be typed instead of forcing a pick from an empty list.
     categoryChoices: (category && category.choice && category.choice.choices) || [],
     categoryIsChoice: Boolean(category && category.choice),
+    // SharePoint's "Can add values manually" on a Choice column, which Graph
+    // exposes as choice.allowTextEntry. With it on, the column accepts a value
+    // that isn't in `choices`, so the portal can offer a free-text option too.
+    // Read from the column rather than assumed: sending an unlisted value to a
+    // column that does NOT allow it fails the PATCH and would strand an
+    // already-uploaded file with no category.
+    categoryAllowsCustom: Boolean(category && category.choice && category.choice.allowTextEntry),
   };
 }
 
@@ -3303,18 +3310,22 @@ async function handleAdminLearning(request, env, cors) {
     // rather than failing the whole listing.
     let categoryChoices = [];
     let categoryIsChoice = false;
+    let categoryAllowsCustom = false;
     let canUpload = false;
     if (configured) {
       try {
         const cols = await resolveLearningColumns(env, await getGraphToken(env));
         categoryChoices = cols.categoryChoices;
         categoryIsChoice = cols.categoryIsChoice;
+        categoryAllowsCustom = cols.categoryAllowsCustom;
         canUpload = true;
       } catch (err) {
         console.error('Could not resolve learning columns:', err);
       }
     }
-    return json({ resources, categories, categoryChoices, categoryIsChoice, canUpload, configured }, 200, cors);
+    return json({
+      resources, categories, categoryChoices, categoryIsChoice, categoryAllowsCustom, canUpload, configured,
+    }, 200, cors);
   } catch (err) {
     console.error('Failed to fetch learning resources:', err);
     return json({ error: 'Failed to load learning resources: ' + (err && err.message) }, 500, cors);
@@ -3337,8 +3348,26 @@ async function handleAdminLearningFields(request, env, cors) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error('Graph API error ' + res.status + ': ' + (await res.text()).slice(0, 300));
     const data = await res.json();
+    // The resolved Category column too: if the picker won't offer a free-text
+    // box, this is where to see whether Graph is actually reporting
+    // allowTextEntry for the column — i.e. whether "Can add values manually" is
+    // really on, and on the column this library uses.
+    let categoryColumn = null;
+    try {
+      const cols = await resolveLearningColumns(env, token);
+      categoryColumn = {
+        isChoice: cols.categoryIsChoice,
+        allowsCustom: cols.categoryAllowsCustom,
+        choices: cols.categoryChoices,
+        internalName: (cols.category && cols.category.name) || null,
+        displayName: (cols.category && cols.category.displayName) || null,
+      };
+    } catch (err) {
+      categoryColumn = { error: String((err && err.message) || err) };
+    }
     return json({
       items: (data.value || []).map((i) => ({ id: i.id, fields: i.fields || {} })),
+      categoryColumn,
       resolvedBy: {
         title: LEARNING_TITLE_FIELDS,
         category: LEARNING_CATEGORY_FIELDS,
@@ -3405,9 +3434,15 @@ async function handleAdminLearningUploadStart(request, env, cors) {
     const token = await getGraphToken(env);
     const cols = await resolveLearningColumns(env, token);
     // Reject an unknown category up front rather than uploading the file and
-    // then failing to label it.
-    if (category && cols.categoryIsChoice && !cols.categoryChoices.includes(category)) {
-      return json({ error: `"${category}" is not one of the library's categories` }, 400, cors);
+    // then failing to label it. Skipped when the column has "Can add values
+    // manually" on (choice.allowTextEntry), which is SharePoint saying it will
+    // take a value outside the list — the whole point of the free-text option
+    // in the picker.
+    if (category && cols.categoryIsChoice && !cols.categoryAllowsCustom
+        && !cols.categoryChoices.includes(category)) {
+      return json({
+        error: `"${category}" is not one of the library's categories. Add it to the Category column in SharePoint, or turn on "Can add values manually" there to allow new ones from here.`,
+      }, 400, cors);
     }
 
     const driveId = await getLearningDriveId(env, token);

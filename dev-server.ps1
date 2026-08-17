@@ -91,6 +91,10 @@ $learningResources = [System.Collections.ArrayList]::new()
 # the upload form shows a dropdown. Includes a value no file uses yet, which is
 # the whole reason the real endpoint reads the column schema.
 $learningCategoryChoices = @('Compliance', 'Onboarding', 'Software Training', 'Markets & Planning')
+# Mirrors choice.allowTextEntry ("Can add values manually") on the SharePoint
+# Category column. On here so the mock exercises the free-text path the real
+# library now allows; flip to $false to see the picker's locked-down shape.
+$learningCategoryAllowsCustom = $true
 # uploadId -> @{ filename; title; category; description; size; received }
 $learningUploads = @{}
 $script:lrCounter = 0
@@ -2952,6 +2956,7 @@ while ($listener.IsListening) {
             $cats = @($res | ForEach-Object { $_.category } | Where-Object { $_ } | Sort-Object -Unique)
             Send-Json $ctx 200 @{ resources = $res; categories = $cats
                 categoryChoices = $learningCategoryChoices; categoryIsChoice = $true
+                categoryAllowsCustom = $learningCategoryAllowsCustom
                 canUpload = $true; configured = $true }
         }
         elseif ($path -eq '/api/admin/learning/upload' -and $method -eq 'POST') {
@@ -2966,7 +2971,8 @@ while ($listener.IsListening) {
             }
             if (-not ([string]$b.title).Trim()) { Send-Json $ctx 400 @{ error = 'A name is required' }; continue }
             $cat = ([string]$b.category).Trim()
-            if ($cat -and $learningCategoryChoices -notcontains $cat) {
+            # Skipped when the column takes manual values, matching worker.js.
+            if ($cat -and -not $learningCategoryAllowsCustom -and $learningCategoryChoices -notcontains $cat) {
                 Send-Json $ctx 400 @{ error = "`"$cat`" is not one of the library's categories" }; continue
             }
             # The real worker hands back an encrypted ticket carrying the Graph

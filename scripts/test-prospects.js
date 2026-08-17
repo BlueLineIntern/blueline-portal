@@ -724,6 +724,42 @@ const catList = renderJs.slice(renderJs.indexOf('const CATEGORIES = ['));
 check(/key:\s*["']/.test(catList) && /title:\s*["']/.test(catList) && /moduleKeys:/.test(catList),
   'CATEGORIES entries are objects with key/title/moduleKeys — not strings');
 
+// ---------- 13c. Learning: manual categories ----------
+//
+// SharePoint's "Can add values manually" on a Choice column is choice.allowTextEntry
+// in Graph. It is READ from the column, never assumed: offering a free-text box
+// against a column that doesn't accept one would let someone upload a file and
+// only then have the labelling rejected, stranding it uncategorised.
+const learning = fs.readFileSync(path.join(root, 'public/admin/learning.html'), 'utf8');
+
+check(extract(worker, 'resolveLearningColumns').includes('category.choice.allowTextEntry'),
+  "the Category column's allowTextEntry is read from SharePoint, not assumed");
+check(/categoryAllowsCustom,\s*canUpload, configured,/.test(worker) || worker.includes('categoryAllowsCustom, canUpload'),
+  'the listing endpoint reports it to the page');
+check(/if \(category && cols\.categoryIsChoice && !cols\.categoryAllowsCustom/.test(worker),
+  'the upload gate lets an unlisted category through only when the column allows manual values');
+check(worker.includes('categoryColumn'),
+  '/learning/fields reports the resolved Category column, so the setting is inspectable');
+
+check(learning.includes("const CATEGORY_NEW = '__new__';"),
+  'the picker has a sentinel option for adding a new category');
+check(extract(learning, 'categoryIsCustom').includes('categoryAllowsCustom')
+  && extract(learning, 'categoryIsCustom').includes('catSelect.value === CATEGORY_NEW'),
+  'free text is offered only when the column is a Choice column that allows it');
+check(extract(learning, 'chosenCategory').includes('if (!categoryIsChoice || categoryIsCustom()) return catText.value.trim();'),
+  'the typed value is what gets submitted when adding a new category');
+check(learning.includes("categoryAllowsCustom ? `<option value=\"${CATEGORY_NEW}\">"),
+  'the "+ Add a new category…" option only exists when manual values are allowed');
+// A manually-added value is stored on the file but NOT added to the column's
+// choices — that is what SharePoint's setting means — so the picker has to fold
+// in-use categories back in or it becomes unpickable next time.
+check(/const extra = categories\.filter\(\(c\) => c && !seen\.has\(c\)\);/.test(learning),
+  'categories already in use are merged into the dropdown alongside the column choices');
+check(learning.includes("uploadError.textContent = 'Type the new category, or pick one from the list.'"),
+  'picking "add new" and typing nothing is refused rather than silently uploading uncategorised');
+check(mock.includes('$learningCategoryAllowsCustom'),
+  'the local mock mirrors the setting so the picker can be exercised offline');
+
 // ---------- 14. No cross-script global collisions ----------
 //
 // Every admin page loads render.js, then shared.js, then its own inline script,
