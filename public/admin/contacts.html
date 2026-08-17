@@ -6,7 +6,7 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Contacts — BlueLine Admin</title>
 <link rel="stylesheet" href="/assets/style.css" />
-<link rel="stylesheet" href="/admin/shared.css?v=20260814-3" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260814-4" />
 <style>
   /* Client detail (module cards + charts come from style.css/render.js) */
   .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -766,7 +766,7 @@
 </div>
 
 <script src="/assets/render.js"></script>
-<script src="/admin/shared.js?v=20260814-3"></script>
+<script src="/admin/shared.js?v=20260814-4"></script>
 <script>
   // Two sidebar entries, one page. `activePage` stays 'contacts' so the employee
   // workspace filter and its saved-filter key are shared across both sides;
@@ -792,12 +792,22 @@
   // The HNW / Businesses / Vendors lens. Persisted per admin, and shared by both
   // sides: "show me businesses" is a way of looking at the book, not a property
   // of which tab you happen to be on.
-  const CONTACT_CATEGORIES = ['hnw', 'business', 'vendor'];
+  //
+  // Named KINDS, never CATEGORIES. render.js already exports a global
+  // `CATEGORIES` — the assessment module groups — which THIS page uses in
+  // renderAssessmentsTab() and assignmentGroups(). Every admin page loads
+  // render.js, shared.js and its own inline script into one top-level scope, so a
+  // second `CATEGORIES` here is either a redeclaration crash or, worse, hands an
+  // array of three strings to code expecting module-group objects. That shipped
+  // once and broke opening any client with a portal account: renderProfile() →
+  // renderAssessmentsTab() threw, so openProfile() never reached the lines that
+  // reveal the profile, and the click looked like it did nothing.
+  const CONTACT_KINDS = ['hnw', 'business', 'vendor'];
   const CATEGORY_KEY = `blueline_contact_category:${SESSION.email || ''}`;
   let categoryFilter = (() => {
     try {
       const saved = localStorage.getItem(CATEGORY_KEY);
-      if (CONTACT_CATEGORIES.includes(saved)) return saved;
+      if (CONTACT_KINDS.includes(saved)) return saved;
     } catch { /* private mode: fall through to the default */ }
     return 'hnw';
   })();
@@ -867,7 +877,7 @@
   // falling out of every position of the slider.
   function contactCategory(c) {
     const v = c && c.category;
-    return CONTACT_CATEGORIES.includes(v) ? v : 'hnw';
+    return CONTACT_KINDS.includes(v) ? v : 'hnw';
   }
 
   // A grouping's kind IS its category: a family is a household of individuals,
@@ -1398,7 +1408,7 @@
   }
 
   function setCategory(next) {
-    if (!CONTACT_CATEGORIES.includes(next) || next === categoryFilter) return;
+    if (!CONTACT_KINDS.includes(next) || next === categoryFilter) return;
     categoryFilter = next;
     try { localStorage.setItem(CATEGORY_KEY, next); } catch { /* private mode: just won't persist */ }
     // Groupings differ per lens, so a set of expanded ids from the previous one
@@ -3123,7 +3133,7 @@
     assignmentCard.classList.remove('hidden');
     const m = c.modules || {};
     detailBody.innerHTML =
-      clientFlagsHtml(m) + CONTACT_CATEGORIES.map((cat) => categorySectionHtml(cat, m, c)).join('');
+      clientFlagsHtml(m) + CATEGORIES.map((cat) => categorySectionHtml(cat, m, c)).join('');
     // Let the first module card flow onto page 1 under the header (it may be
     // taller than the space left below the section headings; without this a
     // chart-heavy first card gets bumped whole to page 2, leaving page 1 blank).
@@ -4649,7 +4659,7 @@
   // ---------- Module assignment editor ----------
 
   function assignmentGroups() {
-    return CONTACT_CATEGORIES.map((cat) => {
+    return CATEGORIES.map((cat) => {
       if (cat.type === 'onboarding') {
         return {
           title: cat.title,

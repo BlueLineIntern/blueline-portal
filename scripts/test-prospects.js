@@ -59,7 +59,7 @@ const helpers = ['isProspect', 'contactCategory', 'groupCategory', 'contactMatch
   'householdMatches', 'matchesTags', 'groupKind', 'groupsForEmail']
   .map((n) => extract(html, n)).join('\n');
 const visibleRecords = new Function(`
-  const CONTACT_CATEGORIES = ['hnw', 'business', 'vendor'];
+  const CONTACT_KINDS = ['hnw', 'business', 'vendor'];
   ${Object.keys(scope).map((k) => `let ${k};`).join(' ')}
   ${helpers}
   ${extract(html, 'visibleRecords')}
@@ -615,7 +615,7 @@ check(/const contact = \{\s*\.\.\.\(existing/.test(worker) && /\{\s*\.\.\.record
 // bulk migration write.
 check(worker.includes("category: CONTACT_CATEGORIES.includes(rec.category) ? rec.category : DEFAULT_CONTACT_CATEGORY,"),
   'a contact that predates the field reads as HNW rather than vanishing from all three lenses');
-check(extract(html, 'contactCategory').includes("return CONTACT_CATEGORIES.includes(v) ? v : 'hnw';"),
+check(extract(html, 'contactCategory').includes("return CONTACT_KINDS.includes(v) ? v : 'hnw';"),
   'the client applies the same default, so the two cannot disagree');
 
 // A family is a HNW household, a company is a business, and vendors have no
@@ -694,6 +694,35 @@ check(/^\.view-toggle \{/m.test(fs.readFileSync(path.join(root, 'public/admin/sh
   '.view-toggle moved to shared.css, where Operations and Contacts both read it');
 check(!/\.view-toggle \{/.test(ops) && !/\.view-toggle \{/.test(html),
   'neither page keeps a private copy of that CSS any more');
+
+// ---------- 13b. render.js's CATEGORIES global must stay intact ----------
+//
+// This shipped broken. A blanket rename of `CATEGORIES` in contacts.html also
+// hit two PRE-EXISTING uses of render.js's global of that name — the assessment
+// module groups — handing `['hnw','business','vendor']` to code that expects
+// objects with .moduleKeys. renderAssessmentsTab() then threw, so openProfile()
+// never reached the lines that reveal the profile: clicking a client did nothing
+// and the name link just scrolled to the top.
+//
+// It survived review because renderAssessmentsTab early-returns on
+// `!c.hasAccount`, and every fixture used at the time had no portal account.
+check(/clientFlagsHtml\(m\) \+ CATEGORIES\.map\(/.test(html),
+  "renderAssessmentsTab still iterates render.js's CATEGORIES, not the contact-kind list");
+check(/function assignmentGroups\(\) \{\s*return CATEGORIES\.map\(/.test(html),
+  "assignmentGroups still iterates render.js's CATEGORIES");
+
+// The lens list must not be named CATEGORIES, or it shadows/redeclares that
+// global all over again.
+check(/const CONTACT_KINDS = \['hnw', 'business', 'vendor'\];/.test(html)
+  && !/const CATEGORIES\b/.test(html),
+  'the contact-kind list has a name of its own and never redeclares CATEGORIES');
+
+// Every place that reads a `cat` out of CATEGORIES expects an OBJECT. If the
+// wrong list is ever wired in again, these property reads are what break.
+const renderJs = fs.readFileSync(path.join(root, 'public/assets/render.js'), 'utf8');
+const catList = renderJs.slice(renderJs.indexOf('const CATEGORIES = ['));
+check(/key:\s*["']/.test(catList) && /title:\s*["']/.test(catList) && /moduleKeys:/.test(catList),
+  'CATEGORIES entries are objects with key/title/moduleKeys — not strings');
 
 // ---------- 14. No cross-script global collisions ----------
 //
