@@ -6,7 +6,7 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Learning — BlueLine Admin</title>
 <link rel="stylesheet" href="/assets/style.css" />
-<link rel="stylesheet" href="/admin/shared.css?v=20260817-4" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260817-5" />
 <style>
   /* File-type marker on each row. Deliberately a letterform rather than an icon
      set: the extension itself is the clearest signal of what will open, and it
@@ -45,6 +45,17 @@
   }
   .lr-progress span { display: block; height: 100%; width: 0; background: var(--blue, var(--sky-dark)); transition: width 0.2s ease; }
   .lr-upload-note { color: var(--muted); font-size: var(--fs-xs); margin-top: 5px; }
+
+  /* Tags picked in the dialog, above the picker. Hidden while empty so the
+     field doesn't carry a permanently-blank strip. */
+  .lr-tagchips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .lr-tagchips.hidden { display: none; }
+  .lr-tagchips .chip { display: inline-flex; align-items: center; gap: 4px; }
+  .chip-x {
+    border: none; background: none; cursor: pointer; padding: 0 0 0 2px;
+    color: inherit; opacity: 0.65; font-size: var(--fs-base); line-height: 1;
+  }
+  .chip-x:hover { opacity: 1; color: var(--red); }
 </style>
 </head>
 <body>
@@ -102,7 +113,10 @@
       <input type="text" id="lr-title" maxlength="200" placeholder="How it will be listed here" />
     </div>
     <div class="field">
-      <label for="lr-category">Category</label>
+      <label for="lr-category">Tags</label>
+      <!-- Picked tags render as removable chips above the picker; the picker
+           itself only ever offers what is not already on. -->
+      <div class="lr-tagchips" id="lr-tagchips"></div>
       <select id="lr-category" class="hidden"></select>
       <input type="text" id="lr-category-text" class="hidden" maxlength="120" placeholder="e.g. Compliance" />
       <p class="field-note" id="lr-category-note"></p>
@@ -131,17 +145,23 @@
   </div>
 </div>
 
-<script src="/admin/shared.js?v=20260817-4"></script>
+<script src="/admin/shared.js?v=20260817-5"></script>
 <script>
   initShell('learning');
 
   let allResources = [];
-  let categories = [];
-  let activeCategory = 'all';
+  let tagsInUse = [];
+  // Stacking tags NARROWS: a resource must carry every active tag. Matches the
+  // Contacts tag rail, so the two pages behave the same way. Empty = show all.
+  const activeTags = new Set();
   // Category choices come from the SharePoint column itself when it's a Choice
   // column; otherwise it's free text and the picker becomes an input.
   let categoryChoices = [];
   let categoryIsChoice = false;
+  // Tags picked in the dialog so far. A LIST, not a single value — the column
+  // must be multi-select in SharePoint for more than one to save (see
+  // learningTagsFieldValue in worker.js for why one tag still works either way).
+  let pickedTags = [];
   // SharePoint's "Can add values manually" on the Category column, reported by
   // Graph as choice.allowTextEntry. Read from the column rather than assumed:
   // offering a free-text box against a column that doesn't allow one would let
@@ -193,26 +213,43 @@
   function visibleResources() {
     const q = document.getElementById('lr-search').value.trim().toLowerCase();
     return allResources.filter((r) => {
-      if (activeCategory !== 'all' && r.category !== activeCategory) return false;
+      const tags = r.tags || [];
+      // Every active tag must be present, not just one — successive clicks
+      // narrow, which is what makes stacking them useful.
+      for (const t of activeTags) if (!tags.includes(t)) return false;
       if (!q) return true;
-      return [r.title, r.description, r.name, r.category].some((v) => String(v || '').toLowerCase().includes(q));
+      return [r.title, r.description, r.name, ...tags].some((v) => String(v || '').toLowerCase().includes(q));
     });
   }
 
   function renderFilters() {
-    // "All" plus whatever categories the library actually contains — the list is
-    // data-driven, so a new Choice value in SharePoint needs no change here.
-    const pills = [{ id: 'all', label: 'All' }].concat(categories.map((c) => ({ id: c, label: c })));
+    // Data-driven: a new tag in SharePoint needs no change here. Counts are of
+    // what WOULD still match if that tag were added to the current stack, so a
+    // pill never advertises a combination that turns out empty.
     const wrap = document.getElementById('lr-filters');
-    wrap.innerHTML = pills
-      .map((p) => {
-        const count = p.id === 'all' ? allResources.length : allResources.filter((r) => r.category === p.id).length;
-        const active = activeCategory === p.id ? 'active' : '';
-        return `<button type="button" class="filter-pill ${active}" data-cat="${escapeHtml(p.id)}">${escapeHtml(p.label)} (${count})</button>`;
-      })
-      .join('');
+    const others = allResources.filter((r) => {
+      for (const t of activeTags) if (!(r.tags || []).includes(t)) return false;
+      return true;
+    });
+    const pills = tagsInUse.map((t) => {
+      const on = activeTags.has(t);
+      const count = on
+        ? others.length
+        : others.filter((r) => (r.tags || []).includes(t)).length;
+      return `<button type="button" class="filter-pill ${on ? 'active' : ''}" data-tag="${escapeHtml(t)}">${escapeHtml(t)} (${count})</button>`;
+    }).join('');
+    const clear = activeTags.size
+      ? `<button type="button" class="filter-pill" data-tag="__clear__">Clear tags</button>`
+      : '';
+    wrap.innerHTML = pills + clear;
     wrap.querySelectorAll('.filter-pill').forEach((b) =>
-      b.addEventListener('click', () => { activeCategory = b.dataset.cat; render(); })
+      b.addEventListener('click', () => {
+        const t = b.dataset.tag;
+        if (t === '__clear__') activeTags.clear();
+        else if (activeTags.has(t)) activeTags.delete(t);
+        else activeTags.add(t);
+        render();
+      })
     );
   }
 
@@ -232,7 +269,7 @@
         // column is what labels a resource here. It still backs `title` as a
         // fallback (see the endpoint), so a file with no Title set is labelled
         // by its description rather than dropping to a bare filename.
-        const meta = [r.category, r.name !== r.title ? r.name : '', formatSize(r.size)]
+        const meta = [(r.tags || []).join(', '), r.name !== r.title ? r.name : '', formatSize(r.size)]
           .filter(Boolean).map(escapeHtml).join(' · ');
         return `<div class="row-item lr-row">
           <a class="lr-link" href="${escapeHtml(r.webUrl)}" target="_blank" rel="noopener noreferrer">
@@ -258,10 +295,10 @@
     try {
       const data = await api('/api/admin/learning');
       allResources = data.resources || [];
-      categories = data.categories || [];
-      categoryChoices = data.categoryChoices || [];
-      categoryIsChoice = Boolean(data.categoryIsChoice);
-      categoryAllowsCustom = Boolean(data.categoryAllowsCustom);
+      tagsInUse = data.tagsInUse || [];
+      categoryChoices = data.tagChoices || [];
+      categoryIsChoice = Boolean(data.tagsAreChoice);
+      categoryAllowsCustom = Boolean(data.tagsAllowCustom);
       // Hidden until the library's columns resolve — without them an upload
       // can't be named or categorised, so offering the button would mislead.
       document.getElementById('lr-add').classList.toggle('hidden', !data.canUpload);
@@ -315,10 +352,19 @@
   );
 
   catSelect.addEventListener('change', () => {
-    // Backing out of "+ Add a new category…" discards what was typed, so a
-    // half-written name can't be submitted alongside a picked one.
-    if (!categoryIsCustom()) catText.value = '';
-    syncCategoryInputs();
+    // Picking a listed tag adds it straight away; picking "+ Add a new tag…"
+    // just reveals the text box and waits for Enter or Add.
+    if (categoryIsCustom()) { syncCategoryInputs(); return; }
+    catText.value = '';
+    if (!commitPendingTag()) syncCategoryInputs();
+  });
+
+  // Enter in the free-text box adds the tag rather than submitting the dialog,
+  // which would otherwise save with the typed tag still sitting uncommitted.
+  catText.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    commitPendingTag();
   });
   const descInput = document.getElementById('lr-description');
   const uploadError = document.getElementById('lr-upload-error');
@@ -336,9 +382,59 @@
     return categoryIsChoice && categoryAllowsCustom && catSelect.value === CATEGORY_NEW;
   }
 
-  function chosenCategory() {
-    if (!categoryIsChoice || categoryIsCustom()) return catText.value.trim();
-    return catSelect.value.trim();
+  // Adds whatever the picker currently holds, if anything. Called when the
+  // select changes, when Enter is pressed in the free-text box, and once more
+  // on submit so a typed tag left sitting in the box is not silently dropped.
+  function commitPendingTag() {
+    const v = (!categoryIsChoice || categoryIsCustom()) ? catText.value.trim() : catSelect.value.trim();
+    if (!v || v === CATEGORY_NEW) return false;
+    // Case-insensitive, matching SharePoint: "AI" and "ai" are one choice.
+    if (!pickedTags.some((t) => t.toLowerCase() === v.toLowerCase())) pickedTags.push(v);
+    catText.value = '';
+    catSelect.value = '';
+    renderTagChips();
+    // refreshTagOptions, not just syncCategoryInputs: the tag just added has to
+    // drop out of the dropdown, or it can be picked again and the placeholder
+    // keeps saying "— none —" when something IS already chosen.
+    refreshTagOptions();
+    return true;
+  }
+
+  // Rebuilt whenever the picked set changes, so a tag already on the resource
+  // is never offered twice. Mirrors the column: a dropdown for a Choice column,
+  // free text otherwise.
+  function refreshTagOptions() {
+    if (categoryIsChoice) {
+      // The column's own Choice values, plus any tag already in use that the
+      // column no longer lists. A manually-added one is stored on the file but
+      // NOT written back into the column's choices — that is what "add values
+      // manually" means in SharePoint — so without this union it would be
+      // unpickable again the moment the dialog reopened.
+      const seen = new Set(categoryChoices);
+      const extra = tagsInUse.filter((c) => c && !seen.has(c));
+      const taken = new Set(pickedTags.map((t) => t.toLowerCase()));
+      const offer = categoryChoices.concat(extra).filter((c) => !taken.has(c.toLowerCase()));
+      catSelect.innerHTML = `<option value="">${pickedTags.length ? '— add another —' : '— none —'}</option>`
+        + offer.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')
+        + (categoryAllowsCustom ? `<option value="${CATEGORY_NEW}">+ Add a new tag…</option>` : '');
+    }
+    catSelect.classList.toggle('hidden', !categoryIsChoice);
+    catSelect.value = '';
+    syncCategoryInputs();
+  }
+  function renderTagChips() {
+    const wrap = document.getElementById('lr-tagchips');
+    wrap.innerHTML = pickedTags
+      .map((t) => `<span class="chip">${escapeHtml(t)}<button type="button" class="chip-x" data-untag="${escapeHtml(t)}" aria-label="Remove ${escapeHtml(t)}">&times;</button></span>`)
+      .join('');
+    wrap.querySelectorAll('[data-untag]').forEach((b) =>
+      b.addEventListener('click', () => {
+        pickedTags = pickedTags.filter((t) => t !== b.dataset.untag);
+        renderTagChips();
+        refreshTagOptions();
+      })
+    );
+    wrap.classList.toggle('hidden', !pickedTags.length);
   }
 
   // Text box on screen only while it can actually be used.
@@ -353,34 +449,19 @@
     catText.value = '';
     descInput.value = '';
     bodyInput.value = '';
+    pickedTags = [];
     uploadError.textContent = '';
     progressWrap.classList.add('hidden');
     progressBar.style.width = '0';
     setAddMode('file');
 
-    // The picker mirrors the column: a dropdown for a Choice column, free text
-    // otherwise. Categories seen in the data fill the gap if the column
-    // declares no choices at all.
-    if (categoryIsChoice) {
-      // The column's own Choice values, plus any category already in use that
-      // the column no longer lists. A manually-added one is stored on the file
-      // but NOT written back into the column's choices — that is what
-      // "add values manually" means in SharePoint — so without this union it
-      // would be untypeable-again the moment the modal reopened.
-      const seen = new Set(categoryChoices);
-      const extra = categories.filter((c) => c && !seen.has(c));
-      catSelect.innerHTML = '<option value="">— none —</option>'
-        + categoryChoices.concat(extra).map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')
-        + (categoryAllowsCustom ? `<option value="${CATEGORY_NEW}">+ Add a new category…</option>` : '');
-    }
-    catSelect.classList.toggle('hidden', !categoryIsChoice);
-    catSelect.value = '';
-    syncCategoryInputs();
+    renderTagChips();
+    refreshTagOptions();
     document.getElementById('lr-category-note').textContent = categoryIsChoice
       ? (categoryAllowsCustom
-        ? 'From the library’s Category column — or add a new one.'
-        : 'From the library’s Category column.')
-      : (categories.length ? `Already in use: ${categories.join(', ')}` : '');
+        ? 'Pick as many as apply, or add a new one. Press Enter to add a typed tag.'
+        : 'Pick as many as apply, from the library’s Category column.')
+      : (tagsInUse.length ? `Already in use: ${tagsInUse.join(', ')}` : '');
 
     modal.classList.remove('hidden');
     titleInput.focus();
@@ -416,10 +497,11 @@
       uploadError.textContent = addMode === 'note' ? 'Give the note a name.' : 'Give the resource a name.';
       return;
     }
-    // "+ Add a new category…" with nothing typed would silently upload with no
-    // category at all, which is not what picking that option asks for.
-    if (categoryIsCustom() && !catText.value.trim()) {
-      uploadError.textContent = 'Type the new category, or pick one from the list.';
+    // A tag typed but not yet added (no Enter pressed) would otherwise be lost
+    // on submit — commit it rather than silently dropping it.
+    commitPendingTag();
+    if (categoryIsCustom() && catText.value.trim() === '' && !pickedTags.length) {
+      uploadError.textContent = 'Type the new tag, or pick one from the list.';
       return;
     }
 
@@ -435,7 +517,7 @@
           body: JSON.stringify({
             title: titleInput.value.trim(),
             body: bodyInput.value,
-            category: chosenCategory(),
+            tags: pickedTags,
             description: descInput.value.trim(),
           }),
         });
@@ -469,7 +551,7 @@
           filename: file.name,
           size: file.size,
           title: titleInput.value.trim(),
-          category: chosenCategory(),
+          tags: pickedTags,
           description: descInput.value.trim(),
         }),
       });

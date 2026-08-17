@@ -1433,7 +1433,35 @@ Client portal is untouched and keeps its own look.
       otherwise be duplicated and have to be kept in step.
     - Editing an existing note is **not** built: notes are edited in SharePoint,
       like every other file in the library. The portal writes, it doesn't own.
-  - **New categories can be typed in** when the library's Category column has
+  - **They're TAGS, and a resource can carry several** (changed 2026-08-17; was a
+    single Category). The UI says Tags throughout; the SharePoint column is still
+    named **Category**, so the column resolution keeps that name — renaming that
+    side would only obscure which column is being read. The wire says tags
+    (`tags` per resource, `tagsInUse`, `tagChoices`, `tagsAreChoice`,
+    `tagsAllowCustom`).
+    - **Requires the column to allow multiple selections in SharePoint.** Graph
+      exposes no flag for that — `choiceColumn` carries only `choices`,
+      `allowTextEntry` and `displayAs` — so the app cannot ask, and instead sends
+      a shape that degrades sensibly: `learningTagsFieldValue()` writes **one tag
+      as a plain string** (which a single-select column accepts and a
+      multi-select one also accepts) and **several as an array** (which only a
+      multi-select column takes). So one tag keeps working whatever the column
+      is, and only genuinely-multiple tags depend on the switch having been made.
+    - `pickTags()` reads **both shapes**: an array from a multi-select column, a
+      string from a single-select one. A string is deliberately **one tag, never
+      split on a delimiter** — real names contain commas ("Technology, Privacy &
+      Resilience"), so splitting would shatter an existing value into nonsense.
+      That is what lets the library keep working mid-switchover.
+    - Tags are trimmed, de-duplicated **case-insensitively** (SharePoint treats
+      "AI" and "ai" as one choice) and capped at `LEARNING_MAX_TAGS` (20).
+    - The dialog shows picked tags as **removable chips**; the dropdown offers
+      only what isn't already on, and a tag typed but not yet added is committed
+      on submit rather than silently lost.
+    - The filter row **stacks to narrow** — a resource must carry every active
+      tag — matching the Contacts tag rail so the two pages behave the same. Pill
+      counts show what each tag would still yield on top of the current stack, so
+      a pill never advertises a combination that turns out empty.
+  - **New tags can be typed in** when the library's Category column has
     SharePoint's **"Can add values manually"** ticked (added 2026-08-17). Graph
     reports that as `choice.allowTextEntry`; `resolveLearningColumns()` surfaces
     it as `categoryAllowsCustom`, the listing returns it, and the picker then

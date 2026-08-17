@@ -3192,6 +3192,31 @@ function pickField(fields, candidates) {
   return '';
 }
 
+// The Learning library's Category column, read as a LIST of tags.
+//
+// A multi-select Choice column comes back from Graph as an array; a
+// single-select one comes back as a plain string. Both shapes are handled, so
+// the library keeps working while the column is switched over and afterwards.
+//
+// A string is deliberately ONE tag, never split on a delimiter: real category
+// names contain commas ("Technology, Privacy & Resilience" is one of the
+// compliance areas), so splitting would shatter an existing value into
+// nonsense tags. Multiple tags only ever arrive as an array.
+function pickTags(fields, candidates) {
+  for (const key of candidates) {
+    const val = fields[key];
+    if (val === undefined || val === null) continue;
+    if (Array.isArray(val)) {
+      const out = val.map((v) => String(v).trim()).filter(Boolean);
+      if (out.length) return out;
+      continue;
+    }
+    const s = String(val).trim();
+    if (s) return [s];
+  }
+  return [];
+}
+
 const LEARNING_CATEGORY_FIELDS = ['Category', 'Category0'];
 const LEARNING_DESCRIPTION_FIELDS = ['Description', 'Description0', '_ExtendedDescription', 'Comments'];
 // A document library already ships a built-in Title column, so a *second*
@@ -3280,17 +3305,17 @@ async function fetchLearningResources(env) {
       // renders a readable link rather than an empty row.
       title: pickField(fields, LEARNING_TITLE_FIELDS) || description || name,
       description,
-      category: pickField(fields, LEARNING_CATEGORY_FIELDS),
+      tags: pickTags(fields, LEARNING_CATEGORY_FIELDS),
       webUrl,
       size: typeof drive.size === 'number' ? drive.size : null,
       modified: drive.lastModifiedDateTime || fields.Modified || null,
     });
   }
 
-  // Category, then title — so the flat list still reads as grouped when no
-  // category filter is applied.
+  // First tag, then title — so the flat list still reads as grouped when no
+  // tag filter is applied. Untagged sorts last (￿ beats every real name).
   resources.sort((a, b) =>
-    (a.category || '￿').localeCompare(b.category || '￿') || a.title.localeCompare(b.title));
+    (a.tags[0] || '￿').localeCompare(b.tags[0] || '￿') || a.title.localeCompare(b.title));
 
   return { resources, configured: true };
 }
@@ -3302,29 +3327,33 @@ async function handleAdminLearning(request, env, cors) {
     const { resources, configured } = await fetchLearningResources(env);
     // Categories come from the data rather than a hard-coded list, so adding a
     // new Choice value in SharePoint surfaces it here with no code change.
-    const categories = [...new Set(resources.map((r) => r.category).filter(Boolean))]
+    const tagsInUse = [...new Set(resources.flatMap((r) => r.tags).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b));
     // The upload form's category picker wants the column's own Choice values,
     // which include categories no file uses yet. Resolving the schema is a
     // second Graph call, so a failure here degrades to the data-derived list
     // rather than failing the whole listing.
-    let categoryChoices = [];
-    let categoryIsChoice = false;
-    let categoryAllowsCustom = false;
+    // Wire names say TAGS: that is what the portal calls them. The column
+    // resolution keeps saying category, because the SharePoint column really is
+    // named Category — renaming that side would only obscure which column is
+    // being read.
+    let tagChoices = [];
+    let tagsAreChoice = false;
+    let tagsAllowCustom = false;
     let canUpload = false;
     if (configured) {
       try {
         const cols = await resolveLearningColumns(env, await getGraphToken(env));
-        categoryChoices = cols.categoryChoices;
-        categoryIsChoice = cols.categoryIsChoice;
-        categoryAllowsCustom = cols.categoryAllowsCustom;
+        tagChoices = cols.categoryChoices;
+        tagsAreChoice = cols.categoryIsChoice;
+        tagsAllowCustom = cols.categoryAllowsCustom;
         canUpload = true;
       } catch (err) {
         console.error('Could not resolve learning columns:', err);
       }
     }
     return json({
-      resources, categories, categoryChoices, categoryIsChoice, categoryAllowsCustom, canUpload, configured,
+      resources, tagsInUse, tagChoices, tagsAreChoice, tagsAllowCustom, canUpload, configured,
     }, 200, cors);
   } catch (err) {
     console.error('Failed to fetch learning resources:', err);
@@ -3412,6 +3441,41 @@ const LEARNING_DOC_EXTS = ['pdf', 'doc', 'docx', 'txt', 'rtf', 'md', 'xls', 'xls
 // renders as an unknown type.
 const LEARNING_UPLOAD_EXTS = [...LEARNING_VIDEO_EXTS, ...LEARNING_DOC_EXTS];
 
+// Tags arriving from the client, normalised: trimmed, de-duplicated
+// case-insensitively (SharePoint treats "AI" and "ai" as the same choice), and
+// capped so a runaway payload can't be stamped onto a file.
+const LEARNING_MAX_TAGS = 20;
+
+function sanitizeLearningTags(raw) {
+  const list = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+  const seen = new Set();
+  const out = [];
+  for (const t of list) {
+    const v = String(t || '').trim().slice(0, 120);
+    if (!v) continue;
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+    if (out.length >= LEARNING_MAX_TAGS) break;
+  }
+  return out;
+}
+
+// What to PATCH into the Category column.
+//
+// A single tag goes as a plain STRING, a list as an ARRAY. That is not cosmetic:
+// a single-select Choice column rejects an array, and a multi-select one accepts
+// either — so one tag saves correctly whichever type the column currently is,
+// and only genuinely-multiple tags require the column to have been switched to
+// allow multiple selections. Graph exposes no flag for that (choiceColumn
+// carries only choices/allowTextEntry/displayAs), so this is the one shape that
+// degrades sensibly without being able to ask.
+function learningTagsFieldValue(tags) {
+  if (!tags.length) return null;
+  return tags.length === 1 ? tags[0] : tags;
+}
+
 // SharePoint rejects " * : < > ? / \ | and leading/trailing dots or spaces.
 function sanitizeLearningFilename(raw) {
   const base = String(raw || '').split(/[\\/]/).pop();
@@ -3429,7 +3493,7 @@ async function handleAdminLearningUploadStart(request, env, cors) {
   const filename = sanitizeLearningFilename(body.filename);
   const size = Number(body.size);
   const title = String(body.title || '').trim();
-  const category = String(body.category || '').trim();
+  const tags = sanitizeLearningTags(body.tags !== undefined ? body.tags : body.category);
   const description = String(body.description || '').trim();
 
   if (!filename) return json({ error: 'A file is required' }, 400, cors);
@@ -3449,10 +3513,12 @@ async function handleAdminLearningUploadStart(request, env, cors) {
     // manually" on (choice.allowTextEntry), which is SharePoint saying it will
     // take a value outside the list — the whole point of the free-text option
     // in the picker.
-    if (category && cols.categoryIsChoice && !cols.categoryAllowsCustom
-        && !cols.categoryChoices.includes(category)) {
+    const unknown = cols.categoryIsChoice && !cols.categoryAllowsCustom
+      ? tags.filter((t) => !cols.categoryChoices.includes(t))
+      : [];
+    if (unknown.length) {
       return json({
-        error: `"${category}" is not one of the library's categories. Add it to the Category column in SharePoint, or turn on "Can add values manually" there to allow new ones from here.`,
+        error: `${unknown.map((t) => `"${t}"`).join(', ')} ${unknown.length === 1 ? 'is not one of' : 'are not among'} the library's tags. Add ${unknown.length === 1 ? 'it' : 'them'} to the Category column in SharePoint, or turn on "Can add values manually" there to allow new ones from here.`,
       }, 400, cors);
     }
 
@@ -3473,7 +3539,7 @@ async function handleAdminLearningUploadStart(request, env, cors) {
     if (!session.uploadUrl) throw new Error('Graph returned no uploadUrl');
 
     const ticket = await encryptJSON(env, {
-      uploadUrl: session.uploadUrl, driveId, size, filename, title, category, description,
+      uploadUrl: session.uploadUrl, driveId, size, filename, title, tags, description,
     });
     return json({ ticket, chunkSize: LEARNING_UPLOAD_CHUNK }, 200, cors);
   } catch (err) {
@@ -3555,7 +3621,7 @@ async function handleAdminLearningNote(request, env, cors) {
   const body = await request.json().catch(() => ({}));
   const title = String(body.title || '').trim();
   const text = String(body.body || '');
-  const category = String(body.category || '').trim();
+  const tags = sanitizeLearningTags(body.tags !== undefined ? body.tags : body.category);
   const description = String(body.description || '').trim();
 
   if (!title) return json({ error: 'A name is required' }, 400, cors);
@@ -3574,9 +3640,11 @@ async function handleAdminLearningNote(request, env, cors) {
     const token = await getGraphToken(env);
     const cols = await resolveLearningColumns(env, token);
     // Same category rule as an upload — see handleAdminLearningUploadStart.
-    if (category && cols.categoryIsChoice && !cols.categoryAllowsCustom
-        && !cols.categoryChoices.includes(category)) {
-      return json({ error: `"${category}" is not one of the library's categories` }, 400, cors);
+    const unknown = cols.categoryIsChoice && !cols.categoryAllowsCustom
+      ? tags.filter((t) => !cols.categoryChoices.includes(t))
+      : [];
+    if (unknown.length) {
+      return json({ error: `${unknown.map((t) => `"${t}"`).join(', ')} not among the library's tags` }, 400, cors);
     }
 
     const driveId = await getLearningDriveId(env, token);
@@ -3601,10 +3669,10 @@ async function handleAdminLearningNote(request, env, cors) {
     const item = await res.json();
     const applied = await applyLearningMetadata(
       env,
-      { filename, title, category, description, driveId, size: content.length },
+      { filename, title, tags, description, driveId, size: content.length },
       item
     );
-    await logAudit(env, adminEmail, 'learning-note-create', { name: item.name || filename, category });
+    await logAudit(env, adminEmail, 'learning-note-create', { name: item.name || filename, tags });
     return json({ resource: applied.resource, warning: applied.warning }, 200, cors);
   } catch (err) {
     console.error('Failed to save learning note:', err);
@@ -3620,7 +3688,7 @@ async function applyLearningMetadata(env, ticket, item) {
     id: item.id,
     name: item.name || ticket.filename,
     title: ticket.title,
-    category: ticket.category,
+    tags: ticket.tags || [],
     webUrl: item.webUrl || '',
     size: typeof item.size === 'number' ? item.size : ticket.size,
   };
@@ -3629,7 +3697,8 @@ async function applyLearningMetadata(env, ticket, item) {
     const cols = await resolveLearningColumns(env, token);
     const fields = {};
     if (cols.title) fields[cols.title.name] = ticket.title;
-    if (cols.category && ticket.category) fields[cols.category.name] = ticket.category;
+    const tagValue = learningTagsFieldValue(ticket.tags || []);
+    if (cols.category && tagValue !== null) fields[cols.category.name] = tagValue;
     if (cols.description && ticket.description) fields[cols.description.name] = ticket.description;
     if (!Object.keys(fields).length) {
       return { resource, warning: 'Saved, but the library has no Title column to name it in.' };

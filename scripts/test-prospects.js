@@ -734,10 +734,10 @@ const learning = fs.readFileSync(path.join(root, 'public/admin/learning.html'), 
 
 check(extract(worker, 'resolveLearningColumns').includes('category.choice.allowTextEntry'),
   "the Category column's allowTextEntry is read from SharePoint, not assumed");
-check(/categoryAllowsCustom,\s*canUpload, configured,/.test(worker) || worker.includes('categoryAllowsCustom, canUpload'),
+check(worker.includes('tagsAllowCustom, canUpload, configured,'),
   'the listing endpoint reports it to the page');
-check(/if \(category && cols\.categoryIsChoice && !cols\.categoryAllowsCustom/.test(worker),
-  'the upload gate lets an unlisted category through only when the column allows manual values');
+check(/cols.categoryIsChoice && !cols.categoryAllowsCustom/.test(worker),
+  'the upload gate lets an unlisted tag through only when the column allows manual values');
 check(worker.includes('categoryColumn'),
   '/learning/fields reports the resolved Category column, so the setting is inspectable');
 
@@ -746,17 +746,17 @@ check(learning.includes("const CATEGORY_NEW = '__new__';"),
 check(extract(learning, 'categoryIsCustom').includes('categoryAllowsCustom')
   && extract(learning, 'categoryIsCustom').includes('catSelect.value === CATEGORY_NEW'),
   'free text is offered only when the column is a Choice column that allows it');
-check(extract(learning, 'chosenCategory').includes('if (!categoryIsChoice || categoryIsCustom()) return catText.value.trim();'),
-  'the typed value is what gets submitted when adding a new category');
-check(learning.includes("categoryAllowsCustom ? `<option value=\"${CATEGORY_NEW}\">"),
-  'the "+ Add a new category…" option only exists when manual values are allowed');
+check(extract(learning, 'commitPendingTag').includes("(!categoryIsChoice || categoryIsCustom()) ? catText.value.trim() : catSelect.value.trim()"),
+  'the typed value is what gets added when creating a new tag');
+check(learning.includes('categoryAllowsCustom ? `<option value="${CATEGORY_NEW}">+ Add a new tag'),
+  'the "+ Add a new tag…" option only exists when manual values are allowed');
 // A manually-added value is stored on the file but NOT added to the column's
 // choices — that is what SharePoint's setting means — so the picker has to fold
 // in-use categories back in or it becomes unpickable next time.
-check(/const extra = categories\.filter\(\(c\) => c && !seen\.has\(c\)\);/.test(learning),
-  'categories already in use are merged into the dropdown alongside the column choices');
-check(learning.includes("uploadError.textContent = 'Type the new category, or pick one from the list.'"),
-  'picking "add new" and typing nothing is refused rather than silently uploading uncategorised');
+check(learning.includes('const extra = tagsInUse.filter((c) => c && !seen.has(c));'),
+  'tags already in use are merged into the dropdown alongside the column choices');
+check(learning.includes("uploadError.textContent = 'Type the new tag, or pick one from the list.'"),
+  'picking "add new" and typing nothing is refused rather than silently uploading untagged');
 check(mock.includes('$learningCategoryAllowsCustom'),
   'the local mock mirrors the setting so the picker can be exercised offline');
 
@@ -899,6 +899,56 @@ check(extract(html, 'setSegment').includes('selected.clear();')
 check(html.includes('colspan="5"') && !html.includes('colspan="4" class="empty"'),
   'the empty-state row spans the checkbox column too');
 
+// ---------- 13g. Learning tags are multi-value ----------
+
+// Sourced from worker.js so the cap the function enforces is the real one.
+const LEARNING_MAX_TAGS = eval(worker.match(/const LEARNING_MAX_TAGS = (\d+);/)[1]);
+const sanitizeLearningTags = eval('(' + extract(worker, 'sanitizeLearningTags') + ')');
+const learningTagsFieldValue = eval('(' + extract(worker, 'learningTagsFieldValue') + ')');
+const pickTags = eval('(' + extract(worker, 'pickTags') + ')');
+
+check(JSON.stringify(sanitizeLearningTags(['AI', ' Compliance ', 'ai', '', null])) === '["AI","Compliance"]',
+  'tags are trimmed, blanks dropped, and de-duplicated case-insensitively like SharePoint');
+check(sanitizeLearningTags(Array.from({ length: 40 }, (_, i) => `t${i}`)).length === 20,
+  'a runaway tag list is capped rather than stamped onto the file');
+check(JSON.stringify(sanitizeLearningTags('Compliance')) === '["Compliance"]',
+  'a bare string still reads as one tag, so an older client keeps working');
+
+// The shape sent to Graph is what makes this safe on either column type. Graph
+// exposes no multi-select flag (choiceColumn carries only choices /
+// allowTextEntry / displayAs), so a single tag goes as a STRING — which a
+// single-select column accepts and a multi-select one also accepts — and only
+// genuinely-multiple tags require the column to have been switched over.
+check(learningTagsFieldValue([]) === null,
+  'no tags means the column is left alone rather than blanked');
+check(learningTagsFieldValue(['AI']) === 'AI',
+  'ONE tag is sent as a string, so it saves whichever type the column currently is');
+check(Array.isArray(learningTagsFieldValue(['AI', 'Compliance'])),
+  'several tags are sent as an array, which is what a multi-select column takes');
+
+// Reading has to cope with both shapes while the column is switched over.
+check(JSON.stringify(pickTags({ Category: ['AI', 'Compliance'] }, ['Category'])) === '["AI","Compliance"]',
+  'a multi-select column reads back as a list of tags');
+check(JSON.stringify(pickTags({ Category: 'Compliance' }, ['Category'])) === '["Compliance"]',
+  'a single-select column still reads, as one tag');
+// Real names contain commas — "Technology, Privacy & Resilience" is one of the
+// compliance areas — so splitting a string would shatter it into nonsense.
+check(pickTags({ Category: 'Technology, Privacy & Resilience' }, ['Category']).length === 1,
+  'a string value is never split on a delimiter, so a name containing a comma survives');
+
+check(learning.includes('const activeTags = new Set();')
+  && learning.includes('for (const t of activeTags) if (!tags.includes(t)) return false;'),
+  'stacking tags in the filter row NARROWS, matching the Contacts tag rail');
+check(learning.includes('data-untag='),
+  'picked tags render as chips that can be removed individually');
+check(extract(learning, 'commitPendingTag').includes('refreshTagOptions();'),
+  'a tag already picked drops out of the dropdown rather than being offerable twice');
+check(extract(learning, 'uploadResource').includes('commitPendingTag();'),
+  'a tag typed but not yet added is committed on submit rather than silently lost');
+check(learning.includes('<label for="lr-category">Tags</label>'),
+  'the field is called Tags in the UI');
+check(!/data.categor/.test(learning),
+  'the page reads the tag-named fields, not the old category ones');
 // ---------- 14. No cross-script global collisions ----------
 //
 // Every admin page loads render.js, then shared.js, then its own inline script,

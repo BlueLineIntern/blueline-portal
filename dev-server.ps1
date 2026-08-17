@@ -66,23 +66,23 @@ $learningResources = [System.Collections.ArrayList]::new()
 @(
     @{ id = 'l1'; name = 'CRM-walkthrough.mp4'; title = 'Adding a new client in the CRM'
        description = 'Step-by-step walkthrough of the intake form and required fields.'
-       category = 'Software Training'
+       tags = @('Software Training')
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/CRM-walkthrough.mp4'
        size = 48234123; modified = '2026-07-20T14:02:00Z' }
     @{ id = 'l2'; name = 'Form-ADV-refresher.pdf'; title = 'Annual Form ADV refresher'
-       description = 'Covers the 2026 filing changes.'; category = 'Compliance'
+       description = 'Covers the 2026 filing changes.'; tags = @('Compliance')
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/Form-ADV-refresher.pdf'
        size = 812004; modified = '2026-06-11T09:30:00Z' }
     @{ id = 'l3'; name = 'new-hire-checklist.docx'; title = 'new-hire-checklist.docx'
-       description = ''; category = 'Onboarding'
+       description = ''; tags = @('Onboarding', 'Compliance')
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/new-hire-checklist.docx'
        size = 24500; modified = '2026-05-02T16:45:00Z' }
     @{ id = 'l4'; name = 'quarterly-review-deck.pptx'; title = 'Running a quarterly review meeting'
-       description = ''; category = 'Onboarding'
+       description = ''; tags = @('Onboarding', 'Compliance')
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/quarterly-review-deck.pptx'
        size = 3300400; modified = '2026-07-01T11:15:00Z' }
     @{ id = 'l5'; name = 'misc-notes.txt'; title = 'Uncategorised scratch notes'
-       description = 'Uncategorised scratch notes'; category = ''
+       description = 'Uncategorised scratch notes'; tags = @()
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/misc-notes.txt'
        size = 1200; modified = '2026-07-25T08:00:00Z' }
 ) | ForEach-Object { $null = $learningResources.Add($_) }
@@ -2490,7 +2490,7 @@ while ($listener.IsListening) {
                 Invoke-AutoTask "review-assessment-$moduleName" $attributedTo @{
                     title = "Review $moduleName assessment - $attributedTo"
                     description = "The $moduleName assessment was completed. Review their responses."
-                    category = 'review'
+                    tags = @('review')
                 }
             }
             Send-Json $ctx 200 @{
@@ -2606,7 +2606,7 @@ while ($listener.IsListening) {
                     Invoke-AutoTask "review-onboarding-$id" $clientEmail @{
                         title = "Review completed onboarding $id"
                         description = "$clientEmail finished the onboarding workflow. Review the submission."
-                        category = 'onboarding'
+                        tags = @('onboarding')
                     }
                 }
                 $nowSigned = [bool]($body.data.agreement -and $body.data.agreement.signatureDataUrl)
@@ -2615,7 +2615,7 @@ while ($listener.IsListening) {
                     Invoke-AutoTask "open-account-$id" $clientEmail @{
                         title = "Open account - agreement signed ($id)"
                         description = "$clientEmail signed the advisory agreement. Begin account opening."
-                        category = 'onboarding'
+                        tags = @('onboarding')
                     }
                     Invoke-MockAutoFileAgreement $id $clientEmail $body.data
                     Invoke-MockRecordAdvisoryDate $clientEmail $body.data.agreement.signedAt
@@ -2953,10 +2953,11 @@ while ($listener.IsListening) {
             $res = @($learningResources | Sort-Object `
                 @{ Expression = { if ($_.category) { "0$($_.category)" } else { '1' } } }, `
                 @{ Expression = { $_.title } })
-            $cats = @($res | ForEach-Object { $_.category } | Where-Object { $_ } | Sort-Object -Unique)
-            Send-Json $ctx 200 @{ resources = $res; categories = $cats
-                categoryChoices = $learningCategoryChoices; categoryIsChoice = $true
-                categoryAllowsCustom = $learningCategoryAllowsCustom
+            # Tags come back as a LIST per resource, matching pickTags in worker.js.
+            $cats = @($res | ForEach-Object { $_.tags } | Where-Object { $_ } | Sort-Object -Unique)
+            Send-Json $ctx 200 @{ resources = $res; tagsInUse = $cats
+                tagChoices = $learningCategoryChoices; tagsAreChoice = $true
+                tagsAllowCustom = $learningCategoryAllowsCustom
                 canUpload = $true; configured = $true }
         }
         # Mirrors handleAdminLearningNote: a title + body saved as a .txt in the
@@ -2967,7 +2968,7 @@ while ($listener.IsListening) {
             $b = Read-Body $ctx
             $noteTitle = ([string]$b.title).Trim()
             $noteBody = [string]$b.body
-            $noteCat = ([string]$b.category).Trim()
+            $noteTags = @(@($b.tags) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
             if (-not $noteTitle) { Send-Json $ctx 400 @{ error = 'A name is required' }; continue }
             if (-not $noteBody.Trim()) { Send-Json $ctx 400 @{ error = 'Write something in the body first' }; continue }
             if ($noteBody.Length -gt (500 * 1024)) {
@@ -2979,17 +2980,18 @@ while ($listener.IsListening) {
             $base = ($noteTitle -replace '["*:<>?|\/]', '-').Trim('. ')
             $base = [Regex]::Replace($base, '.txtz', '', 'IgnoreCase')
             if (-not $base) { Send-Json $ctx 400 @{ error = 'Give the note a name using letters or numbers' }; continue }
-            if ($noteCat -and -not $learningCategoryAllowsCustom -and $learningCategoryChoices -notcontains $noteCat) {
-                Send-Json $ctx 400 @{ error = "`"$noteCat`" is not one of the library's categories" }; continue
+            if (-not $learningCategoryAllowsCustom) {
+                $badNote = @($noteTags | Where-Object { $learningCategoryChoices -notcontains $_ })
+                if ($badNote.Count) { Send-Json $ctx 400 @{ error = "$($badNote -join ', ') not among the library's tags" }; continue }
             }
             $script:lrCounter++
             $rec = [ordered]@{
                 id = "note$($script:lrCounter)"; name = "$base.txt"; title = $noteTitle
-                category = $noteCat; description = ([string]$b.description).Trim()
+                tags = $noteTags; description = ([string]$b.description).Trim()
                 webUrl = "https://example.invalid/$base.txt"; size = $noteBody.Length
             }
             $null = $learningResources.Add($rec)
-            Write-Audit $adminEmail 'learning-note-create' @{ name = $rec.name; category = $noteCat }
+            Write-Audit $adminEmail 'learning-note-create' @{ name = $rec.name; tags = $noteTags }
             Send-Json $ctx 200 @{ resource = $rec; warning = '' }
         }
         elseif ($path -eq '/api/admin/learning/upload' -and $method -eq 'POST') {
@@ -3007,10 +3009,11 @@ while ($listener.IsListening) {
                 Send-Json $ctx 400 @{ error = "Unsupported file type `".$ext`" - use $($allowed -join ', ')" }; continue
             }
             if (-not ([string]$b.title).Trim()) { Send-Json $ctx 400 @{ error = 'A name is required' }; continue }
-            $cat = ([string]$b.category).Trim()
+            $tagList = @(@($b.tags) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
             # Skipped when the column takes manual values, matching worker.js.
-            if ($cat -and -not $learningCategoryAllowsCustom -and $learningCategoryChoices -notcontains $cat) {
-                Send-Json $ctx 400 @{ error = "`"$cat`" is not one of the library's categories" }; continue
+            if (-not $learningCategoryAllowsCustom) {
+                $bad = @($tagList | Where-Object { $learningCategoryChoices -notcontains $_ })
+                if ($bad.Count) { Send-Json $ctx 400 @{ error = "$($bad -join ', ') not among the library's tags" }; continue }
             }
             # The real worker hands back an encrypted ticket carrying the Graph
             # upload URL; the mock has no Graph, so the ticket is just a key into
@@ -3018,7 +3021,7 @@ while ($listener.IsListening) {
             $script:lrCounter++
             $uid = "up$($script:lrCounter)"
             $learningUploads[$uid] = @{
-                filename = $fname; title = ([string]$b.title).Trim(); category = $cat
+                filename = $fname; title = ([string]$b.title).Trim(); tags = $tagList
                 description = ([string]$b.description).Trim(); size = [int64]$b.size; received = [int64]0
             }
             # 1 MiB in the mock rather than 5, so a small test file still exercises
@@ -3048,13 +3051,13 @@ while ($listener.IsListening) {
             $script:lrCounter++
             $row = @{
                 id = "lu$($script:lrCounter)"; name = $up.filename; title = $up.title
-                description = $up.description; category = $up.category
+                description = $up.description; tags = $up.tags
                 webUrl = "https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/$($up.filename)"
                 size = $up.size; modified = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
             }
             $null = $learningResources.Add($row)
             $learningUploads.Remove($uid)
-            Write-Audit (Get-AdminEmail $ctx) 'learning-upload' @{ name = $row.name; title = $row.title; category = $row.category }
+            Write-Audit (Get-AdminEmail $ctx) 'learning-upload' @{ name = $row.name; title = $row.title; tags = $row.tags }
             Send-Json $ctx 200 @{ done = $true; resource = $row; warning = '' }
         }
         else {
