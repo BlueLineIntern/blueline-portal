@@ -39,18 +39,21 @@ $adminPasswords = @{
     'fsabin@blueline-advisors.com'  = 'dev-fsabin-pass'
     'jyoung@blueline-advisors.com'  = 'dev-jyoung-pass'
     'intern@blueline-advisors.com'  = 'dev-intern-pass'
+    'esullivan@blueline-advisors.com' = 'dev-esullivan-pass'
 }
 $frankAdminEmail = 'fsabin@blueline-advisors.com'
 $jennAdminEmail = 'jyoung@blueline-advisors.com'
 $internAdminEmail = 'intern@blueline-advisors.com'
+$ericAdminEmail = 'esullivan@blueline-advisors.com'
 $allAdminWorkspaces = '__all__'
 $adminWorkspaceAccess = @{
-    $frankAdminEmail = @('jyoung@blueline-advisors.com', 'intern@blueline-advisors.com')
+    $frankAdminEmail = @('jyoung@blueline-advisors.com', 'intern@blueline-advisors.com', 'esullivan@blueline-advisors.com')
 }
 $adminNames = @{
     'fsabin@blueline-advisors.com' = 'Frank'
     'jyoung@blueline-advisors.com' = 'Jenn'
     'intern@blueline-advisors.com' = 'Intern'
+    'esullivan@blueline-advisors.com' = 'Eric S'
 }
 $adminMfa = @{}      # email -> @{ secret; confirmed; backupCodes=@(@{hash;used}); createdAt }
 $adminPending = @{}  # pending token -> email (short-lived between password and 2nd factor)
@@ -990,6 +993,10 @@ function Test-SupervisorAdmin($adminEmail) {
     return $adminEmail -eq $frankAdminEmail -or $adminEmail -eq $jennAdminEmail -or $adminEmail -eq $internAdminEmail
 }
 
+function Test-SharedViewManager($adminEmail) {
+    return $adminEmail -eq $frankAdminEmail -or @($adminWorkspaceAccess[$frankAdminEmail]) -contains $adminEmail
+}
+
 function Get-AccessibleWorkspaces($adminEmail) {
     $frankMembers = @($adminWorkspaceAccess[$frankAdminEmail])
     if (Test-SupervisorAdmin $adminEmail) {
@@ -1392,21 +1399,24 @@ while ($listener.IsListening) {
             $workspaces = @($allowed | ForEach-Object {
                 @{ owner = $_; name = $adminNames[$_]; own = ($_ -eq $adminEmail) }
             })
-            $admins = @($adminPasswords.Keys | ForEach-Object { @{ email = $_; name = $adminNames[$_]; supervisor = (Test-SupervisorAdmin $_) } })
+            $permanentManagers = @($frankAdminEmail, $jennAdminEmail, $internAdminEmail, $ericAdminEmail)
+            $admins = @($adminPasswords.Keys | ForEach-Object {
+                @{ email = $_; name = $adminNames[$_]; supervisor = (Test-SupervisorAdmin $_); permanentSharedView = ($permanentManagers -contains $_) }
+            })
             $grants = @{}
-            if (Test-SupervisorAdmin $adminEmail) {
+            if (Test-SharedViewManager $adminEmail) {
                 foreach ($owner in $adminPasswords.Keys) { $grants[$owner] = @($adminWorkspaceAccess[$owner]) }
             }
-            Send-Json $ctx 200 @{ you = $adminEmail; boss = (Test-SupervisorAdmin $adminEmail); sharedOwner = $frankAdminEmail; active = $active; workspaces = $workspaces; admins = $admins; grants = $grants }
+            Send-Json $ctx 200 @{ you = $adminEmail; boss = (Test-SupervisorAdmin $adminEmail); canManageSharedView = (Test-SharedViewManager $adminEmail); sharedOwner = $frankAdminEmail; active = $active; workspaces = $workspaces; admins = $admins; grants = $grants }
         }
         elseif ($path -eq '/api/admin/workspaces/access' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can manage workspace access' }; continue }
+            if (-not (Test-SharedViewManager $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only shared firm view managers can manage display access' }; continue }
             $body = Read-Body $ctx
             $owner = ([string]$body.owner).Trim().ToLower()
             if ($owner -ne $frankAdminEmail) { Send-Json $ctx 400 @{ error = "Employees can only be assigned to Frank's display" }; continue }
-            $members = @(@($jennAdminEmail, $internAdminEmail) + @($body.members | ForEach-Object { ([string]$_).Trim().ToLower() }) |
+            $members = @(@($jennAdminEmail, $internAdminEmail, $ericAdminEmail) + @($body.members | ForEach-Object { ([string]$_).Trim().ToLower() }) |
                 Where-Object { $_ -and $_ -ne $owner -and $adminPasswords.ContainsKey($_) } | Select-Object -Unique)
             $adminWorkspaceAccess[$owner] = $members
             Write-Audit $adminEmail 'workspace-access-changed' @{ owner = $owner; members = $members }

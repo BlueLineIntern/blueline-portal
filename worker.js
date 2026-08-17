@@ -84,17 +84,20 @@ const ADMIN_ACCOUNTS = [
 const FRANK_ADMIN_EMAIL = 'fsabin@blueline-advisors.com';
 const JENN_ADMIN_EMAIL = 'jyoung@blueline-advisors.com';
 const INTERN_ADMIN_EMAIL = 'intern@blueline-advisors.com';
+const ERIC_ADMIN_EMAIL = 'esullivan@blueline-advisors.com';
 const ALL_ADMIN_WORKSPACES = '__all__';
 const SUPERVISOR_ADMIN_EMAILS = new Set([FRANK_ADMIN_EMAIL, JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL]);
 const isSupervisorAdmin = (email) => SUPERVISOR_ADMIN_EMAILS.has(String(email || '').trim().toLowerCase());
 const DEFAULT_FRANK_WORKSPACE_MEMBERS = [
   JENN_ADMIN_EMAIL,
   INTERN_ADMIN_EMAIL,
+  ERIC_ADMIN_EMAIL,
 ];
 const LEGACY_ADMIN_NAMES = {
   'fsabin@blueline-advisors.com': 'Frank',
   'jyoung@blueline-advisors.com': 'Jenn',
   'intern@blueline-advisors.com': 'Intern',
+  'esullivan@blueline-advisors.com': 'Eric S',
 };
 const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 12; // 12 hours
 const ADMIN_PASSWORD_MIN_LENGTH = 10; // a step above the client minimum (8) — elevated privilege
@@ -230,16 +233,22 @@ async function workspaceMembers(env, owner) {
     const members = Array.isArray(parsed.members)
       ? [...new Set(parsed.members.map((e) => String(e || '').trim().toLowerCase()).filter(Boolean))]
       : [];
-    // Co-supervisors are permanent members of the shared firm view.
+    // The original managers and Eric are permanent members of the shared firm view.
     if (owner === FRANK_ADMIN_EMAIL) {
-      for (const supervisor of [JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL]) {
-        if (!members.includes(supervisor)) members.push(supervisor);
+      for (const manager of [JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL, ERIC_ADMIN_EMAIL]) {
+        if (!members.includes(manager)) members.push(manager);
       }
     }
     return members;
   } catch {
     return [];
   }
+}
+
+async function canManageSharedFirmView(env, email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  return normalized === FRANK_ADMIN_EMAIL
+    || (await workspaceMembers(env, FRANK_ADMIN_EMAIL)).includes(normalized);
 }
 
 async function accessibleWorkspaceOwners(env, adminEmail) {
@@ -273,6 +282,7 @@ async function handleAdminWorkspaces(request, env, cors) {
   const admins = await allAdminEmails(env);
   const allowed = await accessibleWorkspaceOwners(env, adminEmail);
   const requested = await requestedAdminWorkspace(request, env, adminEmail);
+  const sharedViewManager = await canManageSharedFirmView(env, adminEmail);
   const workspaces = allowed.map((owner) => ({
     owner,
     name: names[owner] || owner.split('@')[0],
@@ -280,16 +290,22 @@ async function handleAdminWorkspaces(request, env, cors) {
     members: isSupervisorAdmin(adminEmail) ? [] : undefined,
   }));
   const grants = {};
-  if (isSupervisorAdmin(adminEmail)) {
+  if (sharedViewManager) {
     for (const owner of admins) grants[owner] = await workspaceMembers(env, owner);
   }
   return json({
     you: adminEmail,
     boss: isSupervisorAdmin(adminEmail),
+    canManageSharedView: sharedViewManager,
     sharedOwner: FRANK_ADMIN_EMAIL,
     active: requested || allowed[0],
     workspaces,
-    admins: admins.map((email) => ({ email, name: names[email] || email.split('@')[0], supervisor: isSupervisorAdmin(email) })),
+    admins: admins.map((email) => ({
+      email,
+      name: names[email] || email.split('@')[0],
+      supervisor: isSupervisorAdmin(email),
+      permanentSharedView: [FRANK_ADMIN_EMAIL, JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL, ERIC_ADMIN_EMAIL].includes(email),
+    })),
     grants,
   }, 200, cors);
 }
@@ -297,7 +313,7 @@ async function handleAdminWorkspaces(request, env, cors) {
 async function handleAdminSaveWorkspaceAccess(request, env, cors) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
-  if (!isSupervisorAdmin(adminEmail)) return json({ error: 'Only firm supervisors can manage workspace access' }, 403, cors);
+  if (!(await canManageSharedFirmView(env, adminEmail))) return json({ error: 'Only shared firm view managers can manage display access' }, 403, cors);
   const body = await request.json().catch(() => null);
   if (!body || !isValidEmail(body.owner) || !Array.isArray(body.members)) {
     return json({ error: 'owner and members are required' }, 400, cors);
@@ -305,7 +321,7 @@ async function handleAdminSaveWorkspaceAccess(request, env, cors) {
   const owner = String(body.owner).trim().toLowerCase();
   if (owner !== FRANK_ADMIN_EMAIL) return json({ error: "Employees can only be assigned to Frank's display" }, 400, cors);
   const admins = new Set(await allAdminEmails(env));
-  const members = [...new Set([JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL, ...body.members.map((e) => String(e || '').trim().toLowerCase())])]
+  const members = [...new Set([JENN_ADMIN_EMAIL, INTERN_ADMIN_EMAIL, ERIC_ADMIN_EMAIL, ...body.members.map((e) => String(e || '').trim().toLowerCase())])]
     .filter((e) => e && e !== owner && admins.has(e));
   await env.PORTAL_KV.put(workspaceAccessKey(owner), JSON.stringify({ members, updatedAt: new Date().toISOString(), updatedBy: adminEmail }));
   await logAudit(env, adminEmail, 'workspace-access-changed', { owner, members });

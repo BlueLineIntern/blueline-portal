@@ -44,9 +44,9 @@
 
     <div class="panel hidden" id="workspace-access-card">
       <div class="panel-head"><h2>Admin Display Access</h2></div>
-      <p class="hint">Frank, Jenn, and Intern manage the shared firm view. Selected employees work in that shared view and retain Compliance access. Anyone not selected works in a personal view; the supervisors can review it with the Employee filters on Contacts, Tasks, and Calendar.</p>
+      <p class="hint">Everyone checked below works in and can manage the shared firm view. Anyone not selected works in a personal view; firm supervisors can review it with the Employee filters on Contacts, Tasks, and Calendar.</p>
       <div class="field">
-        <label>Employees using Frank's display</label>
+        <label>Admins managing the shared firm view</label>
         <div id="workspace-member-checks" style="display:flex; gap:var(--sp-3); flex-wrap:wrap; min-height:40px; align-items:center;"></div>
       </div>
       <div style="margin-top:var(--sp-4); display:flex; gap:var(--sp-3); align-items:center;">
@@ -306,27 +306,28 @@
   function renderWorkspaceMembers() {
     if (!workspaceAccessData) return;
     const owner = workspaceAccessData.sharedOwner;
-    const selected = new Set((workspaceAccessData.grants && workspaceAccessData.grants[owner]) || []);
+    const selected = new Set([owner, ...((workspaceAccessData.grants && workspaceAccessData.grants[owner]) || [])]);
     document.getElementById('workspace-member-checks').innerHTML = (workspaceAccessData.admins || [])
-      .filter((a) => !a.supervisor)
       .map((a) => `<label class="hint" style="display:inline-flex; align-items:center; gap:6px;">
-        <input type="checkbox" class="workspace-member-check" value="${escapeHtml(a.email)}"${selected.has(a.email) ? ' checked' : ''} />
+        <input type="checkbox" class="workspace-member-check" value="${escapeHtml(a.email)}"${selected.has(a.email) ? ' checked' : ''}${a.permanentSharedView ? ' disabled' : ''} />
         ${escapeHtml(a.name || staffLabel(a.email))}
-      </label>`).join('') || '<span class="empty">No other employees yet.</span>';
+      </label>`).join('') || '<span class="empty">No admins yet.</span>';
   }
 
   async function loadWorkspaceAccess() {
     try {
       const data = await api('/api/admin/workspaces');
-      if (!data.boss) return;
+      if (!data.canManageSharedView) return;
       workspaceAccessData = data;
       const card = document.getElementById('workspace-access-card');
       card.classList.remove('hidden');
-      document.getElementById('links-card').classList.remove('hidden');
-      document.getElementById('audit-card').classList.remove('hidden');
       renderWorkspaceMembers();
-      loadPortalLinks();
-      loadAudit();
+      if (data.boss) {
+        document.getElementById('links-card').classList.remove('hidden');
+        document.getElementById('audit-card').classList.remove('hidden');
+        loadPortalLinks();
+        loadAudit();
+      }
     } catch (err) {
       document.getElementById('workspace-access-status').textContent = `Failed to load: ${err.message}`;
     }
