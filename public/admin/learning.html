@@ -6,7 +6,7 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Learning — BlueLine Admin</title>
 <link rel="stylesheet" href="/assets/style.css" />
-<link rel="stylesheet" href="/admin/shared.css?v=20260817-2" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260817-3" />
 <style>
   /* File-type marker on each row. Deliberately a letterform rather than an icon
      set: the extension itself is the clearest signal of what will open, and it
@@ -78,8 +78,16 @@
 
 <div class="modal-backdrop hidden" id="lr-modal-backdrop">
   <div class="modal">
-    <h2>Add learning resource</h2>
-    <div class="field">
+    <h2 id="lr-modal-title">Add learning resource</h2>
+    <!-- One dialog, two ways in. Sharing it rather than building a second modal
+         keeps ONE category picker — the choices, the "+ Add a new category…"
+         option and its validation would otherwise have to be duplicated and
+         kept in step. -->
+    <div class="view-toggle" id="lr-mode-toggle">
+      <button type="button" data-mode="file" class="active">Upload a file</button>
+      <button type="button" data-mode="note">Write a note</button>
+    </div>
+    <div class="field" id="lr-file-field">
       <label for="lr-file">File</label>
       <!-- Extensions rather than MIME types for the documents: browsers disagree
            on what they report for Office files (docx in particular), and an
@@ -103,6 +111,14 @@
       <label for="lr-description">Description <span class="field-note">(optional)</span></label>
       <textarea id="lr-description" rows="2" maxlength="1000"></textarea>
     </div>
+    <!-- Note mode only. Deliberately generous height: this is where a whole
+         procedure gets written, not a one-line caption. -->
+    <div class="field hidden" id="lr-body-field">
+      <label for="lr-body">Body</label>
+      <textarea id="lr-body" rows="14" placeholder="Type the instructions here…"></textarea>
+      <p class="field-note">Saved into the library as a plain-text <code>.txt</code> file named after the
+      title above. Edit it later in SharePoint.</p>
+    </div>
     <p class="form-error" id="lr-upload-error"></p>
     <div class="hidden" id="lr-progress-wrap">
       <div class="lr-progress"><span id="lr-progress-bar"></span></div>
@@ -115,7 +131,7 @@
   </div>
 </div>
 
-<script src="/admin/shared.js?v=20260817-2"></script>
+<script src="/admin/shared.js?v=20260817-3"></script>
 <script>
   initShell('learning');
 
@@ -134,6 +150,11 @@
   // The sentinel option that reveals the text box. Not a value anyone could
   // legitimately type, so it can never collide with a real category.
   const CATEGORY_NEW = '__new__';
+
+  // 'file' uploads something chosen from disk; 'note' types the content here and
+  // saves it as a .txt in the same library. Same Name / Category / Description
+  // either way — only the source of the content differs.
+  let addMode = 'file';
 
   // Extension -> the badge class and label shown in the row's square marker.
   // Anything unrecognised still renders, just with its bare extension. Covers
@@ -272,6 +293,27 @@
   const catSelect = document.getElementById('lr-category');
   const catText = document.getElementById('lr-category-text');
 
+  const bodyInput = document.getElementById('lr-body');
+
+  function setAddMode(mode) {
+    addMode = mode === 'note' ? 'note' : 'file';
+    const note = addMode === 'note';
+    document.querySelectorAll('#lr-mode-toggle button').forEach((b) =>
+      b.classList.toggle('active', b.dataset.mode === addMode));
+    document.getElementById('lr-file-field').classList.toggle('hidden', note);
+    document.getElementById('lr-body-field').classList.toggle('hidden', !note);
+    document.getElementById('lr-modal-title').textContent = note ? 'Write a learning note' : 'Add learning resource';
+    submitBtn.textContent = note ? 'Save note' : 'Upload';
+    titleInput.placeholder = note ? 'e.g. How to use the AI agent' : 'How it will be listed here';
+    // Switching modes invalidates whatever the previous one was complaining
+    // about — a "Choose a file" error has no meaning once you're writing a note.
+    uploadError.textContent = '';
+  }
+
+  document.querySelectorAll('#lr-mode-toggle button').forEach((b) =>
+    b.addEventListener('click', () => { if (!uploading) setAddMode(b.dataset.mode); })
+  );
+
   catSelect.addEventListener('change', () => {
     // Backing out of "+ Add a new category…" discards what was typed, so a
     // half-written name can't be submitted alongside a picked one.
@@ -310,9 +352,11 @@
     titleInput.value = '';
     catText.value = '';
     descInput.value = '';
+    bodyInput.value = '';
     uploadError.textContent = '';
     progressWrap.classList.add('hidden');
     progressBar.style.width = '0';
+    setAddMode('file');
 
     // The picker mirrors the column: a dropdown for a Choice column, free text
     // otherwise. Categories seen in the data fill the gap if the column
@@ -363,12 +407,52 @@
   async function uploadResource() {
     const file = fileInput.files && fileInput.files[0];
     uploadError.textContent = '';
-    if (!file) { uploadError.textContent = 'Choose a file.'; return; }
-    if (!titleInput.value.trim()) { uploadError.textContent = 'Give the resource a name.'; return; }
+    if (addMode === 'file' && !file) { uploadError.textContent = 'Choose a file.'; return; }
+    if (addMode === 'note' && !bodyInput.value.trim()) {
+      uploadError.textContent = 'Write something in the body first.';
+      return;
+    }
+    if (!titleInput.value.trim()) {
+      uploadError.textContent = addMode === 'note' ? 'Give the note a name.' : 'Give the resource a name.';
+      return;
+    }
     // "+ Add a new category…" with nothing typed would silently upload with no
     // category at all, which is not what picking that option asks for.
     if (categoryIsCustom() && !catText.value.trim()) {
       uploadError.textContent = 'Type the new category, or pick one from the list.';
+      return;
+    }
+
+    // A note is one small request, so it skips the chunked-upload machinery and
+    // its progress bar entirely — a bar that jumps 0→100% is noise.
+    if (addMode === 'note') {
+      uploading = true;
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Saving…';
+      try {
+        const res = await api('/api/admin/learning/note', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: titleInput.value.trim(),
+            body: bodyInput.value,
+            category: chosenCategory(),
+            description: descInput.value.trim(),
+          }),
+        });
+        // Cleared before closeModal(), which refuses to run while `uploading`
+        // is set so an in-flight upload can't be stranded behind a shut dialog.
+        uploading = false;
+        closeModal();
+        await loadData();
+        document.getElementById('lr-status').textContent =
+          res.warning || `Saved “${titleInput.value.trim()}”.`;
+      } catch (err) {
+        uploadError.textContent = err.message;
+        submitBtn.textContent = 'Save note';
+      } finally {
+        uploading = false;
+        submitBtn.disabled = false;
+      }
       return;
     }
 

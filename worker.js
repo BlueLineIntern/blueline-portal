@@ -3535,6 +3535,83 @@ async function handleAdminLearningUploadChunk(request, env, cors) {
   }
 }
 
+// A note typed in the app rather than uploaded: a title and a body, saved into
+// the same library as a .txt file. Written procedure that starts life as
+// "someone explaining how to do a thing" has nowhere else to go — it isn't worth
+// opening Word for, and telling someone to make a file elsewhere and upload it
+// is how it never gets written down at all.
+//
+// A plain PUT, NOT the chunked upload session the video path uses. A note is
+// kilobytes; an upload session is three round trips and a ticket to carry state
+// between them, all of which exists solely because a training video can be 2 GB.
+const LEARNING_NOTE_MAX = 500 * 1024; // 500 KB — a very long SOP is ~50 KB
+
+async function handleAdminLearningNote(request, env, cors) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!env.SHAREPOINT_LEARNING_LIST_ID) {
+    return json({ error: 'SHAREPOINT_LEARNING_LIST_ID is not set' }, 400, cors);
+  }
+  const body = await request.json().catch(() => ({}));
+  const title = String(body.title || '').trim();
+  const text = String(body.body || '');
+  const category = String(body.category || '').trim();
+  const description = String(body.description || '').trim();
+
+  if (!title) return json({ error: 'A name is required' }, 400, cors);
+  if (!text.trim()) return json({ error: 'Write something in the body first' }, 400, cors);
+  if (text.length > LEARNING_NOTE_MAX) {
+    return json({ error: 'That note is too long — keep it under 500 KB, or upload it as a document' }, 400, cors);
+  }
+  // The filename comes from the title, so it has to survive the same characters
+  // SharePoint rejects. A title that sanitizes away to nothing (all punctuation)
+  // would otherwise produce a file called ".txt".
+  const base = sanitizeLearningFilename(title).replace(/\.txt$/i, '');
+  if (!base) return json({ error: 'Give the note a name using letters or numbers' }, 400, cors);
+  const filename = `${base}.txt`;
+
+  try {
+    const token = await getGraphToken(env);
+    const cols = await resolveLearningColumns(env, token);
+    // Same category rule as an upload — see handleAdminLearningUploadStart.
+    if (category && cols.categoryIsChoice && !cols.categoryAllowsCustom
+        && !cols.categoryChoices.includes(category)) {
+      return json({ error: `"${category}" is not one of the library's categories` }, 400, cors);
+    }
+
+    const driveId = await getLearningDriveId(env, token);
+    // CRLF and a UTF-8 BOM, for the same reason the CSV export uses them: this
+    // lands on a Windows/Office desktop, where a bare \n file can open as one
+    // long line and a BOM-less non-ASCII file can open as mojibake.
+    const content = '﻿' + text.replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n');
+    // conflictBehavior=rename, matching the upload path: writing a note never
+    // silently overwrites an existing file of the same name.
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/`
+      + `${encodeURIComponent(filename)}:/content?%40microsoft.graph.conflictBehavior=rename`,
+      {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'text/plain; charset=utf-8' },
+        body: content,
+      }
+    );
+    if (!res.ok) {
+      return json({ error: 'Could not save the note: Graph ' + res.status + ': ' + (await res.text()).slice(0, 200) }, 500, cors);
+    }
+    const item = await res.json();
+    const applied = await applyLearningMetadata(
+      env,
+      { filename, title, category, description, driveId, size: content.length },
+      item
+    );
+    await logAudit(env, adminEmail, 'learning-note-create', { name: item.name || filename, category });
+    return json({ resource: applied.resource, warning: applied.warning }, 200, cors);
+  } catch (err) {
+    console.error('Failed to save learning note:', err);
+    return json({ error: 'Could not save the note: ' + (err && err.message) }, 500, cors);
+  }
+}
+
 // Stamp Title/Category/Description onto the freshly uploaded file. The file is
 // already in the library at this point, so a metadata failure is reported as a
 // warning rather than an error — re-running the upload would just duplicate it.
@@ -3555,7 +3632,7 @@ async function applyLearningMetadata(env, ticket, item) {
     if (cols.category && ticket.category) fields[cols.category.name] = ticket.category;
     if (cols.description && ticket.description) fields[cols.description.name] = ticket.description;
     if (!Object.keys(fields).length) {
-      return { resource, warning: 'Uploaded, but the library has no Title column to name it in.' };
+      return { resource, warning: 'Saved, but the library has no Title column to name it in.' };
     }
 
     // The upload returns a driveItem; the columns hang off its list item.
@@ -3581,7 +3658,7 @@ async function applyLearningMetadata(env, ticket, item) {
     console.error('Failed to set learning metadata:', err);
     return {
       resource,
-      warning: 'The video uploaded, but its name and category could not be saved: '
+      warning: 'The file was saved, but its name and category could not be: '
         + (err && err.message) + ' — set them in SharePoint.',
     };
   }
@@ -7596,6 +7673,9 @@ export default {
       }
       if (url.pathname === '/api/admin/learning/upload' && request.method === 'POST') {
         return await handleAdminLearningUploadStart(request, env, cors);
+      }
+      if (url.pathname === '/api/admin/learning/note' && request.method === 'POST') {
+        return await handleAdminLearningNote(request, env, cors);
       }
       if (url.pathname === '/api/admin/learning/upload/chunk' && request.method === 'PUT') {
         return await handleAdminLearningUploadChunk(request, env, cors);

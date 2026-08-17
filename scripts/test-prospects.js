@@ -795,6 +795,63 @@ const mockAllowed = mock.slice(mockLearningStart, mock.indexOf(')', mockLearning
 check(LEARNING_UPLOAD_EXTS.every((e) => mockAllowed.includes(`'${e}'`)),
   'the local mock accepts the same set, so dev and production agree');
 
+// ---------- 13e. Learning notes written in the app ----------
+
+const noteFn = extract(worker, 'handleAdminLearningNote');
+check(worker.includes("url.pathname === '/api/admin/learning/note' && request.method === 'POST'"),
+  'a note can be written in the app and saved into the library');
+
+// A note is kilobytes. The chunked upload session exists solely because a
+// training video can be 2 GB; using it here would be three round trips and a
+// ticket to carry state, for a single small PUT.
+check(noteFn.includes(':/content?%40microsoft.graph.conflictBehavior=rename')
+  && !noteFn.includes('createUploadSession'),
+  'a note is one plain PUT, not the chunked upload session the video path needs');
+check(noteFn.includes('conflictBehavior=rename'),
+  'saving a note never silently overwrites an existing file of the same name');
+check(noteFn.includes('applyLearningMetadata('),
+  'a note gets its Title/Category/Description stamped by the same code an upload uses');
+
+// The filename comes from the title, so it must survive what SharePoint rejects.
+const sanitizeLearningFilename = eval('(' + extract(worker, 'sanitizeLearningFilename') + ')');
+const noteName = (t) => {
+  const b = sanitizeLearningFilename(t).replace(/\.txt$/i, '');
+  return b ? `${b}.txt` : null;
+};
+check(noteName('How to use the AI agent') === 'How to use the AI agent.txt',
+  'a note is named after its title');
+check(noteName('Quarterly review: prep*checklist') === 'Quarterly review- prep-checklist.txt',
+  'characters SharePoint rejects are replaced rather than passed through');
+check(noteName('Notes.txt') === 'Notes.txt',
+  'a title that already ends in .txt does not become Notes.txt.txt');
+check(noteName('   ') === null && noteFn.includes('Give the note a name using letters or numbers'),
+  'a title that sanitises away to nothing is refused, not saved as ".txt"');
+
+check(noteFn.includes("if (!text.trim()) return json({ error: 'Write something in the body first' }"),
+  'an empty body is refused server-side, not just in the form');
+check(/const LEARNING_NOTE_MAX = 500 \* 1024;/.test(worker) && noteFn.includes('LEARNING_NOTE_MAX'),
+  'note length is capped, with a message pointing at the upload path instead');
+
+// Windows/Office desktop: a bare \n opens as one long line in Notepad, and a
+// BOM-less non-ASCII file opens as mojibake. Same reasoning as the CSV export.
+const crlf = "'﻿' + text.replace(/\\r\\n?/g, '\\n').replace(/\\n/g, '\\r\\n')";
+check(noteFn.includes(crlf),
+  'note text is written with CRLF line endings and a UTF-8 BOM');
+
+check(noteFn.includes('cols.categoryIsChoice && !cols.categoryAllowsCustom'),
+  'a note is subject to the same category rule as an upload');
+check(noteFn.includes("logAudit(env, adminEmail, 'learning-note-create'"),
+  'writing a note is audit-logged');
+check(mock.includes("'/api/admin/learning/note'"),
+  'the local mock implements the note endpoint too');
+
+check(learning.includes('id="lr-mode-toggle"') && learning.includes('data-mode="note"'),
+  'the dialog offers Upload a file / Write a note');
+check(extract(learning, 'setAddMode').includes("submitBtn.textContent = note ? 'Save note' : 'Upload'"),
+  'the dialog relabels itself for the mode it is in');
+check(learning.includes("uploadError.textContent = 'Write something in the body first.'"),
+  'the form refuses an empty body before sending');
+
 // ---------- 14. No cross-script global collisions ----------
 //
 // Every admin page loads render.js, then shared.js, then its own inline script,

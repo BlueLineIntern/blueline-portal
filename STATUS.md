@@ -1383,6 +1383,33 @@ Client portal is untouched and keeps its own look.
       column's Choice values, then opens a Graph **upload session** on the
       library's drive (`conflictBehavior: rename` — an upload never silently
       overwrites someone else's file of the same name).
+  - **Write a note** — the same dialog has an `Upload a file | Write a note`
+    toggle (added 2026-08-17). A note is a Title plus a Body typed in the app,
+    saved into the same library as a **`.txt` named after the title**. Written
+    procedure that starts life as "someone explaining how to do a thing" had
+    nowhere to go: not worth opening Word for, and "make a file elsewhere then
+    upload it" is how it never gets written down at all.
+    - `POST /api/admin/learning/note`. A **plain PUT to `:/content`, not the
+      chunked upload session** — that machinery (three round trips plus an
+      encrypted ticket to carry state between them) exists solely because a
+      training video can be 2 GB; a note is kilobytes. Capped at
+      `LEARNING_NOTE_MAX` (500 KB), with an error pointing at the upload path
+      for anything larger. Same `conflictBehavior: rename`, same
+      `applyLearningMetadata()` for Title/Category/Description, same category
+      rule, audit-logged as `learning-note-create`.
+    - The filename is derived from the title through `sanitizeLearningFilename`,
+      then `.txt` appended — with a trailing `.txt` stripped first so "Notes.txt"
+      doesn't become "Notes.txt.txt", and a title that sanitises away to nothing
+      (all punctuation) refused rather than saved as a file called `.txt`.
+    - Body is written with **CRLF line endings and a UTF-8 BOM**, for the same
+      reason the CSV export uses them: this lands on a Windows/Office desktop,
+      where a bare `\n` file can open as one long line and a BOM-less non-ASCII
+      file opens as mojibake.
+    - **One dialog, not two.** Sharing it keeps a single category picker — the
+      choices, the "+ Add a new category…" option and its validation would
+      otherwise be duplicated and have to be kept in step.
+    - Editing an existing note is **not** built: notes are edited in SharePoint,
+      like every other file in the library. The portal writes, it doesn't own.
   - **New categories can be typed in** when the library's Category column has
     SharePoint's **"Can add values manually"** ticked (added 2026-08-17). Graph
     reports that as `choice.allowTextEntry`; `resolveLearningColumns()` surfaces

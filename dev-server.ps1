@@ -2959,6 +2959,39 @@ while ($listener.IsListening) {
                 categoryAllowsCustom = $learningCategoryAllowsCustom
                 canUpload = $true; configured = $true }
         }
+        # Mirrors handleAdminLearningNote: a title + body saved as a .txt in the
+        # library. One request, no upload session - a note is kilobytes.
+        elseif ($path -eq '/api/admin/learning/note' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $b = Read-Body $ctx
+            $noteTitle = ([string]$b.title).Trim()
+            $noteBody = [string]$b.body
+            $noteCat = ([string]$b.category).Trim()
+            if (-not $noteTitle) { Send-Json $ctx 400 @{ error = 'A name is required' }; continue }
+            if (-not $noteBody.Trim()) { Send-Json $ctx 400 @{ error = 'Write something in the body first' }; continue }
+            if ($noteBody.Length -gt (500 * 1024)) {
+                Send-Json $ctx 400 @{ error = 'That note is too long - keep it under 500 KB, or upload it as a document' }; continue
+            }
+            # Same filename derivation as the worker: title -> sanitised base + .txt.
+            # A title that sanitises away to nothing is refused rather than
+            # producing a file called '.txt'.
+            $base = ($noteTitle -replace '["*:<>?|\/]', '-').Trim('. ')
+            $base = [Regex]::Replace($base, '.txtz', '', 'IgnoreCase')
+            if (-not $base) { Send-Json $ctx 400 @{ error = 'Give the note a name using letters or numbers' }; continue }
+            if ($noteCat -and -not $learningCategoryAllowsCustom -and $learningCategoryChoices -notcontains $noteCat) {
+                Send-Json $ctx 400 @{ error = "`"$noteCat`" is not one of the library's categories" }; continue
+            }
+            $script:lrCounter++
+            $rec = [ordered]@{
+                id = "note$($script:lrCounter)"; name = "$base.txt"; title = $noteTitle
+                category = $noteCat; description = ([string]$b.description).Trim()
+                webUrl = "https://example.invalid/$base.txt"; size = $noteBody.Length
+            }
+            $null = $learningResources.Add($rec)
+            Write-Audit $adminEmail 'learning-note-create' @{ name = $rec.name; category = $noteCat }
+            Send-Json $ctx 200 @{ resource = $rec; warning = '' }
+        }
         elseif ($path -eq '/api/admin/learning/upload' -and $method -eq 'POST') {
             if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $b = Read-Body $ctx
