@@ -3023,7 +3023,7 @@
             ${kvRow('Status', statusBadge(c.status))}
             ${kvRow('Portal account', c.hasAccount
               ? '<span class="badge badge-green">Registered</span>'
-              : '<span class="badge badge-gray">Not registered</span> <button type="button" class="btn btn-ghost btn-small" id="create-portal-invite">Create registration link</button>')}
+              : '<span class="badge badge-gray">Not registered</span> <button type="button" class="btn btn-primary btn-small" id="create-portal-invite">Create Account</button>')}
           </div>
         </div>
         <div class="panel">
@@ -3063,19 +3063,22 @@
     });
     const inviteBtn = document.getElementById('create-portal-invite');
     if (inviteBtn) inviteBtn.addEventListener('click', async () => {
+      const accountWindow = window.open('', '_blank');
+      if (accountWindow) {
+        accountWindow.opener = null;
+        accountWindow.document.title = 'Opening client registration…';
+        accountWindow.document.body.textContent = 'Opening client registration…';
+      }
       inviteBtn.disabled = true;
       const oldText = inviteBtn.textContent;
-      inviteBtn.textContent = 'Creating…';
+      inviteBtn.textContent = 'Opening…';
       try {
         const result = await api(`/api/admin/contacts/${encodeURIComponent(email)}/portal-invite`, { method: 'POST' });
-        const link = `${location.origin}/?invite=${encodeURIComponent(result.invite)}`;
-        try {
-          await navigator.clipboard.writeText(link);
-          alert('Registration link copied to your clipboard. It expires in 7 days and can be used once.');
-        } catch {
-          prompt('Copy this one-time registration link. It expires in 7 days:', link);
-        }
+        const link = `${location.origin}/?invite=${encodeURIComponent(result.invite)}&email=${encodeURIComponent(result.email || email)}`;
+        if (accountWindow) accountWindow.location.replace(link);
+        else location.href = link;
       } catch (err) {
+        if (accountWindow) accountWindow.close();
         alert(err.message);
       } finally {
         inviteBtn.disabled = false;

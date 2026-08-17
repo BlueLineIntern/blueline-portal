@@ -7,14 +7,22 @@ const API_BASE_URL = "";
 
 const SESSION_KEY = "blueline_session";
 const REGISTRATION_INVITE_KEY = "blueline_registration_invite";
+const REGISTRATION_EMAIL_KEY = "blueline_registration_email";
 const inviteUrl = new URL(location.href);
 const inviteFromUrl = inviteUrl.searchParams.get("invite") || "";
+const invitedEmailFromUrl = inviteUrl.searchParams.get("email") || "";
 if (inviteFromUrl) {
+  // A fresh advisor-created registration takes precedence over any client who
+  // happened to be signed in on this browser already.
+  localStorage.removeItem(SESSION_KEY);
   sessionStorage.setItem(REGISTRATION_INVITE_KEY, inviteFromUrl);
+  if (invitedEmailFromUrl) sessionStorage.setItem(REGISTRATION_EMAIL_KEY, invitedEmailFromUrl.trim().toLowerCase());
   inviteUrl.searchParams.delete("invite");
+  inviteUrl.searchParams.delete("email");
   history.replaceState(null, "", inviteUrl.pathname + inviteUrl.search + inviteUrl.hash);
 }
 const REGISTRATION_INVITE = inviteFromUrl || sessionStorage.getItem(REGISTRATION_INVITE_KEY) || "";
+const REGISTRATION_EMAIL = invitedEmailFromUrl || sessionStorage.getItem(REGISTRATION_EMAIL_KEY) || "";
 
 function getSession() {
   const raw = localStorage.getItem(SESSION_KEY);
@@ -261,6 +269,17 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
   });
 });
 
+if (REGISTRATION_INVITE) {
+  const registerTab = document.querySelector('.tab-btn[data-tab="register"]');
+  if (registerTab) registerTab.click();
+  const emailInput = document.getElementById("register-email");
+  if (emailInput && REGISTRATION_EMAIL) {
+    emailInput.value = REGISTRATION_EMAIL.trim().toLowerCase();
+    emailInput.readOnly = true;
+    emailInput.title = "This account invitation is tied to this email address.";
+  }
+}
+
 document.getElementById("register-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const errorEl = document.getElementById("register-error");
@@ -277,6 +296,7 @@ document.getElementById("register-form").addEventListener("submit", async (e) =>
     });
     setSession({ token: data.token, name: data.name, email: data.email });
     sessionStorage.removeItem(REGISTRATION_INVITE_KEY);
+    sessionStorage.removeItem(REGISTRATION_EMAIL_KEY);
     await enterApp();
   } catch (err) {
     errorEl.textContent = err.message;
