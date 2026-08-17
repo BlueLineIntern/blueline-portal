@@ -188,6 +188,9 @@ function ConvertTo-CompliancePayload($it) {
     return $o
 }
 $contactStatuses = @('prospect', 'onboarding', 'active', 'inactive')
+# Mirrors CONTACT_CATEGORIES in worker.js. App-only: no SharePoint column, and
+# 'hnw' is the default applied on READ for records that predate the field.
+$contactCategories = @('hnw', 'business', 'vendor')
 $tasks = @{}   # id -> task record (listings sort by createdAt, so plain hashtable is fine)
 $notes = @{}   # id -> note record
 $timelineLog = [System.Collections.ArrayList]::new()  # client history entries (also the activity feed)
@@ -2062,6 +2065,8 @@ while ($listener.IsListening) {
                 if ($visibleWorkspaces -notcontains $owner) { continue }
                 $merged[$rec.email] = [ordered]@{
                     email = $rec.email; name = $rec.name; preferredName = $rec.preferredName; status = $rec.status
+                    # Defaulted on READ, mirroring buildContactList in worker.js.
+                    category = if ($contactCategories -contains ([string]$rec.category)) { [string]$rec.category } else { 'hnw' }
                     archived = [bool]$rec.archived
                     household = $rec.household; advisor = $rec.advisor; phone = $rec.phone
                     workEmail = $rec.workEmail; workPhone = $rec.workPhone; address = $rec.address; gender = $rec.gender
@@ -2076,7 +2081,7 @@ while ($listener.IsListening) {
                 if (-not $entry -and $visibleWorkspaces -notcontains $frankAdminEmail) { continue }
                 if (-not $entry) {
                     $entry = [ordered]@{
-                        email = $u.email; name = ''; preferredName = ''; status = 'active'
+                        email = $u.email; name = ''; preferredName = ''; status = 'active'; category = 'hnw'
                         archived = $false
                         household = ''; advisor = ''; phone = ''
                         workEmail = ''; workPhone = ''; address = ''; gender = ''
@@ -2322,17 +2327,20 @@ while ($listener.IsListening) {
             if ($body.PSObject.Properties['status'] -and $contactStatuses -notcontains [string]$body.status) {
                 Send-Json $ctx 400 @{ error = 'Invalid status' }; continue
             }
+            if ($body.PSObject.Properties['category'] -and $contactCategories -notcontains [string]$body.category) {
+                Send-Json $ctx 400 @{ error = 'Invalid category' }; continue
+            }
             $rec = $contacts[$target]
             if ($rec -and (Get-RecordWorkspace $rec) -ne $workspace) { Send-Json $ctx 404 @{ error = 'Contact not found in this workspace' }; continue }
             if (-not $rec) {
-                $rec = [ordered]@{ email = $target; name = ''; preferredName = ''; status = 'prospect'; household = ''
+                $rec = [ordered]@{ email = $target; name = ''; preferredName = ''; status = 'prospect'; category = 'hnw'; household = ''
                     advisor = ''; phone = ''; workEmail = ''; workPhone = ''; address = ''; gender = ''
                     tags = @(); importantDates = @(); workspace = $workspace; createdAt = (Get-Date).ToString('o'); updatedAt = $null }
             }
             # advisor is a free-typed name (e.g. "Fred Sabin"), not tied to an
             # admin account email -- mirrors worker.js's sanitizeContactFields,
             # which never validates it against $adminPasswords.
-            foreach ($f in @('name', 'preferredName', 'status', 'household', 'advisor', 'phone', 'workEmail', 'workPhone', 'address', 'gender')) {
+            foreach ($f in @('name', 'preferredName', 'status', 'category', 'household', 'advisor', 'phone', 'workEmail', 'workPhone', 'address', 'gender')) {
                 if ($body.PSObject.Properties[$f]) { $rec[$f] = ([string]$body.$f).Trim() }
             }
             if ($body.PSObject.Properties['tags']) { $rec.tags = @($body.tags | Where-Object { $_ } | ForEach-Object { ([string]$_).Trim() }) }

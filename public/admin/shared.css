@@ -168,6 +168,19 @@ a:hover { text-decoration: underline; }
 .palette-result .pr-sub { color: var(--muted); font-size: var(--fs-sm); }
 .palette-empty { color: var(--muted); padding: var(--sp-5); text-align: center; }
 
+/* Segmented toggle. Board/List on Operations, HNW/Businesses/Vendors on the
+   Clients and Prospects lists. Lives here rather than page-local in each of them
+   because three pages now want the identical control, and the copies had already
+   started to drift. */
+.view-toggle { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+.view-toggle button {
+  border: none; background: var(--panel); color: var(--muted); padding: 7px 15px;
+  font-family: var(--font-sans); font-size: var(--fs-sm); font-weight: var(--fw-semibold);
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.view-toggle button + button { border-left: 1px solid var(--border-strong); }
+.view-toggle button.active { background: var(--navy); color: #fff; }
+
 /* Searchable contact picker (initContactPicker in shared.js). The <select> it
    wraps stays in the DOM as the value carrier and is hidden here rather than
    removed — see the comment on that function for why. Visually it borrows the

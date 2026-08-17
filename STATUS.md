@@ -492,6 +492,37 @@ Client portal is untouched and keeps its own look.
   - `?seg=prospects` is what the Prospects nav entry and the dashboard's
     Prospects stat tile use; `openProfile()` sets the segment from the record so
     Back from a prospect lands on the right list however the profile was reached.
+- **HNW / Businesses / Vendors lens** (`.view-toggle` slider on both sides, added
+  2026-08-14). What KIND of contact, independent of pipeline stage — a business or
+  a vendor can be a prospect as easily as a client, so the lens is orthogonal to
+  the Clients/Prospects split and the same setting applies on both sides
+  (persisted per admin in `blueline_contact_category:<email>`).
+  - Backed by a real field: **`category`** on the contact record, validated
+    against `CONTACT_CATEGORIES` (`hnw` | `business` | `vendor`) server-side, with
+    a dropdown on both variants of the contact form and a **Category column** in
+    the CSV export/import (a typo'd value is rejected, not filed under the wrong
+    lens).
+  - **App-only, deliberately NOT in `contactFieldsFromSharePoint`/`ToSharePoint`**
+    — the Contacts list has no column for it. Both SharePoint pull sites spread
+    the existing record *before* the SharePoint fields, so a key with no column
+    survives a pull; this is the same arrangement `importantDates` and `archived`
+    rely on. Adding it to the field list without adding a column would blank it
+    on every sync — the bug class that already ate the key-document dates once.
+  - **`hnw` is the default, applied on READ** (`buildContactList`, mirrored by
+    `contactCategory()` client-side), not by a migration write. Every contact in
+    the book predates the field, so defaulting on read means no bulk rewrite and
+    no half-finished migration — and nobody falls out of all three positions.
+  - **A grouping's kind IS its category**: a family is a HNW household, a company
+    is a business, and **Vendors shows no groupings at all**. So the New Family /
+    New Company buttons and the people/families/companies type filter appear only
+    where they mean something — `renderSegmentChrome()` always ends by calling
+    `renderCategoryChrome()`, because both touch those controls and the order has
+    to be guaranteed rather than left to each call site.
+  - Re-categorising a contact, or opening one from search / Recently Viewed,
+    **moves the lens to follow them** — otherwise they drop off the list they
+    were just edited on, or Back lands somewhere they aren't.
+  - `.view-toggle` moved from two page-local copies into **shared.css**, since
+    Operations (Board/List) and both Contacts sides now use the identical control.
   - **`prospect` is no longer selectable in the New/Edit Contact form** — it is
     still a valid stored status, the dropdown just dropped it. A person becomes a
     prospect by being added from the Prospects side, and stops being one via

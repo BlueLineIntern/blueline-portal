@@ -6,7 +6,7 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Contacts — BlueLine Admin</title>
 <link rel="stylesheet" href="/assets/style.css" />
-<link rel="stylesheet" href="/admin/shared.css?v=20260814-2" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260814-3" />
 <style>
   /* Client detail (module cards + charts come from style.css/render.js) */
   .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -273,6 +273,15 @@
            Additional Info come with them. The in-page toggle that used to sit
            here is gone; the sidebar is the only switch, so there is exactly one
            control for which side you are on. -->
+
+      <!-- What KIND of contact, independent of pipeline stage: a business or a
+           vendor can be a prospect or a client. One setting shared by both
+           sides, so the lens you picked survives moving between them. -->
+      <div class="view-toggle" id="category-toggle">
+        <button type="button" data-category="hnw" class="active">HNW</button>
+        <button type="button" data-category="business">Businesses</button>
+        <button type="button" data-category="vendor">Vendors</button>
+      </div>
 
       <!-- Outside .list-cols so the table panel starts at the same y as the
            rail's first panel; inside .list-main it pushed the table down by
@@ -572,6 +581,16 @@
         <input type="text" id="cm-preferredName" />
       </div>
     </div>
+    <!-- Shown on BOTH variants of this form: a business or a vendor can be a
+         prospect as easily as a client, so this is independent of status. -->
+    <div class="field">
+      <label for="cm-category">Category</label>
+      <select id="cm-category">
+        <option value="hnw">HNW — individual or family</option>
+        <option value="business">Business</option>
+        <option value="vendor">Vendor — service provider, not advised</option>
+      </select>
+    </div>
     <!-- Prospect is no longer selectable here: a person is a prospect because
          they were added on the Prospects side of the toggle, and stops being one
          via "Convert to client" on their profile. Leaving it in the dropdown
@@ -747,7 +766,7 @@
 </div>
 
 <script src="/assets/render.js"></script>
-<script src="/admin/shared.js?v=20260814-2"></script>
+<script src="/admin/shared.js?v=20260814-3"></script>
 <script>
   // Two sidebar entries, one page. `activePage` stays 'contacts' so the employee
   // workspace filter and its saved-filter key are shared across both sides;
@@ -766,9 +785,25 @@
   let searchText = '';
   let showArchived = false;
   let typeFilter = 'all';           // all | people | families | companies
-  // Which side of the Clients / Prospects toggle is showing. Not a second data
-  // set: see isProspect() — it's a read of contact.status.
+  // Which side of the Clients / Prospects sidebar entries is showing. Not a
+  // second data set: see isProspect() — it's a read of contact.status.
   let segment = 'clients';          // clients | prospects
+
+  // The HNW / Businesses / Vendors lens. Persisted per admin, and shared by both
+  // sides: "show me businesses" is a way of looking at the book, not a property
+  // of which tab you happen to be on.
+  const CONTACT_CATEGORIES = ['hnw', 'business', 'vendor'];
+  const CATEGORY_KEY = `blueline_contact_category:${SESSION.email || ''}`;
+  let categoryFilter = (() => {
+    try {
+      const saved = localStorage.getItem(CATEGORY_KEY);
+      if (CONTACT_CATEGORIES.includes(saved)) return saved;
+    } catch { /* private mode: fall through to the default */ }
+    return 'hnw';
+  })();
+  const CATEGORY_LABEL = { hnw: 'HNW', business: 'Businesses', vendor: 'Vendors' };
+  // Singular, for a heading or an empty state where "Businesses contact" reads wrong.
+  const CATEGORY_NOUN = { hnw: 'HNW contact', business: 'business', vendor: 'vendor' };
   const activeTags = new Set();     // tag filter; empty = no tag constraint
   // Which groupings are open. Held outside the render so the 20s background
   // poll can't collapse a family the advisor just expanded.
@@ -825,6 +860,21 @@
   // same default here keeps the two sides of the toggle agreeing on the total.
   function isProspect(c) {
     return (c && c.status ? c.status : 'prospect') === 'prospect';
+  }
+
+  // Same defaulting rule the server applies on read (CONTACT_CATEGORIES in
+  // worker.js): a record that predates the field reads as HNW rather than
+  // falling out of every position of the slider.
+  function contactCategory(c) {
+    const v = c && c.category;
+    return CONTACT_CATEGORIES.includes(v) ? v : 'hnw';
+  }
+
+  // A grouping's kind IS its category: a family is a household of individuals,
+  // a company is a business. Vendors are individual records — you don't advise a
+  // vendor household — so that position shows no groupings at all.
+  function groupCategory(h) {
+    return groupKind(h) === 'company' ? 'business' : 'hnw';
   }
 
   function clientIsAssigned(client, key) {
@@ -1094,6 +1144,7 @@
     // So the Prospects side is a flat list of people and nothing else.
     const groups = (prospects || typeFilter === 'people') ? [] : allHouseholds.filter((h) =>
       (showArchived ? h.archived : !h.archived)
+      && groupCategory(h) === categoryFilter
       && (!kindWanted || groupKind(h) === kindWanted)
       && (!q || householdMatches(h, q))
       && matchesTags(h));
@@ -1103,6 +1154,7 @@
 
     const inView = (c) => (showArchived ? c.archived : !c.archived)
       && isProspect(c) === prospects
+      && contactCategory(c) === categoryFilter
       && (!q || contactMatches(c, q))
       && matchesTags(c);
     // Members are listed because their grouping is in view, so they are not
@@ -1195,14 +1247,19 @@
     // those still render nested under it (same rule as an archived member: the
     // grouping's roster is the grouping's roster, and dropping the row would
     // make the member count disagree with the rows beneath it).
+    // Scoped to the segment AND the category lens, so the denominator matches
+    // the control set the advisor can actually see. Counting across the whole
+    // book would read as a filter nobody turned on.
     const inSegment = (r) => (showArchived ? r.archived : !r.archived);
     const total = segment === 'prospects'
-      ? allContacts.filter((c) => inSegment(c) && isProspect(c)).length
-      : allHouseholds.filter(inSegment).length
-        + allContacts.filter((c) => inSegment(c) && (!isProspect(c) || groupsForEmail(c.email).length)).length;
+      ? allContacts.filter((c) => inSegment(c) && isProspect(c) && contactCategory(c) === categoryFilter).length
+      : allHouseholds.filter((h) => inSegment(h) && groupCategory(h) === categoryFilter).length
+        + allContacts.filter((c) => inSegment(c) && contactCategory(c) === categoryFilter
+          && (!isProspect(c) || groupsForEmail(c.email).length)).length;
+    const lens = CATEGORY_LABEL[categoryFilter];
     const emptyMsg = segment === 'prospects'
-      ? 'No prospects yet — add your first with Add Prospect.'
-      : 'No contacts yet — add your first with New Person, New Family or New Company.';
+      ? `No ${CATEGORY_NOUN[categoryFilter]} prospects yet — add one with Add Prospect, or switch the ${lens} filter above.`
+      : `No ${CATEGORY_NOUN[categoryFilter]} clients yet — add one with New Person${categoryFilter === 'business' ? ' or New Company' : ''}, or switch the ${lens} filter above.`;
     body.innerHTML = all.length
       ? all.map((r) => r.html).join('')
       : `<tr><td colspan="4" class="empty">${total ? 'Nothing matches.' : emptyMsg}</td></tr>`;
@@ -1300,6 +1357,11 @@
     ['new-family-btn', 'new-company-btn', 'new-contact-btn', 'type-filter', 'type-legend']
       .forEach((id) => document.getElementById(id).classList.toggle('hidden', prospects));
     document.getElementById('new-prospect-btn').classList.toggle('hidden', !prospects);
+    // Always last: the category lens narrows what the segment just decided
+    // (which family/company buttons apply, whether groupings exist at all), so
+    // it has to run after. Called from here rather than beside every
+    // renderSegmentChrome() call site, which is how the two got out of step.
+    renderCategoryChrome();
   }
 
   function setSegment(next) {
@@ -1313,6 +1375,43 @@
     renderStatusFilters();
     renderContacts();
   }
+
+  // ---------- HNW / Businesses / Vendors lens ----------
+
+  function renderCategoryChrome() {
+    document.querySelectorAll('#category-toggle button').forEach((b) =>
+      b.classList.toggle('active', b.dataset.category === categoryFilter));
+    // Groupings are families and companies; Vendors has neither, so the control
+    // for picking between them has nothing to act on there. (It is already
+    // hidden on the Prospects side for the same reason.)
+    const noGroups = categoryFilter === 'vendor';
+    ['new-family-btn', 'new-company-btn', 'type-filter', 'type-legend'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (noGroups) el.classList.add('hidden');
+    });
+    // A family is a HNW household and a company is a business, so only one of
+    // those two buttons makes sense per lens.
+    if (!noGroups && segment === 'clients') {
+      document.getElementById('new-family-btn').classList.toggle('hidden', categoryFilter !== 'hnw');
+      document.getElementById('new-company-btn').classList.toggle('hidden', categoryFilter !== 'business');
+    }
+  }
+
+  function setCategory(next) {
+    if (!CONTACT_CATEGORIES.includes(next) || next === categoryFilter) return;
+    categoryFilter = next;
+    try { localStorage.setItem(CATEGORY_KEY, next); } catch { /* private mode: just won't persist */ }
+    // Groupings differ per lens, so a set of expanded ids from the previous one
+    // is meaningless here.
+    expandedGroups.clear();
+    renderSegmentChrome(); // ends by calling renderCategoryChrome()
+    renderStatusFilters();
+    renderContacts();
+  }
+
+  document.querySelectorAll('#category-toggle button').forEach((b) =>
+    b.addEventListener('click', () => setCategory(b.dataset.category))
+  );
 
   document.getElementById('tag-filter').addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-tag]');
@@ -1331,7 +1430,7 @@
   // ---------- Import / export ----------
 
   const IO_COLUMNS = [
-    'Type', 'Name', 'Email', 'PreferredName', 'Status', 'Advisor',
+    'Type', 'Name', 'Email', 'PreferredName', 'Status', 'Category', 'Advisor',
     'Phone', 'WorkPhone', 'WorkEmail', 'Gender', 'Address', 'Household', 'Tags',
     // Key-document completion dates. Stored on the FAMILY/COMPANY (see
     // KEY_DOCUMENTS), so on a person's row these show — and on import set — the
@@ -1395,7 +1494,7 @@
       .forEach((c) => {
         const kd = (groupForContact(c) || {}).keyDocuments || {};
         lines.push([
-          'Person', c.name, c.email, c.preferredName, c.status, c.advisor,
+          'Person', c.name, c.email, c.preferredName, c.status, contactCategory(c), c.advisor,
           c.phone, c.workPhone, c.workEmail, c.gender, c.address, c.household,
           (c.tags || []).join('; '),
           kd.ips || '', kd.advisoryAgreement || '',
@@ -1410,7 +1509,7 @@
         // keyed on ids, not something to reconstruct from a spreadsheet cell).
         const hkd = h.keyDocuments || {};
         lines.push([
-          kindMeta(h).label, h.name, h.email, '', h.status, h.advisorRep,
+          kindMeta(h).label, h.name, h.email, '', h.status, '', h.advisorRep,
           '', '', '', '', '', (h.members || []).map((m) => m.email).join('; '),
           (h.tags || []).join('; '),
           hkd.ips || '', hkd.advisoryAgreement || '',
@@ -1484,6 +1583,9 @@
     // reader to trust it.
     document.getElementById('cm-status').value =
       modalProspect ? 'onboarding' : contact && contact.status && contact.status !== 'prospect' ? contact.status : 'active';
+    // A new contact starts in whichever lens is on screen — you are almost
+    // always adding the kind of contact you are currently looking at.
+    document.getElementById('cm-category').value = contact ? contactCategory(contact) : categoryFilter;
     document.getElementById('cm-household').value = contact ? contact.household || '' : '';
     document.getElementById('cm-phone').value = contact ? contact.phone || '' : '';
     document.getElementById('cm-workEmail').value = contact ? contact.workEmail || '' : '';
@@ -1760,6 +1862,10 @@
   }
 
   const IMPORT_STATUSES = ['prospect', 'onboarding', 'active', 'inactive'];
+  // Rejected rather than coerced, like Status: a typo'd Category would silently
+  // file the contact under the wrong lens, where nobody would think to look.
+  // Absent is fine — the server defaults it to hnw on read.
+  const IMPORT_CATEGORIES = ['hnw', 'business', 'vendor'];
   const FAMILY_ROLES = ['head', 'spouse', 'partner', 'child', 'dependent', 'other'];
   const COMPANY_ROLES = ['primary', 'owner', 'officer', 'employee', 'other'];
 
@@ -1947,10 +2053,17 @@
             reason: `Unknown Status "${status}" — use ${IMPORT_STATUSES.join(', ')}` });
           return;
         }
+        const category = get('category').toLowerCase();
+        if (category && !IMPORT_CATEGORIES.includes(category)) {
+          items.push({ rowNo, type, name, email, action: 'skip',
+            reason: `Unknown Category "${category}" — use ${IMPORT_CATEGORIES.join(', ')}` });
+          return;
+        }
 
         const fields = {};
         if (name) fields.name = name;
         if (status) fields.status = status;
+        if (category) fields.category = category;
         if (get('phone')) fields.phone = get('phone');
         if (get('advisor')) fields.advisor = get('advisor');
         if (get('address')) fields.address = get('address');
@@ -2248,12 +2361,12 @@
 
   document.getElementById('import-template').addEventListener('click', () => {
     const csv = [
-      'Type,Name,Email,Phone,Status,Household,Household Type,Role,Advisor,Tags,IPS,AdvisoryAgreement',
-      'Family,Smith,,,active,,,,,,2026-03-01,2026-02-14',
-      'Person,John Smith,john@example.com,555-0100,active,Smith,Family,head,Fred Sabin,Retired;Trust,,',
-      'Person,Jane Smith,jane@example.com,555-0101,active,Smith,Family,spouse,Fred Sabin,,,',
-      'Company,Acme Holdings,,,prospect,,,,,Entity,,',
-      'Person,Dana Reed,dana@acme.example.com,555-0102,prospect,Acme Holdings,Company,owner,Jenn Young,,3/1/2026,2/14/2026',
+      'Type,Name,Email,Phone,Status,Category,Household,Household Type,Role,Advisor,Tags,IPS,AdvisoryAgreement',
+      'Family,Smith,,,active,,,,,,,2026-03-01,2026-02-14',
+      'Person,John Smith,john@example.com,555-0100,active,hnw,Smith,Family,head,Fred Sabin,Retired;Trust,,',
+      'Person,Jane Smith,jane@example.com,555-0101,active,hnw,Smith,Family,spouse,Fred Sabin,,,',
+      'Company,Acme Holdings,,,prospect,,,,,,Entity,,',
+      'Person,Dana Reed,dana@acme.example.com,555-0102,prospect,business,Acme Holdings,Company,owner,Jenn Young,,3/1/2026,2/14/2026',
     ].join('\r\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -2546,6 +2659,7 @@
       importantDates,
       name: document.getElementById('cm-name').value.trim(),
       preferredName: document.getElementById('cm-preferredName').value.trim(),
+      category: document.getElementById('cm-category').value,
       phone: document.getElementById('cm-phone').value.trim(),
       workPhone: document.getElementById('cm-workPhone').value.trim(),
       workEmail: document.getElementById('cm-workEmail').value.trim(),
@@ -2576,6 +2690,12 @@
       // into a segment the advisor isn't looking at.
       if (wasProspect) segment = 'prospects';
       else if (segment === 'prospects') segment = 'clients';
+      // Same for the lens: changing someone's category to Vendor while looking
+      // at HNW would drop them off the list they were just edited on.
+      if (payload.category !== categoryFilter) {
+        categoryFilter = payload.category;
+        try { localStorage.setItem(CATEGORY_KEY, categoryFilter); } catch { /* won't persist */ }
+      }
       renderSegmentChrome();
       await loadData();
       if (!modalEmail) openProfile(email);
@@ -2593,7 +2713,12 @@
     // search-palette hit, or the sidebar's Recently Viewed. setSegment()
     // no-ops when it already matches, so this is free in the common case.
     const opening = allContacts.find((x) => x.email === email);
-    if (opening) setSegment(isProspect(opening) ? 'prospects' : 'clients');
+    if (opening) {
+      setSegment(isProspect(opening) ? 'prospects' : 'clients');
+      // And the lens, for the same reason: a vendor reached from search or
+      // Recently Viewed must not send Back to an HNW list they aren't in.
+      setCategory(contactCategory(opening));
+    }
     activeTab = 'overview';
     editingNoteId = null;
     // Both of these are per-contact and fetched on demand. Cleared here so
@@ -2705,6 +2830,7 @@
     }).join('');
     document.getElementById('detail-badges').innerHTML =
       statusBadge(c.status) +
+      ` <span class="badge badge-slate">${escapeHtml(CATEGORY_LABEL[contactCategory(c)])}</span>` +
       (c.archived ? ' <span class="badge badge-gray">Archived</span>' : '') +
       groupChips +
       (c.tags || []).map((t) => ` <span class="chip">${escapeHtml(t)}</span>`).join('');
@@ -2997,7 +3123,7 @@
     assignmentCard.classList.remove('hidden');
     const m = c.modules || {};
     detailBody.innerHTML =
-      clientFlagsHtml(m) + CATEGORIES.map((cat) => categorySectionHtml(cat, m, c)).join('');
+      clientFlagsHtml(m) + CONTACT_CATEGORIES.map((cat) => categorySectionHtml(cat, m, c)).join('');
     // Let the first module card flow onto page 1 under the header (it may be
     // taller than the space left below the section headings; without this a
     // chart-heavy first card gets bumped whole to page 2, leaving page 1 blank).
@@ -4523,7 +4649,7 @@
   // ---------- Module assignment editor ----------
 
   function assignmentGroups() {
-    return CATEGORIES.map((cat) => {
+    return CONTACT_CATEGORIES.map((cat) => {
       if (cat.type === 'onboarding') {
         return {
           title: cat.title,

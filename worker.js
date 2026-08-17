@@ -4342,6 +4342,24 @@ async function handleAdminComplianceImport(request, env, cors) {
 // the merged listing with sensible defaults.
 const CONTACT_STATUSES = ['prospect', 'onboarding', 'active', 'inactive'];
 
+// What KIND of contact this is, independent of where they are in the pipeline —
+// a business can be a prospect or a client, and so can a vendor. Drives the
+// HNW / Businesses / Vendors slider on both the Clients and Prospects lists.
+//
+// **App-only: deliberately NOT in contactFieldsFromSharePoint/ToSharePoint.**
+// The Contacts list has no column for it, and both pull sites spread the
+// existing record BEFORE the SharePoint fields, so an app-only key survives a
+// pull — the same arrangement importantDates and archived rely on. Adding it to
+// the SharePoint field list without adding a column would blank it on every
+// sync.
+//
+// 'hnw' is the default for a record that has never been categorised, applied on
+// READ (see buildContactList) rather than by a migration write: every contact
+// predates the field, and defaulting on read means no bulk rewrite of the whole
+// book and no risk of a half-finished migration.
+const CONTACT_CATEGORIES = ['hnw', 'business', 'vendor'];
+const DEFAULT_CONTACT_CATEGORY = 'hnw';
+
 // Collect every key under a prefix (bounded by small-firm scale; the same
 // full-scan pattern the client listing already uses).
 async function listKeys(env, prefix) {
@@ -4363,6 +4381,10 @@ function sanitizeContactFields(body) {
   if (typeof body.status === 'string') {
     if (!CONTACT_STATUSES.includes(body.status)) return { error: 'Invalid status' };
     out.status = body.status;
+  }
+  if (typeof body.category === 'string') {
+    if (!CONTACT_CATEGORIES.includes(body.category)) return { error: 'Invalid category' };
+    out.category = body.category;
   }
   if (typeof body.household === 'string') out.household = body.household.trim().slice(0, 200);
   if (typeof body.phone === 'string') out.phone = body.phone.trim().slice(0, 50);
@@ -4429,6 +4451,8 @@ async function buildContactList(env, workspace = FRANK_ADMIN_EMAIL) {
       name: rec.name || '',
       preferredName: rec.preferredName || '',
       status: rec.status || 'prospect',
+      // Defaulted on read — see CONTACT_CATEGORIES for why this isn't a migration.
+      category: CONTACT_CATEGORIES.includes(rec.category) ? rec.category : DEFAULT_CONTACT_CATEGORY,
       archived: !!rec.archived,
       household: rec.household || '',
       advisor: rec.advisor || '',
@@ -4464,6 +4488,7 @@ async function buildContactList(env, workspace = FRANK_ADMIN_EMAIL) {
       name: '',
       preferredName: '',
       status: 'active', // an account holder you never categorized is a live client
+      category: DEFAULT_CONTACT_CATEGORY,
       archived: false,
       household: '',
       advisor: '',

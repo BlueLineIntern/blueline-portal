@@ -47,13 +47,19 @@ function extract(src, name) {
 // visibleRecords() reads page state (segment, searchText, typeFilter, …) and
 // two collections. Declared here as the globals it expects, then the real
 // function is evaluated against them.
+// categoryFilter defaults to 'hnw', matching the page. Every fixture below is
+// uncategorised, which contactCategory() reads as 'hnw' — so the segment
+// assertions in this section exercise the split, not the lens. The lens gets its
+// own fixtures in section 13.
 const scope = {
   segment: 'clients', searchText: '', typeFilter: 'all', showArchived: false,
-  activeTags: new Set(), allContacts: [], allHouseholds: [],
+  categoryFilter: 'hnw', activeTags: new Set(), allContacts: [], allHouseholds: [],
 };
-const helpers = ['isProspect', 'contactMatches', 'householdMatches', 'matchesTags', 'groupKind', 'groupsForEmail']
+const helpers = ['isProspect', 'contactCategory', 'groupCategory', 'contactMatches',
+  'householdMatches', 'matchesTags', 'groupKind', 'groupsForEmail']
   .map((n) => extract(html, n)).join('\n');
 const visibleRecords = new Function(`
+  const CONTACT_CATEGORIES = ['hnw', 'business', 'vendor'];
   ${Object.keys(scope).map((k) => `let ${k};`).join(' ')}
   ${helpers}
   ${extract(html, 'visibleRecords')}
@@ -587,5 +593,127 @@ check(!html.includes('id="segment-toggle"'),
   'the old in-page Clients/Prospects toggle is gone — the sidebar is the only switch');
 check(!/\.view-toggle \{/.test(html),
   'its now-unused CSS went with it');
+
+// ---------- 13. HNW / Businesses / Vendors lens ----------
+
+check(/const CONTACT_CATEGORIES = \['hnw', 'business', 'vendor'\];/.test(worker),
+  'the three categories are declared server-side');
+check(extract(worker, 'sanitizeContactFields').includes("if (!CONTACT_CATEGORIES.includes(body.category)) return { error: 'Invalid category' };"),
+  'an unknown category is rejected rather than stored');
+
+// App-only, exactly like importantDates. Both SharePoint pull sites spread the
+// existing record BEFORE the SharePoint fields, so a key with no column survives
+// a sync. Adding it to the field list without adding a column would blank it on
+// every pull — the same bug class as the key-document dates.
+const spFields = extract(worker, 'contactFieldsFromSharePoint');
+check(!spFields.includes('category'),
+  'category is app-only and stays out of the SharePoint field mapping');
+check(/const contact = \{\s*\.\.\.\(existing/.test(worker) && /\{\s*\.\.\.record,\s*\.\.\.contactFieldsFromSharePoint/.test(worker),
+  'both SharePoint pull sites spread the existing record first, so app-only keys survive');
+
+// Defaulted on READ, so every pre-existing contact appears under HNW without a
+// bulk migration write.
+check(worker.includes("category: CONTACT_CATEGORIES.includes(rec.category) ? rec.category : DEFAULT_CONTACT_CATEGORY,"),
+  'a contact that predates the field reads as HNW rather than vanishing from all three lenses');
+check(extract(html, 'contactCategory').includes("return CONTACT_CATEGORIES.includes(v) ? v : 'hnw';"),
+  'the client applies the same default, so the two cannot disagree');
+
+// A family is a HNW household, a company is a business, and vendors have no
+// grouping at all.
+check(extract(html, 'groupCategory').includes("groupKind(h) === 'company' ? 'business' : 'hnw'"),
+  "a grouping's kind IS its category — family means HNW, company means business");
+
+// Run the real visibleRecords() across all three lenses on both sides.
+const lensRoster = [
+  { email: 'hnwc@x.com', name: 'HNW Client', status: 'active', category: 'hnw', tags: [] },
+  { email: 'bizc@x.com', name: 'Biz Client', status: 'active', category: 'business', tags: [] },
+  { email: 'venc@x.com', name: 'Vendor Client', status: 'active', category: 'vendor', tags: [] },
+  { email: 'hnwp@x.com', name: 'HNW Prospect', status: 'prospect', category: 'hnw', tags: [] },
+  { email: 'bizp@x.com', name: 'Biz Prospect', status: 'prospect', category: 'business', tags: [] },
+  { email: 'venp@x.com', name: 'Vendor Prospect', status: 'prospect', category: 'vendor', tags: [] },
+  // No category at all — every contact in the book looks like this today.
+  { email: 'old@x.com', name: 'Legacy Contact', status: 'active', tags: [] },
+];
+const lensGroups = [
+  { id: 'g-fam', kind: 'family', name: 'A Family', tags: [], members: [] },
+  { id: 'g-co', kind: 'company', name: 'A Company', tags: [], members: [] },
+];
+function lensRun(seg, cat) {
+  visibleRecords.set({ ...scope, segment: seg, categoryFilter: cat, allContacts: lensRoster, allHouseholds: lensGroups });
+  const r = visibleRecords.visibleRecords();
+  return { people: r.loose.map((c) => c.email).sort(), groups: r.groups.map((g) => g.id).sort() };
+}
+
+check(lensRun('clients', 'hnw').people.join(',') === 'hnwc@x.com,old@x.com',
+  'the HNW lens on Clients shows HNW clients and every uncategorised one');
+check(lensRun('clients', 'business').people.join(',') === 'bizc@x.com',
+  'the Businesses lens on Clients shows only business clients');
+check(lensRun('clients', 'vendor').people.join(',') === 'venc@x.com',
+  'the Vendors lens on Clients shows only vendor clients');
+check(lensRun('prospects', 'hnw').people.join(',') === 'hnwp@x.com',
+  'the same lens applies on the Prospects side');
+check(lensRun('prospects', 'vendor').people.join(',') === 'venp@x.com',
+  'a vendor prospect is reachable — vendors exist on both sides');
+
+check(lensRun('clients', 'hnw').groups.join(',') === 'g-fam',
+  'the HNW lens shows families');
+check(lensRun('clients', 'business').groups.join(',') === 'g-co',
+  'the Businesses lens shows companies');
+check(lensRun('clients', 'vendor').groups.length === 0,
+  'the Vendors lens shows no groupings at all');
+
+// Nobody may fall through every position — that is what makes this a lens rather
+// than three filters that can all miss.
+const reachedByLens = new Set(['hnw', 'business', 'vendor'].flatMap((cat) =>
+  lensRun('clients', cat).people.concat(lensRun('prospects', cat).people)));
+check(lensRoster.every((c) => reachedByLens.has(c.email)),
+  'every contact is reachable from exactly one lens position on one of the two sides');
+
+// Re-categorising or opening a contact outside the current lens must move the
+// lens, or they drop off the list they were just edited on.
+check(html.includes('if (payload.category !== categoryFilter) {'),
+  'saving a contact into a different category moves the lens to follow them');
+check(extract(html, 'openProfile').includes('setCategory(contactCategory(opening))'),
+  'opening a contact from search or Recently Viewed moves the lens to them');
+
+// The two chrome functions both touch the family/company buttons, so the order
+// has to be guaranteed rather than depend on each call site remembering.
+check(extract(html, 'renderSegmentChrome').trimEnd().endsWith('renderCategoryChrome();\n  }')
+  || /renderCategoryChrome\(\);\s*\}$/.test(extract(html, 'renderSegmentChrome').trim()),
+  'renderSegmentChrome always ends by applying the category chrome');
+
+// CSV round-trip: exporting then re-importing must not silently drop the field.
+check(html.includes("'Type', 'Name', 'Email', 'PreferredName', 'Status', 'Category', 'Advisor',"),
+  'Category is a CSV column, so export/import round-trips it');
+check(html.includes("const IMPORT_CATEGORIES = ['hnw', 'business', 'vendor'];")
+  && /Unknown Category/.test(html),
+  'a typo\'d Category on import is rejected, not filed under the wrong lens');
+
+// The control now lives in shared.css because three pages use it.
+check(/^\.view-toggle \{/m.test(fs.readFileSync(path.join(root, 'public/admin/shared.css'), 'utf8')),
+  '.view-toggle moved to shared.css, where Operations and Contacts both read it');
+check(!/\.view-toggle \{/.test(ops) && !/\.view-toggle \{/.test(html),
+  'neither page keeps a private copy of that CSS any more');
+
+// ---------- 14. No cross-script global collisions ----------
+//
+// Every admin page loads render.js, then shared.js, then its own inline script,
+// all as CLASSIC scripts sharing one top-level scope. A `const` in one that
+// collides with a `const` in another is a SyntaxError that kills the whole page,
+// and checking each block on its own cannot see it — which is exactly how a
+// `const CATEGORIES` in contacts.html met the one already in render.js.
+for (const page of fs.readdirSync(path.join(root, 'public/admin')).filter((f) => f.endsWith('.html'))) {
+  const src = fs.readFileSync(path.join(root, 'public/admin', page), 'utf8');
+  const externals = [...src.matchAll(/<script src="([^"?]+)/g)].map((m) => m[1]);
+  const inline = [...src.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  if (!externals.length && !inline.length) continue;
+  const combined = externals
+    .map((href) => fs.readFileSync(path.join(root, 'public', href.replace(/^\//, '')), 'utf8'))
+    .concat(inline)
+    .join('\n;\n');
+  let err = null;
+  try { new Function(combined); } catch (e) { err = e.message; }
+  check(!err, `${page}: its scripts share one scope and declare no colliding globals${err ? ` (${err})` : ''}`);
+}
 
 console.log(`\n${passed} prospect checks passed`);

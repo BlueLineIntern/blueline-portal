@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Tasks — BlueLine Admin</title>
-<link rel="stylesheet" href="/admin/shared.css?v=20260814-2" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260814-3" />
 <style>
   /* Board is a horizontal row of employee columns; the same task: records as
      the Tasks page, grouped by assignee. Board-only styling lives here; the
@@ -85,14 +85,8 @@
   .lists-add-row { display: flex; gap: 8px; }
   .lists-add-row .input, .lists-add-row select { flex: 1; }
 
-  /* Board / List view toggle */
-  .view-toggle { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
-  .view-toggle button {
-    border: none; background: var(--panel); color: var(--muted); padding: 7px 15px;
-    font-family: var(--font-sans); font-size: var(--fs-sm); font-weight: var(--fw-semibold); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
-  }
-  .view-toggle button + button { border-left: 1px solid var(--border-strong); }
-  .view-toggle button.active { background: var(--navy); color: #fff; }
+  /* Board / List view toggle: .view-toggle now lives in shared.css, since the
+     Clients and Prospects lists use the identical control. */
 
   /* List view. .task-done, .task-ready and the due-date urgency colours live in
      shared.css, so the list view and the contact Tasks tab can't drift apart
@@ -399,7 +393,7 @@
   </div>
 </div>
 
-<script src="/admin/shared.js?v=20260814-2"></script>
+<script src="/admin/shared.js?v=20260814-3"></script>
 <script>
   initShell('operations');
 
