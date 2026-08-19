@@ -39,19 +39,23 @@ $adminPasswords = @{
     'fsabin@blueline-advisors.com'  = 'dev-fsabin-pass'
     'jyoung@blueline-advisors.com'  = 'dev-jyoung-pass'
     'intern@blueline-advisors.com'  = 'dev-intern-pass'
+    'esullivan@blueline-advisors.com' = 'dev-esullivan-pass'
 }
 $frankAdminEmail = 'fsabin@blueline-advisors.com'
 $jennAdminEmail = 'jyoung@blueline-advisors.com'
 $internAdminEmail = 'intern@blueline-advisors.com'
+$ericAdminEmail = 'esullivan@blueline-advisors.com'
 $allAdminWorkspaces = '__all__'
 $adminWorkspaceAccess = @{
-    $frankAdminEmail = @('jyoung@blueline-advisors.com', 'intern@blueline-advisors.com')
+    $frankAdminEmail = @('jyoung@blueline-advisors.com', 'intern@blueline-advisors.com', 'esullivan@blueline-advisors.com')
 }
 $adminNames = @{
     'fsabin@blueline-advisors.com' = 'Frank'
     'jyoung@blueline-advisors.com' = 'Jenn'
     'intern@blueline-advisors.com' = 'Intern'
+    'esullivan@blueline-advisors.com' = 'Eric S'
 }
+$formerAdminNames = @{}
 $adminMfa = @{}      # email -> @{ secret; confirmed; backupCodes=@(@{hash;used}); createdAt }
 $adminPending = @{}  # pending token -> email (short-lived between password and 2nd factor)
 $contacts = @{}      # email -> CRM contact record (worker stores these encrypted in KV)
@@ -970,7 +974,10 @@ function Get-SessionEmail($ctx) {
 
 function Get-AdminEmail($ctx) {
     $auth = $ctx.Request.Headers['Authorization']
-    if ($auth -match '^Bearer\s+(.+)$') { return $adminSessions[$Matches[1]] }
+    if ($auth -match '^Bearer\s+(.+)$') {
+        $email = $adminSessions[$Matches[1]]
+        if ($email -and $adminPasswords.ContainsKey($email)) { return $email }
+    }
     return $null
 }
 
@@ -986,14 +993,19 @@ function Test-ContactWorkspace($email, $workspace) {
     return $workspace -eq $frankAdminEmail -and $users.ContainsKey($addr)
 }
 
-function Test-SupervisorAdmin($adminEmail) {
-    return $adminEmail -eq $frankAdminEmail -or $adminEmail -eq $jennAdminEmail -or $adminEmail -eq $internAdminEmail
+function Test-SharedViewManager($adminEmail) {
+    return $adminPasswords.ContainsKey($adminEmail) -and ($adminEmail -eq $frankAdminEmail -or @($adminWorkspaceAccess[$frankAdminEmail]) -contains $adminEmail)
+}
+
+function Test-SuperAdmin($adminEmail) {
+    return $adminEmail -eq $frankAdminEmail
 }
 
 function Get-AccessibleWorkspaces($adminEmail) {
     $frankMembers = @($adminWorkspaceAccess[$frankAdminEmail])
-    if (Test-SupervisorAdmin $adminEmail) {
-        return , @($adminPasswords.Keys | Where-Object { $_ -eq $frankAdminEmail -or $frankMembers -notcontains $_ })
+    if (Test-SharedViewManager $adminEmail) {
+        $owners = @(@($adminPasswords.Keys) + @($formerAdminNames.Keys) | Select-Object -Unique)
+        return , @($owners | Where-Object { $_ -eq $frankAdminEmail -or $formerAdminNames.ContainsKey($_) -or $frankMembers -notcontains $_ })
     }
     if ($frankMembers -contains $adminEmail) { return , @($frankAdminEmail) }
     return , @($adminEmail)
@@ -1004,7 +1016,7 @@ function Get-AdminWorkspace($ctx, $adminEmail) {
     $requested = ([string]$ctx.Request.Headers['X-Admin-Workspace']).Trim().ToLower()
     if (-not $requested) { $requested = $allowed[0] }
     $combinedPath = @('/api/admin/workspaces', '/api/admin/contacts', '/api/admin/households', '/api/admin/tasks') -contains $ctx.Request.Url.AbsolutePath
-    if ($requested -eq $allAdminWorkspaces -and (Test-SupervisorAdmin $adminEmail) -and $ctx.Request.HttpMethod -eq 'GET' -and $combinedPath) {
+    if ($requested -eq $allAdminWorkspaces -and (Test-SharedViewManager $adminEmail) -and $ctx.Request.HttpMethod -eq 'GET' -and $combinedPath) {
         return $allAdminWorkspaces
     }
     if ($allowed -contains $requested) { return $requested }
@@ -1361,7 +1373,7 @@ while ($listener.IsListening) {
             $body = Read-Body $ctx
             $pendingToken = [string]$body.pendingToken
             $email = $adminPending[$pendingToken]
-            if (-not $email) { Send-Json $ctx 401 @{ error = 'Session expired — please sign in again.' }; continue }
+            if (-not $email -or -not $adminPasswords.ContainsKey($email)) { Send-Json $ctx 401 @{ error = 'Session expired — please sign in again.' }; continue }
             $code = [string]$body.code
             if (-not $code) { Send-Json $ctx 400 @{ error = 'Enter the 6-digit code.' }; continue }
             $mfa = $adminMfa[$email]
@@ -1392,21 +1404,24 @@ while ($listener.IsListening) {
             $workspaces = @($allowed | ForEach-Object {
                 @{ owner = $_; name = $adminNames[$_]; own = ($_ -eq $adminEmail) }
             })
-            $admins = @($adminPasswords.Keys | ForEach-Object { @{ email = $_; name = $adminNames[$_]; supervisor = (Test-SupervisorAdmin $_) } })
+            $permanentManagers = @($frankAdminEmail, $jennAdminEmail, $internAdminEmail, $ericAdminEmail)
+            $admins = @($adminPasswords.Keys | ForEach-Object {
+                @{ email = $_; name = $adminNames[$_]; supervisor = (Test-SharedViewManager $_); permanentSharedView = ($permanentManagers -contains $_) }
+            })
             $grants = @{}
-            if (Test-SupervisorAdmin $adminEmail) {
+            if (Test-SharedViewManager $adminEmail) {
                 foreach ($owner in $adminPasswords.Keys) { $grants[$owner] = @($adminWorkspaceAccess[$owner]) }
             }
-            Send-Json $ctx 200 @{ you = $adminEmail; boss = (Test-SupervisorAdmin $adminEmail); sharedOwner = $frankAdminEmail; active = $active; workspaces = $workspaces; admins = $admins; grants = $grants }
+            Send-Json $ctx 200 @{ you = $adminEmail; boss = (Test-SharedViewManager $adminEmail); superAdmin = (Test-SuperAdmin $adminEmail); canManageSharedView = (Test-SharedViewManager $adminEmail); sharedOwner = $frankAdminEmail; active = $active; workspaces = $workspaces; admins = $admins; grants = $grants }
         }
         elseif ($path -eq '/api/admin/workspaces/access' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can manage workspace access' }; continue }
+            if (-not (Test-SharedViewManager $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only shared firm view managers can manage display access' }; continue }
             $body = Read-Body $ctx
             $owner = ([string]$body.owner).Trim().ToLower()
             if ($owner -ne $frankAdminEmail) { Send-Json $ctx 400 @{ error = "Employees can only be assigned to Frank's display" }; continue }
-            $members = @(@($jennAdminEmail, $internAdminEmail) + @($body.members | ForEach-Object { ([string]$_).Trim().ToLower() }) |
+            $members = @(@($jennAdminEmail, $internAdminEmail, $ericAdminEmail) + @($body.members | ForEach-Object { ([string]$_).Trim().ToLower() }) |
                 Where-Object { $_ -and $_ -ne $owner -and $adminPasswords.ContainsKey($_) } | Select-Object -Unique)
             $adminWorkspaceAccess[$owner] = $members
             Write-Audit $adminEmail 'workspace-access-changed' @{ owner = $owner; members = $members }
@@ -1574,7 +1589,7 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/portal-links' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can change firm-wide portal links' }; continue }
+            if (-not (Test-SharedViewManager $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only shared firm view managers can change firm-wide portal links' }; continue }
             $body = Read-Body $ctx
             if (-not $body -or $null -eq $body.links) { Send-Json $ctx 400 @{ error = 'links must be a list' }; continue }
             if (@($body.links).Count -gt 12) { Send-Json $ctx 400 @{ error = 'No more than 12 links' }; continue }
@@ -2369,12 +2384,47 @@ while ($listener.IsListening) {
                     $m = $adminMfa[$_]
                     @{ email = $_; name = $adminNames[$_]; mfaEnabled = [bool]($m -and $m.confirmed) }
                 })
-            Send-Json $ctx 200 @{ admins = $admins; you = $adminEmail; boss = (Test-SupervisorAdmin $adminEmail) }
+            Send-Json $ctx 200 @{ admins = $admins; you = $adminEmail; boss = (Test-SharedViewManager $adminEmail); canDeleteAdmins = (Test-SuperAdmin $adminEmail) }
+        }
+        elseif ($path -eq '/api/admin/admins' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            if (-not (Test-SharedViewManager $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only shared firm view managers can add admin accounts' }; continue }
+            $body = Read-Body $ctx
+            $email = ([string]$body.email).Trim().ToLower()
+            $name = ([string]$body.name).Trim()
+            $password = [string]$body.password
+            if (-not $email -or -not $name) { Send-Json $ctx 400 @{ error = 'Name and email are required' }; continue }
+            if ($password.Length -lt 10) { Send-Json $ctx 400 @{ error = 'Password must be at least 10 characters' }; continue }
+            if ($adminPasswords.ContainsKey($email)) { Send-Json $ctx 409 @{ error = 'An admin with this email already exists' }; continue }
+            $adminPasswords[$email] = $password
+            $adminNames[$email] = $name
+            $formerAdminNames.Remove($email)
+            Write-Audit $adminEmail 'create-admin' @{ email = $email; name = $name }
+            Send-Json $ctx 201 @{ email = $email; name = $name }
+        }
+        elseif ($path -match '^/api/admin/admins/(.+)$' -and $method -eq 'DELETE') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            if (-not (Test-SuperAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only Frank can remove admin accounts' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if ($target -eq $frankAdminEmail) { Send-Json $ctx 400 @{ error = 'The super-admin account cannot be removed' }; continue }
+            if (-not $adminPasswords.ContainsKey($target)) { Send-Json $ctx 404 @{ error = 'Not an admin account' }; continue }
+            $formerAdminNames[$target] = $adminNames[$target]
+            $adminPasswords.Remove($target)
+            $adminMfa.Remove($target)
+            foreach ($token in @($adminSessions.Keys | Where-Object { $adminSessions[$_] -eq $target })) { $adminSessions.Remove($token) }
+            foreach ($token in @($adminPending.Keys | Where-Object { $adminPending[$_] -eq $target })) { $adminPending.Remove($token) }
+            foreach ($owner in @($adminWorkspaceAccess.Keys)) {
+                $adminWorkspaceAccess[$owner] = @($adminWorkspaceAccess[$owner] | Where-Object { $_ -ne $target })
+            }
+            Write-Audit $adminEmail 'remove-admin' @{ target = $target }
+            Send-Json $ctx 200 @{ ok = $true; email = $target }
         }
         elseif ($path -match '^/api/admin/admins/(.+)/name$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can rename admin accounts' }; continue }
+            if (-not (Test-SharedViewManager $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only shared firm view managers can rename admin accounts' }; continue }
             $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
             if (-not $adminPasswords.ContainsKey($target)) { Send-Json $ctx 404 @{ error = 'Not an admin account' }; continue }
             $body = Read-JsonBody $ctx
@@ -2388,7 +2438,7 @@ while ($listener.IsListening) {
         elseif ($path -match '^/api/admin/mfa/reset/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can reset admin MFA' }; continue }
+            if (-not (Test-SharedViewManager $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only shared firm view managers can reset admin MFA' }; continue }
             $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
             if (-not $adminPasswords.ContainsKey($target)) { Send-Json $ctx 404 @{ error = 'Not an admin account' }; continue }
             $adminMfa.Remove($target)
@@ -2631,7 +2681,7 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/audit' -and $method -eq 'GET') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            if (-not (Test-SupervisorAdmin $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only firm supervisors can view the firm audit log' }; continue }
+            if (-not (Test-SharedViewManager $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only shared firm view managers can view the firm audit log' }; continue }
             $all = @($auditLog.ToArray())
             [array]::Reverse($all)  # newest first, mirroring the worker
             $limit = 10

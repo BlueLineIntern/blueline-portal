@@ -21,7 +21,8 @@
     <div class="panel" id="admins-card">
       <div class="panel-head"><h2>Admin Accounts</h2></div>
       <p class="hint">Two-factor status for each admin. If someone loses their authenticator and all backup
-      codes, reset their MFA here — they'll set up a new authenticator the next time they sign in.</p>
+      codes, reset their MFA here — they'll set up a new authenticator the next time they sign in. Frank is
+      the super-admin; removing admin accounts is the only action reserved exclusively for him.</p>
       <p class="panel-status" id="admins-status"></p>
       <div class="table-scroll">
         <table class="data-table">
@@ -44,9 +45,9 @@
 
     <div class="panel hidden" id="workspace-access-card">
       <div class="panel-head"><h2>Admin Display Access</h2></div>
-      <p class="hint">Frank, Jenn, and Intern manage the shared firm view. Selected employees work in that shared view and retain Compliance access. Anyone not selected works in a personal view; the supervisors can review it with the Employee filters on Contacts, Tasks, and Calendar.</p>
+      <p class="hint">Everyone checked below works in and can manage the shared firm view. Anyone not selected works in a personal view; shared firm view managers can review it with the Employee filters on Contacts, Tasks, and Calendar.</p>
       <div class="field">
-        <label>Employees using Frank's display</label>
+        <label>Admins managing the shared firm view</label>
         <div id="workspace-member-checks" style="display:flex; gap:var(--sp-3); flex-wrap:wrap; min-height:40px; align-items:center;"></div>
       </div>
       <div style="margin-top:var(--sp-4); display:flex; gap:var(--sp-3); align-items:center;">
@@ -211,7 +212,7 @@
   }
 
   // ---------- Admin accounts / MFA ----------
-  function renderAdmins(admins, you, boss) {
+  function renderAdmins(admins, you, boss, canDeleteAdmins) {
     const body = document.getElementById('admins-body');
     body.innerHTML = (admins || [])
       .map((a) => {
@@ -223,6 +224,7 @@
           ? `<div style="display:flex; gap:var(--sp-2); flex-wrap:wrap;">
               <button type="button" class="btn btn-ghost btn-small edit-admin-name-btn" data-email="${escapeHtml(a.email)}" data-name="${escapeHtml(a.name || staffLabel(a.email))}">Edit name</button>
               ${a.mfaEnabled ? `<button type="button" class="btn btn-ghost btn-small reset-mfa-btn" data-email="${escapeHtml(a.email)}">Reset MFA</button>` : ''}
+              ${canDeleteAdmins && !isYou ? `<button type="button" class="btn btn-danger btn-small remove-admin-btn" data-email="${escapeHtml(a.email)}" data-name="${escapeHtml(a.name || staffLabel(a.email))}">Remove admin</button>` : ''}
             </div>`
           : '<span class="cell-missing">—</span>';
         return `<tr><td>${escapeHtml(a.name || staffLabel(a.email))}</td><td>${escapeHtml(a.email)}${isYou ? ' <span class="cell-missing">(you)</span>' : ''}</td><td>${status}</td><td>${actions}</td></tr>`;
@@ -236,7 +238,7 @@
       // staffLabel() checks this map before falling back to a capitalized
       // email guess — populate it from each admin's stored name first.
       registerStaff((data.admins || []).filter((a) => a.name).map((a) => ({ id: a.email, name: a.name })));
-      renderAdmins(data.admins || [], data.you, data.boss);
+      renderAdmins(data.admins || [], data.you, data.boss, data.canDeleteAdmins);
       document.getElementById('new-admin-add').parentElement.classList.toggle('hidden', !data.boss);
       document.getElementById('new-admin-error').previousElementSibling.classList.toggle('hidden', !data.boss);
     } catch (err) {
@@ -266,6 +268,23 @@
   });
 
   document.getElementById('admins-body').addEventListener('click', async (e) => {
+    const removeBtn = e.target.closest('.remove-admin-btn');
+    if (removeBtn) {
+      const email = removeBtn.dataset.email;
+      const name = removeBtn.dataset.name || email;
+      if (!confirm(`Remove ${name} (${email}) as an admin? They will be signed out immediately. Their historical workspace data will be preserved.`)) return;
+      const statusEl = document.getElementById('admins-status');
+      statusEl.textContent = 'Removing admin…';
+      try {
+        await api(`/api/admin/admins/${encodeURIComponent(email)}`, { method: 'DELETE' });
+        statusEl.textContent = `Removed ${email}.`;
+        loadAdmins();
+        loadWorkspaceAccess();
+      } catch (err) {
+        statusEl.textContent = `Removal failed: ${err.message}`;
+      }
+      return;
+    }
     const editNameBtn = e.target.closest('.edit-admin-name-btn');
     if (editNameBtn) {
       const email = editNameBtn.dataset.email;
@@ -300,33 +319,34 @@
     }
   });
 
-  // ---------- Admin display access (firm supervisors) ----------
+  // ---------- Admin display access (shared firm view managers) ----------
   let workspaceAccessData = null;
 
   function renderWorkspaceMembers() {
     if (!workspaceAccessData) return;
     const owner = workspaceAccessData.sharedOwner;
-    const selected = new Set((workspaceAccessData.grants && workspaceAccessData.grants[owner]) || []);
+    const selected = new Set([owner, ...((workspaceAccessData.grants && workspaceAccessData.grants[owner]) || [])]);
     document.getElementById('workspace-member-checks').innerHTML = (workspaceAccessData.admins || [])
-      .filter((a) => !a.supervisor)
       .map((a) => `<label class="hint" style="display:inline-flex; align-items:center; gap:6px;">
-        <input type="checkbox" class="workspace-member-check" value="${escapeHtml(a.email)}"${selected.has(a.email) ? ' checked' : ''} />
+        <input type="checkbox" class="workspace-member-check" value="${escapeHtml(a.email)}"${selected.has(a.email) ? ' checked' : ''}${a.permanentSharedView ? ' disabled' : ''} />
         ${escapeHtml(a.name || staffLabel(a.email))}
-      </label>`).join('') || '<span class="empty">No other employees yet.</span>';
+      </label>`).join('') || '<span class="empty">No admins yet.</span>';
   }
 
   async function loadWorkspaceAccess() {
     try {
       const data = await api('/api/admin/workspaces');
-      if (!data.boss) return;
+      if (!data.canManageSharedView) return;
       workspaceAccessData = data;
       const card = document.getElementById('workspace-access-card');
       card.classList.remove('hidden');
-      document.getElementById('links-card').classList.remove('hidden');
-      document.getElementById('audit-card').classList.remove('hidden');
       renderWorkspaceMembers();
-      loadPortalLinks();
-      loadAudit();
+      if (data.boss) {
+        document.getElementById('links-card').classList.remove('hidden');
+        document.getElementById('audit-card').classList.remove('hidden');
+        loadPortalLinks();
+        loadAudit();
+      }
     } catch (err) {
       document.getElementById('workspace-access-status').textContent = `Failed to load: ${err.message}`;
     }
@@ -372,8 +392,8 @@
     if (entry.action === 'login') {
       return d.mfa === 'backup-code' ? 'via backup code' : d.mfa === 'totp' ? 'via authenticator app' : '—';
     }
-    if (entry.action === 'reset-mfa') {
-      return d.target ? `reset ${d.target}` : '—';
+    if (entry.action === 'reset-mfa' || entry.action === 'remove-admin' || entry.action === 'rename-admin') {
+      return d.target || '—';
     }
     if (typeof d === 'string') return d;
     try { return JSON.stringify(d); } catch { return '—'; }
@@ -385,6 +405,9 @@
     'delete-onboarding': 'Deleted onboarding record',
     'restore-onboarding': 'Restored onboarding record',
     'reset-mfa': "Reset an admin's MFA",
+    'create-admin': 'Added an admin account',
+    'rename-admin': 'Renamed an admin account',
+    'remove-admin': 'Removed an admin account',
   };
 
   function renderAudit(entries) {
