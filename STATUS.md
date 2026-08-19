@@ -1600,3 +1600,11 @@ Client portal is untouched and keeps its own look.
 ## To continue in a new chat
 Tell Claude: "Continue work on the BlueLine Advisors portal — read STATUS.md and
 recent git log in C:\Users\joshu\Documents\blueline-portal for context."
+
+<!-- deploy-check: repo ownership moved to franksabin/blueline-portal on 2026-08-19.
+     A transfer does NOT carry the Cloudflare Workers Builds GitHub App installation
+     with it - the app stays installed on the previous owner, so pushes stop deploying
+     while git push itself keeps working via GitHub redirects. If builds ever go quiet
+     again after an ownership change, reconnect the repo under Workers & Pages ->
+     blueline-portal -> Settings -> Builds before looking anywhere else. This note
+     exists because that took a while to spot. -->
