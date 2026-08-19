@@ -3308,7 +3308,17 @@ function learningDisplayName(filename) {
     .trim();
 }
 
-const LEARNING_CATEGORY_FIELDS = ['Category', 'Category0'];
+// Deliberately points at "Tag", not the library's original "Category" column.
+// Category turned out to be an SP.FieldMultiChoice under the hood — SharePoint
+// creates that type the moment "allow multiple selections" is ticked, and once
+// created it cannot be converted back to single-select from the UI. Graph's
+// item-fields PATCH rejects writes to it outright (still 400s even sending the
+// column's own existing value back to itself), while reads work fine — so tags
+// showed up but could never be changed. "Tag" is a plain single-select Choice
+// column created to replace it; Category is left in place, unused, rather than
+// deleted, since deleting it would need touching data on files this app can no
+// longer write to either.
+const LEARNING_CATEGORY_FIELDS = ['Tag', 'Tag0'];
 const LEARNING_DESCRIPTION_FIELDS = ['Description', 'Description0', '_ExtendedDescription', 'Comments'];
 // A document library already ships a built-in Title column, so a *second*
 // column someone names "Title" would be suffixed — hence both spellings.
@@ -3331,7 +3341,7 @@ async function resolveLearningColumns(env, token) {
     cols.find((c) => candidates.includes(c.name))
     || cols.find((c) => String(c.displayName || '').toLowerCase() === display)
     || null;
-  const category = find(LEARNING_CATEGORY_FIELDS, 'category');
+  const category = find(LEARNING_CATEGORY_FIELDS, 'tag');
   return {
     title: find(LEARNING_TITLE_FIELDS, 'title'),
     category,
@@ -3431,10 +3441,9 @@ async function handleAdminLearning(request, env, cors) {
     // which include categories no file uses yet. Resolving the schema is a
     // second Graph call, so a failure here degrades to the data-derived list
     // rather than failing the whole listing.
-    // Wire names say TAGS: that is what the portal calls them. The column
-    // resolution keeps saying category, because the SharePoint column really is
-    // named Category — renaming that side would only obscure which column is
-    // being read.
+    // Internal variable/comment names below still say "category" — that
+    // predates the column rename to "Tag" (see LEARNING_CATEGORY_FIELDS) and
+    // was left alone rather than renamed wholesale across a file this size.
     let tagChoices = [];
     let tagsAreChoice = false;
     let tagsAllowCustom = false;
@@ -3616,7 +3625,7 @@ async function handleAdminLearningUploadStart(request, env, cors) {
       : [];
     if (unknown.length) {
       return json({
-        error: `${unknown.map((t) => `"${t}"`).join(', ')} ${unknown.length === 1 ? 'is not one of' : 'are not among'} the library's tags. Add ${unknown.length === 1 ? 'it' : 'them'} to the Category column in SharePoint, or turn on "Can add values manually" there to allow new ones from here.`,
+        error: `${unknown.map((t) => `"${t}"`).join(', ')} ${unknown.length === 1 ? 'is not one of' : 'are not among'} the library's tags. Add ${unknown.length === 1 ? 'it' : 'them'} to the Tag column in SharePoint, or turn on "Can add values manually" there to allow new ones from here.`,
       }, 400, cors);
     }
 

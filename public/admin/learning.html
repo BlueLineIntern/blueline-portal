@@ -526,7 +526,7 @@
       // "no tags exist" and "tags exist but none are pickable here" look alike.
       wrap.innerHTML = `<p class="lr-tagnone">No tags in the library yet${canAddTags()
         ? ' — type one below.'
-        : '. Add choices to the Category column in SharePoint.'}</p>`;
+        : '. Add choices to the Tag column in SharePoint.'}</p>`;
     } else {
       wrap.innerHTML = tags.map((t) => `<button type="button" class="filter-pill${isPicked(t) ? ' active' : ''}" data-tag="${escapeHtml(t)}" aria-pressed="${isPicked(t)}">${escapeHtml(t)}</button>`).join('');
       wrap.querySelectorAll('[data-tag]').forEach((b) =>
@@ -574,7 +574,7 @@
     renderTagPicker();
     document.getElementById('lr-category-note').textContent = canAddTags()
       ? 'Click as many as apply, or type a new one below.'
-      : 'Click as many as apply. The list comes from the library’s Category column in SharePoint.';
+      : 'Click as many as apply. The list comes from the library’s Tag column in SharePoint.';
 
     modal.classList.remove('hidden');
     titleInput.focus();
