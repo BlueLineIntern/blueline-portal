@@ -3813,7 +3813,7 @@ function learningWriteError(status, detail) {
   }
   if (status === 403) return 'SharePoint refused the change — the app may not have write access to that library.';
   if (status === 404) return 'That resource is no longer in the library — hit Refresh.';
-  return 'Graph ' + status + (detail ? ': ' + String(detail).slice(0, 200) : '');
+  return 'Graph ' + status + (detail ? ': ' + String(detail).slice(0, 1200) : '');
 }
 
 // Only a plain-text file's body is editable here. A video or an Office document
