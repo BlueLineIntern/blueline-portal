@@ -114,7 +114,7 @@
       <input type="text" id="lr-title" maxlength="200" placeholder="How it will be listed here" />
     </div>
     <div class="field">
-      <label for="lr-category-text">Tags</label>
+      <label for="lr-category-text">Tag</label>
       <!-- Every tag the library knows, as toggles, the picked ones lit. This was
            a <select>, which put the whole vocabulary behind a click and so read
            as "— none —" on a library that had tags to offer. -->
@@ -326,7 +326,10 @@
     submitBtn.textContent = 'Save changes';
     titleInput.value = r.title || '';
     descInput.value = r.description || '';
-    pickedTags = (r.tags || []).slice();
+    // .slice(0, 1): a resource tagged before the column became single-select
+    // could still carry more than one. Only the first is still save-able, so
+    // that's the only one loaded into the picker.
+    pickedTags = (r.tags || []).slice(0, 1);
     renderTagPicker();
 
     // Only a text resource's body is editable — a video or an Office file is
@@ -535,19 +538,22 @@
     document.getElementById('lr-tagadd').classList.toggle('hidden', !canAddTags());
   }
 
+  // Picking a tag REPLACES whatever was picked, rather than adding to it. The
+  // Tag column backing this is a genuine single-select Choice field — Graph
+  // rejects a PATCH that sends it more than one value — so the picker can only
+  // ever hold zero or one tag, matching what a save can actually carry.
   function toggleTag(tag) {
-    if (isPicked(tag)) pickedTags = pickedTags.filter((t) => t.toLowerCase() !== String(tag).toLowerCase());
-    else pickedTags.push(tag);
+    pickedTags = isPicked(tag) ? [] : [tag];
     renderTagPicker();
   }
 
-  // Adds whatever is sitting in the new-tag box, if anything. Called on Enter,
-  // on Add, and once more on submit so a tag typed but never added is not
-  // silently dropped. The new tag joins the toggle list already lit.
+  // Adds whatever is sitting in the new-tag box, if anything, REPLACING any
+  // tag already picked (see toggleTag). Called on Enter, on Add, and once
+  // more on submit so a tag typed but never added is not silently dropped.
   function commitPendingTag() {
     const v = catText.value.trim();
     if (!v) return false;
-    if (!isPicked(v)) pickedTags.push(v);
+    pickedTags = [v];
     catText.value = '';
     renderTagPicker();
     return true;
@@ -573,8 +579,8 @@
 
     renderTagPicker();
     document.getElementById('lr-category-note').textContent = canAddTags()
-      ? 'Click as many as apply, or type a new one below.'
-      : 'Click as many as apply. The list comes from the library’s Tag column in SharePoint.';
+      ? 'Click one tag, or type a new one below — only one tag per file.'
+      : 'Click one tag. The list comes from the library’s Tag column in SharePoint.';
 
     modal.classList.remove('hidden');
     titleInput.focus();

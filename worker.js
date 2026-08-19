@@ -3548,10 +3548,13 @@ const LEARNING_DOC_EXTS = ['pdf', 'doc', 'docx', 'txt', 'rtf', 'md', 'xls', 'xls
 // renders as an unknown type.
 const LEARNING_UPLOAD_EXTS = [...LEARNING_VIDEO_EXTS, ...LEARNING_DOC_EXTS];
 
-// Tags arriving from the client, normalised: trimmed, de-duplicated
-// case-insensitively (SharePoint treats "AI" and "ai" as the same choice), and
-// capped so a runaway payload can't be stamped onto a file.
-const LEARNING_MAX_TAGS = 20;
+// Tags arriving from the client, normalised: trimmed and capped at ONE. The
+// Tag column (see LEARNING_CATEGORY_FIELDS) is a real single-select Choice
+// field — Graph rejects an array sent to it outright, so more than one tag
+// isn't a "nice to have" limit, it's what the column can physically hold.
+// De-duplication (case-insensitive, matching SharePoint's own choice
+// comparison) is moot at a cap of 1 but stays cheap to keep either way.
+const LEARNING_MAX_TAGS = 1;
 
 function sanitizeLearningTags(raw) {
   const list = Array.isArray(raw) ? raw : (raw ? [raw] : []);
