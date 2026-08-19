@@ -3292,6 +3292,22 @@ function pickTags(fields, candidates) {
   return [];
 }
 
+// The label to show when a resource has no Title column set. The FILENAME is
+// all that is left at that point, and a filename is not a name: ".docx" is noise
+// in a list of procedures, and a "_1" tail is SharePoint's own doing —
+// conflictBehavior=rename adds it when a file of that name already exists, so it
+// says nothing about the document. Both are stripped for DISPLAY only; the real
+// filename still shows on the row's second line and is never rewritten.
+//
+// At most two digits are stripped, so a document whose name genuinely ends in a
+// number ("Form_1099") keeps it.
+function learningDisplayName(filename) {
+  return String(filename || '')
+    .replace(/.[a-z0-9]+$/i, '')
+    .replace(/_d{1,2}$/, '')
+    .trim();
+}
+
 const LEARNING_CATEGORY_FIELDS = ['Category', 'Category0'];
 const LEARNING_DESCRIPTION_FIELDS = ['Description', 'Description0', '_ExtendedDescription', 'Comments'];
 // A document library already ships a built-in Title column, so a *second*
@@ -3372,13 +3388,20 @@ async function fetchLearningResources(env) {
     if (!webUrl) continue; // nothing to link to
 
     const description = pickField(fields, LEARNING_DESCRIPTION_FIELDS);
+    const titled = pickField(fields, LEARNING_TITLE_FIELDS);
     resources.push({
       id: item.id,
       name,
       // Title is the intended display name. It falls back to Description, then
-      // to the filename, so a resource with neither column filled in still
-      // renders a readable link rather than an empty row.
-      title: pickField(fields, LEARNING_TITLE_FIELDS) || description || name,
+      // to the TIDIED filename, so a resource with neither column filled in
+      // still renders a readable link rather than an empty row — and never one
+      // ending in ".docx", which is a file, not a title.
+      title: titled || description || learningDisplayName(name),
+      // Whether that title is real or a fallback. Surfaced because an upload
+      // whose metadata stamp failed looks identical to a named one otherwise —
+      // which is how two SOPs sat in the library labelled by filename with
+      // nothing on the page saying so.
+      named: Boolean(titled),
       description,
       tags: pickTags(fields, LEARNING_CATEGORY_FIELDS),
       webUrl,
@@ -3774,6 +3797,25 @@ async function resolveLearningDriveItem(env, token, listItemId) {
   return { driveItemId: di.id, driveId, name: String(di.name || '') };
 }
 
+// Graph's error body is JSON written for a log, not for the person staring at
+// the dialog — the library page was showing an advisor a request-id and an
+// innerError. 423 is the one that actually happens: SharePoint locks a file
+// while it is open in Word or while an upload session against it was never
+// committed, and it refuses METADATA writes on a locked file too, not just the
+// bytes. So a rename fails with the same code as a content write, and the fix is
+// the same either way — which is what this says.
+function learningWriteError(status, detail) {
+  if (status === 423) {
+    return 'SharePoint has that file locked, so its name and tags cannot be changed yet. '
+      + 'Close it in Word (desktop and Word Online) and try again. If it stays locked, open the '
+      + 'Learning Resources library in SharePoint and discard its check-out — an upload that never '
+      + 'finished leaves the same lock behind.';
+  }
+  if (status === 403) return 'SharePoint refused the change — the app may not have write access to that library.';
+  if (status === 404) return 'That resource is no longer in the library — hit Refresh.';
+  return 'Graph ' + status + (detail ? ': ' + String(detail).slice(0, 200) : '');
+}
+
 // Only a plain-text file's body is editable here. A video or an Office document
 // is bytes this app has no business rewriting — those are edited in their own
 // application and re-uploaded, or edited in place in SharePoint.
@@ -3859,7 +3901,14 @@ async function handleAdminLearningUpdate(request, env, cors, id) {
         }
       );
       if (!patch.ok) {
-        return json({ error: 'Could not save: Graph ' + patch.status + ': ' + (await patch.text()).slice(0, 200) }, 500, cors);
+        // 409, not 500: a locked file is a condition the person can clear, not a
+        // fault in the portal, and a 500 in the logs would send the next person
+        // debugging looking in the wrong place.
+        return json(
+          { error: 'Could not save: ' + learningWriteError(patch.status, await patch.text()), locked: patch.status === 423 },
+          patch.status === 423 ? 409 : 500,
+          cors
+        );
       }
     }
 
@@ -3884,7 +3933,7 @@ async function handleAdminLearningUpdate(request, env, cors, id) {
           }
         );
         if (!put.ok) {
-          warning = 'The name and tags were saved, but the text could not be: Graph ' + put.status + '.';
+          warning = 'The name and tags were saved, but the text could not be: ' + learningWriteError(put.status, '');
         }
       }
     }
@@ -3914,7 +3963,7 @@ async function handleAdminLearningDelete(request, env, cors, id) {
     );
     // 404 is success here: the file is already gone.
     if (!res.ok && res.status !== 404) {
-      return json({ error: 'Could not delete: Graph ' + res.status + ': ' + (await res.text()).slice(0, 200) }, 500, cors);
+      return json({ error: 'Could not delete: ' + learningWriteError(res.status, await res.text()) }, 500, cors);
     }
     await logAudit(env, adminEmail, 'learning-delete', { id, name: di.name });
     return json({ ok: true, name: di.name }, 200, cors);
@@ -3965,7 +4014,7 @@ async function applyLearningMetadata(env, ticket, item) {
         body: JSON.stringify(fields),
       }
     );
-    if (!patch.ok) throw new Error('Graph ' + patch.status + ': ' + (await patch.text()).slice(0, 200));
+    if (!patch.ok) throw new Error(learningWriteError(patch.status, await patch.text()));
     return { resource, warning: '' };
   } catch (err) {
     console.error('Failed to set learning metadata:', err);

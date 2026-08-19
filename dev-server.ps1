@@ -64,28 +64,34 @@ $contacts = @{}      # email -> CRM contact record (worker stores these encrypte
 # behind the mock, so these are fixed rows plus whatever gets uploaded during
 # the session (in memory only — a restart resets them). `title` is already
 # resolved the way worker.js resolves it: Title column -> Description ->
-# filename. The set covers all four combinations of those two columns being
-# filled in, plus a row with no Category (sorts last, reachable only from All).
+# TIDIED filename (learningDisplayName in worker.js — no extension, no "_1"
+# rename tail). The set covers all four combinations of those two columns being
+# filled in, plus a row with no Category (sorts last, reachable only from All),
+# a row whose title is a fallback (named = $false, so the list says so), and one
+# SharePoint refuses to write to (locked, so the 423 copy is reachable here).
 $learningResources = [System.Collections.ArrayList]::new()
 @(
-    @{ id = 'l1'; name = 'CRM-walkthrough.mp4'; title = 'Adding a new client in the CRM'
+    @{ id = 'l1'; name = 'CRM-walkthrough.mp4'; title = 'Adding a new client in the CRM'; named = $true
        description = 'Step-by-step walkthrough of the intake form and required fields.'
        tags = @('Software Training')
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/CRM-walkthrough.mp4'
        size = 48234123; modified = '2026-07-20T14:02:00Z' }
-    @{ id = 'l2'; name = 'Form-ADV-refresher.pdf'; title = 'Annual Form ADV refresher'
+    @{ id = 'l2'; name = 'Form-ADV-refresher.pdf'; title = 'Annual Form ADV refresher'; named = $true
        description = 'Covers the 2026 filing changes.'; tags = @('Compliance')
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/Form-ADV-refresher.pdf'
        size = 812004; modified = '2026-06-11T09:30:00Z' }
-    @{ id = 'l3'; name = 'new-hire-checklist.docx'; title = 'new-hire-checklist.docx'
+    @{ id = 'l3'; name = 'new-hire-checklist.docx'; title = 'new-hire-checklist'
+       named = $false
        description = ''; tags = @('Onboarding', 'Compliance')
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/new-hire-checklist.docx'
        size = 24500; modified = '2026-05-02T16:45:00Z' }
     @{ id = 'l4'; name = 'quarterly-review-deck.pptx'; title = 'Running a quarterly review meeting'
+       named = $true; locked = $true
        description = ''; tags = @('Onboarding', 'Compliance')
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/quarterly-review-deck.pptx'
        size = 3300400; modified = '2026-07-01T11:15:00Z' }
     @{ id = 'l5'; name = 'misc-notes.txt'; title = 'Uncategorised scratch notes'
+       named = $false
        description = 'Uncategorised scratch notes'; tags = @()
        webUrl = 'https://bluelineadvisors.sharepoint.com/sites/BluelineTeam/Learning/misc-notes.txt'
        size = 1200; modified = '2026-07-25T08:00:00Z' }
@@ -3035,6 +3041,13 @@ while ($listener.IsListening) {
             if (@('fields', 'upload', 'note') -contains $lid) { Send-Json $ctx 404 @{ error = 'Not found' }; continue }
             $row = @($learningResources | Where-Object { [string]$_.id -eq $lid }) | Select-Object -First 1
             if (-not $row) { Send-Json $ctx 404 @{ error = 'Not found' }; continue }
+            # Mirrors learningWriteError's 423 branch in worker.js. SharePoint
+            # refuses METADATA writes on a locked file too, not just its bytes,
+            # so a rename fails exactly like a content write would.
+            if ($row.locked) {
+                Send-Json $ctx 409 @{ locked = $true; error = 'Could not save: SharePoint has that file locked, so its name and tags cannot be changed yet. Close it in Word (desktop and Word Online) and try again. If it stays locked, open the Learning Resources library in SharePoint and discard its check-out - an upload that never finished leaves the same lock behind.' }
+                continue
+            }
             $b = Read-Body $ctx
             $t = ([string]$b.title).Trim()
             if (-not $t) { Send-Json $ctx 400 @{ error = 'A name is required' }; continue }
@@ -3044,12 +3057,17 @@ while ($listener.IsListening) {
                 if ($badEdit.Count) { Send-Json $ctx 400 @{ error = "$($badEdit -join ', ') not among the library's tags" }; continue }
             }
             $row.title = $t
+            # Saving a name is what makes the title real, so the list stops
+            # flagging the row as unnamed. Key assignment, NOT Add-Member: these
+            # rows are hashtables, and Add-Member hangs a property off the object
+            # that Send-Json never sees, so the flag silently never cleared.
+            $row.named = $true
             $row.description = ([string]$b.description).Trim()
             $row.tags = $newTags
             $warn = ''
             if ($b.PSObject.Properties['body']) {
                 if ([string]$row.name -match '\.(txt|md)$') {
-                    $row | Add-Member -NotePropertyName body -NotePropertyValue ([string]$b.body) -Force
+                    $row.body = [string]$b.body
                 } else {
                     $warn = 'The name and tags were saved. Only .txt and .md resources can have their text edited here.'
                 }
