@@ -3755,6 +3755,175 @@ async function handleAdminLearningNote(request, env, cors) {
   }
 }
 
+// ---------- Editing and deleting a learning resource ----------
+//
+// Two Graph objects back one row. Metadata (Title / Category / Description)
+// lives on the LIST item; the bytes and the delete live on the DRIVE item.
+// The client only ever knows the list item id, so the drive item is resolved
+// server-side rather than being passed in — a client-supplied drive id would be
+// an unchecked pointer into the whole library.
+async function resolveLearningDriveItem(env, token, listItemId) {
+  const url = `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}`
+    + `/lists/${env.SHAREPOINT_LEARNING_LIST_ID}/items/${encodeURIComponent(listItemId)}`
+    + '/driveItem?$select=id,name,parentReference';
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error('Graph ' + res.status + ' resolving the file for that item');
+  const di = await res.json();
+  const driveId = (di.parentReference && di.parentReference.driveId) || '';
+  if (!di.id || !driveId) throw new Error('That item has no file behind it');
+  return { driveItemId: di.id, driveId, name: String(di.name || '') };
+}
+
+// Only a plain-text file's body is editable here. A video or an Office document
+// is bytes this app has no business rewriting — those are edited in their own
+// application and re-uploaded, or edited in place in SharePoint.
+const LEARNING_TEXT_EXTS = ['txt', 'md'];
+
+function learningIsTextFile(name) {
+  return LEARNING_TEXT_EXTS.includes((String(name).match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase());
+}
+
+// The body of a text resource, so it can be edited in the app rather than only
+// in SharePoint. Refused for anything else, so this can never be used to stream
+// arbitrary library content back through the portal.
+async function handleAdminLearningContent(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!env.SHAREPOINT_LEARNING_LIST_ID) return json({ error: 'SHAREPOINT_LEARNING_LIST_ID is not set' }, 400, cors);
+  try {
+    const token = await getGraphToken(env);
+    const di = await resolveLearningDriveItem(env, token, id);
+    if (!learningIsTextFile(di.name)) {
+      return json({ error: 'Only .txt and .md resources can be edited here' }, 400, cors);
+    }
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/drives/${di.driveId}/items/${encodeURIComponent(di.driveItemId)}/content`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) return json({ error: 'Could not read that file: Graph ' + res.status }, 500, cors);
+    let text = await res.text();
+    // Strip the BOM this app writes (and Notepad may add) so it doesn't show as
+    // a stray character at the top of the editor, and normalise to \n for the
+    // textarea — CRLF is re-applied on save.
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    return json({ name: di.name, body: text.replace(/\r\n?/g, '\n'), editable: true }, 200, cors);
+  } catch (err) {
+    return json({ error: 'Could not read that file: ' + (err && err.message) }, 500, cors);
+  }
+}
+
+// Update a resource's Title / Tags / Description, and for a text file its body.
+// Metadata and body are separate Graph writes, so the response reports what
+// actually landed rather than pretending it is one transaction.
+async function handleAdminLearningUpdate(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!env.SHAREPOINT_LEARNING_LIST_ID) return json({ error: 'SHAREPOINT_LEARNING_LIST_ID is not set' }, 400, cors);
+  const body = await request.json().catch(() => ({}));
+  const title = String(body.title || '').trim();
+  const description = String(body.description || '').trim();
+  const tags = sanitizeLearningTags(body.tags);
+  const newBody = body.body;
+
+  if (!title) return json({ error: 'A name is required' }, 400, cors);
+  if (newBody !== undefined && String(newBody).length > LEARNING_NOTE_MAX) {
+    return json({ error: 'That note is too long — keep it under 500 KB' }, 400, cors);
+  }
+
+  try {
+    const token = await getGraphToken(env);
+    const cols = await resolveLearningColumns(env, token);
+    // Same tag rule as creating — see handleAdminLearningUploadStart.
+    const unknown = cols.categoryIsChoice && !cols.categoryAllowsCustom
+      ? tags.filter((t) => !cols.categoryChoices.includes(t))
+      : [];
+    if (unknown.length) {
+      return json({ error: `${unknown.map((t) => `"${t}"`).join(', ')} not among the library's tags` }, 400, cors);
+    }
+
+    const fields = {};
+    if (cols.title) fields[cols.title.name] = title;
+    if (cols.description) fields[cols.description.name] = description;
+    // Written even when empty, unlike the create path: removing every tag has to
+    // actually remove them, which an "only write non-empty" rule makes
+    // impossible. null clears the column.
+    if (cols.category) fields[cols.category.name] = learningTagsFieldValue(tags);
+    if (Object.keys(fields).length) {
+      const patch = await fetch(
+        `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}`
+        + `/lists/${env.SHAREPOINT_LEARNING_LIST_ID}/items/${encodeURIComponent(id)}/fields`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(fields),
+        }
+      );
+      if (!patch.ok) {
+        return json({ error: 'Could not save: Graph ' + patch.status + ': ' + (await patch.text()).slice(0, 200) }, 500, cors);
+      }
+    }
+
+    // The body is a SECOND write, to a different Graph object. Reported as a
+    // warning rather than an error when it fails: the metadata has already
+    // landed, so calling the whole request a failure would invite a retry that
+    // re-saves fields which were never the problem.
+    let warning = '';
+    if (newBody !== undefined) {
+      const di = await resolveLearningDriveItem(env, token, id);
+      if (!learningIsTextFile(di.name)) {
+        warning = 'The name and tags were saved. Only .txt and .md resources can have their text edited here.';
+      } else {
+        // Same CRLF + BOM as when a note is created, for the same Notepad reason.
+        const content = '﻿' + String(newBody).replace(/\r\n?/g, '\n').replace(/\n/g, '\r\n');
+        const put = await fetch(
+          `https://graph.microsoft.com/v1.0/drives/${di.driveId}/items/${encodeURIComponent(di.driveItemId)}/content`,
+          {
+            method: 'PUT',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'text/plain; charset=utf-8' },
+            body: content,
+          }
+        );
+        if (!put.ok) {
+          warning = 'The name and tags were saved, but the text could not be: Graph ' + put.status + '.';
+        }
+      }
+    }
+
+    await logAudit(env, adminEmail, 'learning-update', { id, title, tags, bodyChanged: newBody !== undefined });
+    return json({ ok: true, warning }, 200, cors);
+  } catch (err) {
+    console.error('Failed to update learning resource:', err);
+    return json({ error: 'Could not save: ' + (err && err.message) }, 500, cors);
+  }
+}
+
+// Delete the FILE, which is what removes the row — the list item is the file's
+// metadata, so deleting the driveItem takes both with it. It lands in the site's
+// recycle bin, so this is recoverable in SharePoint rather than permanent, which
+// is what makes a single confirm an adequate gate.
+async function handleAdminLearningDelete(request, env, cors, id) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!env.SHAREPOINT_LEARNING_LIST_ID) return json({ error: 'SHAREPOINT_LEARNING_LIST_ID is not set' }, 400, cors);
+  try {
+    const token = await getGraphToken(env);
+    const di = await resolveLearningDriveItem(env, token, id);
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/drives/${di.driveId}/items/${encodeURIComponent(di.driveItemId)}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+    );
+    // 404 is success here: the file is already gone.
+    if (!res.ok && res.status !== 404) {
+      return json({ error: 'Could not delete: Graph ' + res.status + ': ' + (await res.text()).slice(0, 200) }, 500, cors);
+    }
+    await logAudit(env, adminEmail, 'learning-delete', { id, name: di.name });
+    return json({ ok: true, name: di.name }, 200, cors);
+  } catch (err) {
+    console.error('Failed to delete learning resource:', err);
+    return json({ error: 'Could not delete: ' + (err && err.message) }, 500, cors);
+  }
+}
+
 // Stamp Title/Category/Description onto the freshly uploaded file. The file is
 // already in the library at this point, so a metadata failure is reported as a
 // warning rather than an error — re-running the upload would just duplicate it.
@@ -7827,6 +7996,26 @@ export default {
       }
       if (url.pathname === '/api/admin/learning/upload/chunk' && request.method === 'PUT') {
         return await handleAdminLearningUploadChunk(request, env, cors);
+      }
+      // AFTER every exact /learning/... path above, because this greedy match
+      // would otherwise take "fields", "upload" or "note" for a list item id.
+      // The reserved-name guard means that stays true even if someone reorders
+      // these blocks later — ordering alone is too quiet a thing to rely on when
+      // getting it wrong would route an upload into the update handler.
+      const LEARNING_RESERVED = ['fields', 'upload', 'note'];
+      const learningItemMatch = url.pathname.match(/^\/api\/admin\/learning\/([^/]+)$/);
+      const learningItem = learningItemMatch
+        && !LEARNING_RESERVED.includes(learningItemMatch[1])
+        ? learningItemMatch : null;
+      if (learningItem && request.method === 'POST') {
+        return await handleAdminLearningUpdate(request, env, cors, decodeURIComponent(learningItem[1]));
+      }
+      if (learningItem && request.method === 'DELETE') {
+        return await handleAdminLearningDelete(request, env, cors, decodeURIComponent(learningItem[1]));
+      }
+      const learningContent = url.pathname.match(/^\/api\/admin\/learning\/([^/]+)\/content$/);
+      if (learningContent && request.method === 'GET') {
+        return await handleAdminLearningContent(request, env, cors, decodeURIComponent(learningContent[1]));
       }
       // Every nested contact endpoint (info, documents, requests, email,
       // archive) is workspace-gated here so a guessed URL cannot bypass the

@@ -949,6 +949,74 @@ check(learning.includes('<label for="lr-category">Tags</label>'),
   'the field is called Tags in the UI');
 check(!/data.categor/.test(learning),
   'the page reads the tag-named fields, not the old category ones');
+// ---------- 13h. Learning items can be edited and deleted ----------
+
+const updateFn = extract(worker, 'handleAdminLearningUpdate');
+const deleteFn = extract(worker, 'handleAdminLearningDelete');
+const contentFn = extract(worker, 'handleAdminLearningContent');
+
+check(worker.includes("url.pathname.match(/^\\/api\\/admin\\/learning\\/([^/]+)$/)"),
+  'a per-item learning route exists for edit and delete');
+
+// The greedy /learning/:id pattern also matches "fields", "upload" and "note".
+// Those survive only because their exact-match blocks come first — too quiet a
+// thing to rely on, since a reorder would route an upload into the update
+// handler.
+check(worker.includes("const LEARNING_RESERVED = ['fields', 'upload', 'note'];")
+  && worker.includes('!LEARNING_RESERVED.includes(learningItemMatch[1])'),
+  'reserved sub-paths cannot be mistaken for an item id, whatever the block order');
+
+// One row is backed by TWO Graph objects: the list item carries the metadata,
+// the drive item carries the bytes. The client only knows the list item id, so
+// the drive item is resolved server-side — a client-supplied drive id would be
+// an unchecked pointer into the whole library.
+check(worker.includes('async function resolveLearningDriveItem(')
+  && !/body\.driveI/i.test(updateFn) && !/body\.driveI/i.test(deleteFn),
+  'the drive item is resolved server-side, never taken from the request');
+
+check(updateFn.includes('fields[cols.category.name] = learningTagsFieldValue(tags)'),
+  'editing writes the tag column even when empty, so every tag can be removed');
+check(updateFn.includes("if (!title) return json({ error: 'A name is required' }"),
+  'an edit cannot blank the name');
+check(updateFn.includes('cols.categoryIsChoice && !cols.categoryAllowsCustom'),
+  'an edit is subject to the same tag rule as creating');
+
+// Body and metadata are separate Graph writes. A body failure is a warning, not
+// an error: the metadata has already landed, so failing the whole request would
+// invite a retry that re-saves fields which were never the problem.
+check(updateFn.includes('let warning') && updateFn.includes('learningIsTextFile(di.name)'),
+  'only a text resource has its body rewritten; anything else reports a warning');
+check(/const LEARNING_TEXT_EXTS = \['txt', 'md'\];/.test(worker),
+  'the editable-body types are just .txt and .md — not video or Office bytes');
+check(updateFn.includes("'﻿' + String(newBody)") || updateFn.includes('replace(/\\n/g, \'\\r\\n\')'),
+  'a saved body keeps the CRLF + BOM convention the create path uses');
+
+check(contentFn.includes('Only .txt and .md resources can be edited here'),
+  'the content endpoint refuses to stream anything but text back through the portal');
+check(contentFn.includes('text.charCodeAt(0) === 0xFEFF'),
+  'the BOM is stripped for the editor rather than showing as a stray character');
+
+// Deleting the driveItem takes the list item with it, and lands in the site's
+// recycle bin — recoverable, which is what makes one confirm an adequate gate.
+check(deleteFn.includes("method: 'DELETE'") && deleteFn.includes('res.status !== 404'),
+  'delete treats an already-gone file as success rather than an error');
+check(learning.includes('recycle bin'),
+  'the delete confirm says where the file goes, so it reads as recoverable');
+
+// The edit dialog is the add dialog. A second modal would mean a second tag
+// picker to keep in step.
+check(extract(learning, 'openEditModal').includes('openModal();')
+  && extract(learning, 'openEditModal').indexOf('openModal();') < extract(learning, 'openEditModal').indexOf('editingId = id;'),
+  'openModal runs BEFORE editingId is set — it resets that flag, and the other order broke both the body load and Save');
+check(extract(learning, 'openModal').includes('editingId = null;'),
+  'opening the add dialog can never still be pointed at the last edited item');
+check(extract(learning, 'uploadResource').includes('if (editingId) return saveEdit();'),
+  'one submit button serves both create and edit');
+check(extract(learning, 'saveEdit').includes('if (bodyShown) payload.body = bodyInput.value;'),
+  'the body is only sent when its box is on screen, so a video is never asked to be rewritten');
+check(mock.includes("'^/api/admin/learning/([^/]+)$'") || mock.includes('api/admin/learning/([^/]+)$'),
+  'the local mock implements the per-item routes too');
+
 // ---------- 14. No cross-script global collisions ----------
 //
 // Every admin page loads render.js, then shared.js, then its own inline script,

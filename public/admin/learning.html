@@ -6,7 +6,7 @@
 <link rel="icon" href="/assets/blueline-logo.png" type="image/png" />
 <title>Learning — BlueLine Admin</title>
 <link rel="stylesheet" href="/assets/style.css" />
-<link rel="stylesheet" href="/admin/shared.css?v=20260817-5" />
+<link rel="stylesheet" href="/admin/shared.css?v=20260817-6" />
 <style>
   /* File-type marker on each row. Deliberately a letterform rather than an icon
      set: the extension itself is the clearest signal of what will open, and it
@@ -145,7 +145,7 @@
   </div>
 </div>
 
-<script src="/admin/shared.js?v=20260817-5"></script>
+<script src="/admin/shared.js?v=20260817-6"></script>
 <script>
   initShell('learning');
 
@@ -175,6 +175,13 @@
   // saves it as a .txt in the same library. Same Name / Category / Description
   // either way — only the source of the content differs.
   let addMode = 'file';
+
+  // Non-null while the dialog is editing an existing resource rather than
+  // creating one. The submit handler branches on it, so there is one dialog and
+  // one code path for both.
+  let editingId = null;
+
+  function setStatus(msg) { document.getElementById('lr-status').textContent = msg || ''; }
 
   // Extension -> the badge class and label shown in the row's square marker.
   // Anything unrecognised still renders, just with its bare extension. Covers
@@ -279,9 +286,110 @@
               ${meta ? `<div class="lr-meta">${meta}</div>` : ''}
             </div>
           </a>
+          <div class="row-side">
+            <button type="button" class="btn btn-ghost btn-small lr-edit" data-id="${escapeHtml(r.id)}">Edit</button>
+            <button type="button" class="btn btn-danger btn-small lr-del" data-id="${escapeHtml(r.id)}">Delete</button>
+          </div>
         </div>`;
       })
       .join('');
+
+    list.querySelectorAll('.lr-edit').forEach((b) =>
+      b.addEventListener('click', () => openEditModal(b.dataset.id)));
+    list.querySelectorAll('.lr-del').forEach((b) =>
+      b.addEventListener('click', () => deleteResource(b.dataset.id)));
+  }
+
+  // ---------- Edit / delete ----------
+
+  // Reuses the add dialog: same Name, Tags and Description fields, same tag
+  // picker. A second modal would mean a second copy of that picker, which is
+  // exactly the duplication the file/note toggle was built to avoid.
+  async function openEditModal(id) {
+    const r = allResources.find((x) => String(x.id) === String(id));
+    if (!r) return;
+    // openModal() clears every field AND resets editingId, so it has to run
+    // before editingId is set — the other order left it null, which meant the
+    // body never loaded and Save fell through to the create path.
+    openModal();
+    editingId = id;
+    document.getElementById('lr-mode-toggle').classList.add('hidden');
+    document.getElementById('lr-file-field').classList.add('hidden');
+    document.getElementById('lr-modal-title').textContent = 'Edit resource';
+    submitBtn.textContent = 'Save changes';
+    titleInput.value = r.title || '';
+    descInput.value = r.description || '';
+    pickedTags = (r.tags || []).slice();
+    renderTagChips();
+    refreshTagOptions();
+
+    // Only a text resource's body is editable — a video or an Office file is
+    // bytes this app has no business rewriting. The server refuses either way;
+    // this just doesn't offer a box that cannot work.
+    const isText = /\.(txt|md)$/i.test(r.name || '');
+    const bodyField = document.getElementById('lr-body-field');
+    bodyField.classList.toggle('hidden', !isText);
+    if (isText) {
+      bodyInput.value = '';
+      bodyInput.placeholder = 'Loading…';
+      try {
+        const data = await api(`/api/admin/learning/${encodeURIComponent(id)}/content`);
+        // Guard against a slow fetch landing after the dialog moved on.
+        if (editingId === id) bodyInput.value = data.body || '';
+      } catch (err) {
+        uploadError.textContent = `Could not load the text: ${err.message}`;
+      } finally {
+        bodyInput.placeholder = 'Type the instructions here…';
+      }
+    }
+  }
+
+  async function saveEdit() {
+    if (!titleInput.value.trim()) { uploadError.textContent = 'Give the resource a name.'; return; }
+    commitPendingTag();
+    const id = editingId;
+    const bodyShown = !document.getElementById('lr-body-field').classList.contains('hidden');
+    uploading = true;
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Saving…';
+    try {
+      const payload = {
+        title: titleInput.value.trim(),
+        description: descInput.value.trim(),
+        tags: pickedTags,
+      };
+      // Only sent when the body box is actually on screen. Sending it for a
+      // video would ask the server to rewrite a file it must not touch — and
+      // sending an empty string would blank a note whose text never loaded.
+      if (bodyShown) payload.body = bodyInput.value;
+      const res = await api(`/api/admin/learning/${encodeURIComponent(id)}`, {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+      uploading = false;
+      closeModal();
+      await loadData();
+      setStatus(res.warning || `Saved “${payload.title}”.`);
+    } catch (err) {
+      uploadError.textContent = err.message;
+      submitBtn.textContent = 'Save changes';
+    } finally {
+      uploading = false;
+      submitBtn.disabled = false;
+    }
+  }
+
+  async function deleteResource(id) {
+    const r = allResources.find((x) => String(x.id) === String(id));
+    if (!r) return;
+    if (!confirm(`Delete “${r.title}”?\n\nIt goes to the SharePoint site's recycle bin, so it can be restored there — but it disappears from this list straight away.`)) return;
+    setStatus('Deleting…');
+    try {
+      await api(`/api/admin/learning/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await loadData();
+      setStatus(`Deleted “${r.title}”.`);
+    } catch (err) {
+      setStatus(`Could not delete: ${err.message}`);
+    }
   }
 
   function render() {
@@ -453,6 +561,12 @@
     uploadError.textContent = '';
     progressWrap.classList.add('hidden');
     progressBar.style.width = '0';
+    // Cleared here rather than in the caller, so "+ Add resource" can never open
+    // still pointed at the last thing that was edited. openEditModal() calls
+    // this first and then sets it.
+    editingId = null;
+    // Edit mode hides both of these; restore them for the create flow.
+    document.getElementById('lr-mode-toggle').classList.remove('hidden');
     setAddMode('file');
 
     renderTagChips();
@@ -488,6 +602,9 @@
   async function uploadResource() {
     const file = fileInput.files && fileInput.files[0];
     uploadError.textContent = '';
+    // Editing has no file to choose and no body requirement — the file already
+    // exists, and only its metadata (plus a text body) is being changed.
+    if (editingId) return saveEdit();
     if (addMode === 'file' && !file) { uploadError.textContent = 'Choose a file.'; return; }
     if (addMode === 'note' && !bodyInput.value.trim()) {
       uploadError.textContent = 'Write something in the body first.';

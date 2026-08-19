@@ -1431,8 +1431,38 @@ Client portal is untouched and keeps its own look.
     - **One dialog, not two.** Sharing it keeps a single category picker — the
       choices, the "+ Add a new category…" option and its validation would
       otherwise be duplicated and have to be kept in step.
-    - Editing an existing note is **not** built: notes are edited in SharePoint,
-      like every other file in the library. The portal writes, it doesn't own.
+  - **Edit / Delete on every row** (added 2026-08-17; this replaces the earlier
+    "notes are edited in SharePoint" position).
+    - One row is backed by **two Graph objects**: the LIST item carries
+      Title/Category/Description, the DRIVE item carries the bytes. The client
+      only ever knows the list item id and `resolveLearningDriveItem()` resolves
+      the rest **server-side** — a client-supplied drive id would be an unchecked
+      pointer into the whole library.
+    - `POST /api/admin/learning/:id` updates Title, Tags and Description, and for
+      a **`.txt`/`.md`** resource its body too. `GET .../:id/content` returns that
+      body for the editor (BOM stripped, CRLF normalised to `\n`; both re-applied
+      on save). Anything else is refused — a video or an Office file is bytes this
+      app has no business rewriting.
+    - **The tag column is written even when empty**, unlike the create path:
+      removing every tag has to actually remove them, which an "only write
+      non-empty" rule makes impossible.
+    - Body and metadata are **separate Graph writes**, so a body failure is a
+      **warning, not an error** — the metadata has already landed, and failing the
+      whole request would invite a retry that re-saves fields which were never the
+      problem.
+    - `DELETE /api/admin/learning/:id` deletes the **driveItem**, which takes its
+      list item with it. It lands in the site's **recycle bin**, so it is
+      recoverable in SharePoint — which is what makes a single confirm an adequate
+      gate. A 404 counts as success.
+    - The greedy `/learning/:id` route also matches `fields`, `upload` and `note`.
+      Those survive because their exact-match blocks come first, but a
+      **`LEARNING_RESERVED` guard** enforces it independently — ordering alone is
+      too quiet a thing to rely on when getting it wrong would route an upload
+      into the update handler.
+    - The edit dialog **is** the add dialog (mode toggle and file field hidden),
+      so there is one tag picker. `openModal()` resets `editingId`, so
+      `openEditModal()` must call it **before** setting that flag — the other
+      order silently broke both the body load and Save, and a test pins it.
   - **They're TAGS, and a resource can carry several** (changed 2026-08-17; was a
     single Category). The UI says Tags throughout; the SharePoint column is still
     named **Category**, so the column resolution keeps that name — renaming that

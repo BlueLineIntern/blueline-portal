@@ -3012,6 +3012,61 @@ while ($listener.IsListening) {
         }
         # Mirrors handleAdminLearningNote: a title + body saved as a .txt in the
         # library. One request, no upload session - a note is kilobytes.
+        # Edit / delete / read-body for one resource. Mirrors the worker's three
+        # handlers. There is no real Graph here, so the "file" is just the row's
+        # in-memory body field — enough to exercise the dialog and its rules.
+        elseif ($path -match '^/api/admin/learning/([^/]+)/content$' -and $method -eq 'GET') {
+            if (-not (Get-AdminEmail $ctx)) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $lid = [Uri]::UnescapeDataString($Matches[1])
+            $row = @($learningResources | Where-Object { [string]$_.id -eq $lid }) | Select-Object -First 1
+            if (-not $row) { Send-Json $ctx 404 @{ error = 'Not found' }; continue }
+            if ([string]$row.name -notmatch '\.(txt|md)$') {
+                Send-Json $ctx 400 @{ error = 'Only .txt and .md resources can be edited here' }; continue
+            }
+            $b = if ($row.PSObject.Properties['body']) { [string]$row.body } else { '' }
+            Send-Json $ctx 200 @{ name = $row.name; body = $b; editable = $true }
+        }
+        elseif ($path -match '^/api/admin/learning/([^/]+)$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $lid = [Uri]::UnescapeDataString($Matches[1])
+            # Reserved names are handled by their own routes above; guard anyway so
+            # a reorder cannot land an upload in here, matching worker.js.
+            if (@('fields', 'upload', 'note') -contains $lid) { Send-Json $ctx 404 @{ error = 'Not found' }; continue }
+            $row = @($learningResources | Where-Object { [string]$_.id -eq $lid }) | Select-Object -First 1
+            if (-not $row) { Send-Json $ctx 404 @{ error = 'Not found' }; continue }
+            $b = Read-Body $ctx
+            $t = ([string]$b.title).Trim()
+            if (-not $t) { Send-Json $ctx 400 @{ error = 'A name is required' }; continue }
+            $newTags = @(@($b.tags) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+            if (-not $learningCategoryAllowsCustom) {
+                $badEdit = @($newTags | Where-Object { $learningCategoryChoices -notcontains $_ })
+                if ($badEdit.Count) { Send-Json $ctx 400 @{ error = "$($badEdit -join ', ') not among the library's tags" }; continue }
+            }
+            $row.title = $t
+            $row.description = ([string]$b.description).Trim()
+            $row.tags = $newTags
+            $warn = ''
+            if ($b.PSObject.Properties['body']) {
+                if ([string]$row.name -match '\.(txt|md)$') {
+                    $row | Add-Member -NotePropertyName body -NotePropertyValue ([string]$b.body) -Force
+                } else {
+                    $warn = 'The name and tags were saved. Only .txt and .md resources can have their text edited here.'
+                }
+            }
+            Write-Audit $adminEmail 'learning-update' @{ id = $lid; title = $t; tags = $newTags }
+            Send-Json $ctx 200 @{ ok = $true; warning = $warn }
+        }
+        elseif ($path -match '^/api/admin/learning/([^/]+)$' -and $method -eq 'DELETE') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $lid = [Uri]::UnescapeDataString($Matches[1])
+            $row = @($learningResources | Where-Object { [string]$_.id -eq $lid }) | Select-Object -First 1
+            if (-not $row) { Send-Json $ctx 404 @{ error = 'Not found' }; continue }
+            $learningResources.Remove($row)
+            Write-Audit $adminEmail 'learning-delete' @{ id = $lid; name = $row.name }
+            Send-Json $ctx 200 @{ ok = $true; name = $row.name }
+        }
         elseif ($path -eq '/api/admin/learning/note' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
