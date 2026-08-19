@@ -3267,27 +3267,17 @@ function pickField(fields, candidates) {
   return '';
 }
 
-// The Learning library's Category column, read as a LIST of tags.
-//
-// A multi-select Choice column comes back from Graph as an array; a
-// single-select one comes back as a plain string. Both shapes are handled, so
-// the library keeps working while the column is switched over and afterwards.
-//
-// A string is deliberately ONE tag, never split on a delimiter: real category
-// names contain commas ("Technology, Privacy & Resilience" is one of the
-// compliance areas), so splitting would shatter an existing value into
-// nonsense tags. Multiple tags only ever arrive as an array.
+// The Learning library's Tags column (plain text — see LEARNING_TAGS_TEXT_FIELDS),
+// read as a LIST of tags: comma-separated, each piece trimmed, empties dropped.
+// Tags are single words/short phrases from a fixed vocabulary (enforced at
+// write time against the Tag choice column, not by this column's type), so a
+// tag containing a comma isn't a real case to guard against here.
 function pickTags(fields, candidates) {
   for (const key of candidates) {
     const val = fields[key];
     if (val === undefined || val === null) continue;
-    if (Array.isArray(val)) {
-      const out = val.map((v) => String(v).trim()).filter(Boolean);
-      if (out.length) return out;
-      continue;
-    }
-    const s = String(val).trim();
-    if (s) return [s];
+    const out = String(val).split(',').map((v) => v.trim()).filter(Boolean);
+    if (out.length) return out;
   }
   return [];
 }
@@ -3308,17 +3298,29 @@ function learningDisplayName(filename) {
     .trim();
 }
 
-// Deliberately points at "Tag", not the library's original "Category" column.
-// Category turned out to be an SP.FieldMultiChoice under the hood — SharePoint
-// creates that type the moment "allow multiple selections" is ticked, and once
-// created it cannot be converted back to single-select from the UI. Graph's
-// item-fields PATCH rejects writes to it outright (still 400s even sending the
-// column's own existing value back to itself), while reads work fine — so tags
-// showed up but could never be changed. "Tag" is a plain single-select Choice
-// column created to replace it; Category is left in place, unused, rather than
-// deleted, since deleting it would need touching data on files this app can no
-// longer write to either.
+// "Tag" (a single-select Choice column) is kept only as the VOCABULARY
+// source — its own Choice list is what populates the picker, including tags
+// no file uses yet — never as where a tag actually gets stored. It replaced
+// the library's original "Category" column, which turned out to be an
+// SP.FieldMultiChoice under the hood: SharePoint creates that type the
+// instant "allow multiple selections" is ticked on a Choice column, and once
+// created it cannot be converted back down from the UI. Graph's item-fields
+// PATCH rejects writes to a MultiChoice field outright (still 400s even
+// sending the field's own existing value back unchanged), while reads work
+// fine — so tags showed up but could never be changed. Category is left in
+// place, unused, rather than deleted, since deleting it would need touching
+// data on a field this app can no longer write to either.
+//
+// Real per-file tag data lives in "Tags" (LEARNING_TAGS_TEXT_FIELDS below) —
+// a plain Single-line-of-text column. Graph writes plain text regardless of
+// shape, sidestepping the Choice/MultiChoice write limitation entirely, at
+// the cost of SharePoint no longer validating values for that column itself
+// (this app still checks a typed tag against Tag's vocabulary before saving).
 const LEARNING_CATEGORY_FIELDS = ['Tag', 'Tag0'];
+// Comma-joined tags, e.g. "Compliance, SOP" — chosen over one tag per row or
+// a JSON blob because it is also what someone editing the raw SharePoint list
+// by hand would type.
+const LEARNING_TAGS_TEXT_FIELDS = ['Tags', 'Tags0'];
 const LEARNING_DESCRIPTION_FIELDS = ['Description', 'Description0', '_ExtendedDescription', 'Comments'];
 // A document library already ships a built-in Title column, so a *second*
 // column someone names "Title" would be suffixed — hence both spellings.
@@ -3345,6 +3347,8 @@ async function resolveLearningColumns(env, token) {
   return {
     title: find(LEARNING_TITLE_FIELDS, 'title'),
     category,
+    // Where a tag actually gets written — see LEARNING_TAGS_TEXT_FIELDS.
+    tagsText: find(LEARNING_TAGS_TEXT_FIELDS, 'tags'),
     description: find(LEARNING_DESCRIPTION_FIELDS, 'description'),
     // A free-text Category column has no choices; the UI then lets any value
     // be typed instead of forcing a pick from an empty list.
@@ -3413,7 +3417,7 @@ async function fetchLearningResources(env) {
       // nothing on the page saying so.
       named: Boolean(titled),
       description,
-      tags: pickTags(fields, LEARNING_CATEGORY_FIELDS),
+      tags: pickTags(fields, LEARNING_TAGS_TEXT_FIELDS),
       webUrl,
       size: typeof drive.size === 'number' ? drive.size : null,
       modified: drive.lastModifiedDateTime || fields.Modified || null,
@@ -3497,6 +3501,9 @@ async function handleAdminLearningFields(request, env, cors) {
         choices: cols.categoryChoices,
         internalName: (cols.category && cols.category.name) || null,
         displayName: (cols.category && cols.category.displayName) || null,
+        // Where the vocabulary lives (Tag) vs. where a file's actual tags get
+        // written (Tags, plain text) — see LEARNING_TAGS_TEXT_FIELDS.
+        tagsTextColumn: (cols.tagsText && cols.tagsText.name) || null,
       };
     } catch (err) {
       categoryColumn = { error: String((err && err.message) || err) };
@@ -3507,6 +3514,7 @@ async function handleAdminLearningFields(request, env, cors) {
       resolvedBy: {
         title: LEARNING_TITLE_FIELDS,
         category: LEARNING_CATEGORY_FIELDS,
+        tagsText: LEARNING_TAGS_TEXT_FIELDS,
         description: LEARNING_DESCRIPTION_FIELDS,
       },
     }, 200, cors);
@@ -3548,20 +3556,21 @@ const LEARNING_DOC_EXTS = ['pdf', 'doc', 'docx', 'txt', 'rtf', 'md', 'xls', 'xls
 // renders as an unknown type.
 const LEARNING_UPLOAD_EXTS = [...LEARNING_VIDEO_EXTS, ...LEARNING_DOC_EXTS];
 
-// Tags arriving from the client, normalised: trimmed and capped at ONE. The
-// Tag column (see LEARNING_CATEGORY_FIELDS) is a real single-select Choice
-// field — Graph rejects an array sent to it outright, so more than one tag
-// isn't a "nice to have" limit, it's what the column can physically hold.
-// De-duplication (case-insensitive, matching SharePoint's own choice
-// comparison) is moot at a cap of 1 but stays cheap to keep either way.
-const LEARNING_MAX_TAGS = 1;
+// Tags arriving from the client, normalised: trimmed, commas stripped (the
+// Tags column stores multiple tags comma-joined — see
+// LEARNING_TAGS_TEXT_FIELDS — so a comma inside one tag would be
+// indistinguishable from a separator on the next read), de-duplicated
+// case-insensitively (SharePoint's own Choice columns treat "AI" and "ai" as
+// one value, so the Tag vocabulary does too), and capped so a runaway
+// payload can't be stamped onto a file.
+const LEARNING_MAX_TAGS = 20;
 
 function sanitizeLearningTags(raw) {
   const list = Array.isArray(raw) ? raw : (raw ? [raw] : []);
   const seen = new Set();
   const out = [];
   for (const t of list) {
-    const v = String(t || '').trim().slice(0, 120);
+    const v = String(t || '').replace(/,/g, '').trim().slice(0, 120);
     if (!v) continue;
     const k = v.toLowerCase();
     if (seen.has(k)) continue;
@@ -3572,18 +3581,11 @@ function sanitizeLearningTags(raw) {
   return out;
 }
 
-// What to PATCH into the Category column.
-//
-// A single tag goes as a plain STRING, a list as an ARRAY. That is not cosmetic:
-// a single-select Choice column rejects an array, and a multi-select one accepts
-// either — so one tag saves correctly whichever type the column currently is,
-// and only genuinely-multiple tags require the column to have been switched to
-// allow multiple selections. Graph exposes no flag for that (choiceColumn
-// carries only choices/allowTextEntry/displayAs), so this is the one shape that
-// degrades sensibly without being able to ask.
+// What to PATCH into the Tags column: comma-joined, or null to clear it.
+// Plain text regardless of count, which is the whole point of storing tags
+// here instead of in a Choice/MultiChoice field — see LEARNING_TAGS_TEXT_FIELDS.
 function learningTagsFieldValue(tags) {
-  if (!tags.length) return null;
-  return tags.length === 1 ? tags[0] : tags;
+  return tags.length ? tags.join(', ') : null;
 }
 
 // SharePoint rejects " * : < > ? / \ | and leading/trailing dots or spaces.
@@ -3901,7 +3903,7 @@ async function handleAdminLearningUpdate(request, env, cors, id) {
     // Written even when empty, unlike the create path: removing every tag has to
     // actually remove them, which an "only write non-empty" rule makes
     // impossible. null clears the column.
-    if (cols.category) fields[cols.category.name] = learningTagsFieldValue(tags);
+    if (cols.tagsText) fields[cols.tagsText.name] = learningTagsFieldValue(tags);
     if (Object.keys(fields).length) {
       const patch = await fetch(
         `https://graph.microsoft.com/v1.0/sites/${env.SHAREPOINT_SITE_ID}`
@@ -4003,7 +4005,7 @@ async function applyLearningMetadata(env, ticket, item) {
     const fields = {};
     if (cols.title) fields[cols.title.name] = ticket.title;
     const tagValue = learningTagsFieldValue(ticket.tags || []);
-    if (cols.category && tagValue !== null) fields[cols.category.name] = tagValue;
+    if (cols.tagsText && tagValue !== null) fields[cols.tagsText.name] = tagValue;
     if (cols.description && ticket.description) fields[cols.description.name] = ticket.description;
     if (!Object.keys(fields).length) {
       return { resource, warning: 'Saved, but the library has no Title column to name it in.' };
