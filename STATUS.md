@@ -400,6 +400,20 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   and a Reset MFA button. So a locked-out admin (lost device + all backup codes)
   is rescued by the other admin — no Cloudflare dashboard needed. Last-resort
   manual recovery is still to delete `admin_mfa:<email>` in KV directly.
+- **Password reset, added 2026-08-20**: `POST /api/admin/admins/:email/reset-password`
+  `{password}` (shared-firm-view-manager-gated) re-hashes and overwrites
+  `admin_account:<email>`, then deletes that admin's `admin_session:` entries so
+  any session open at the time of the reset is immediately signed out — MFA
+  enrollment is untouched. Audit-logged as `reset-password` `{target}`. Only
+  works for admins added through the app (KV-backed); the 3 `ADMIN_ACCOUNTS`
+  entries (Frank, Jenn, Intern) 400 with a message pointing at the Cloudflare
+  secret instead, since their password isn't in KV to overwrite. The Admin
+  Accounts card's "Reset password" button reflects this: for a KV admin it
+  prompts for a new password and calls the endpoint; for one of the 3 it just
+  shows the Cloudflare dashboard path (Workers & Pages → blueline-portal →
+  Settings → Variables and Secrets → `ADMIN_PASSWORD_<NAME>`) and never calls
+  the API. `GET /api/admin/admins` now also returns `legacy: true/false` per
+  admin so the page knows which behavior to wire up.
 - Every admin endpoint now calls `getAdminEmail(request, env)` (resolves the
   bearer token → session email) instead of comparing a static token; a missing/
   expired session → 401. The admin page (`admin.html`) has an email+password

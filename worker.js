@@ -225,6 +225,41 @@ async function handleAdminRenameAdmin(request, env, cors, targetEmail) {
   return json({ email, name }, 200, cors);
 }
 
+// Only for admins added through the app (admin_account:<email> in KV). The
+// three ADMIN_ACCOUNTS entries have no password in KV to overwrite — theirs
+// lives in a Cloudflare secret, so there is nothing here to reset.
+async function handleAdminResetPassword(request, env, cors, targetEmail) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  if (!(await canManageSharedFirmView(env, adminEmail))) return json({ error: 'Only shared firm view managers can reset admin passwords' }, 403, cors);
+  const email = String(targetEmail || '').trim().toLowerCase();
+  if (ADMIN_ACCOUNTS.some((a) => a.email === email)) {
+    return json({ error: 'This account’s password is a Cloudflare secret, not stored in the app — update it in the Cloudflare dashboard instead.' }, 400, cors);
+  }
+  const stored = await env.PORTAL_KV.get(`admin_account:${email}`);
+  if (!stored) return json({ error: 'Not an admin account' }, 404, cors);
+  const body = await request.json().catch(() => null);
+  const password = String((body && body.password) || '');
+  if (password.length < ADMIN_PASSWORD_MIN_LENGTH) {
+    return json({ error: `Password must be at least ${ADMIN_PASSWORD_MIN_LENGTH} characters` }, 400, cors);
+  }
+  const existing = JSON.parse(stored);
+  const salt = randomHex(16);
+  const hash = await hashPassword(password, salt, PBKDF2_ITERATIONS);
+  await env.PORTAL_KV.put(`admin_account:${email}`, JSON.stringify({
+    ...existing, salt, hash, iterations: PBKDF2_ITERATIONS,
+    passwordResetAt: new Date().toISOString(), passwordResetBy: adminEmail,
+  }));
+  // A password reset should end any session that might have been the reason
+  // for it (e.g. suspected compromise) — same cleanup handleAdminDeleteAdmin
+  // does when an account is removed outright.
+  for (const keyName of await listKeys(env, 'admin_session:')) {
+    if ((await env.PORTAL_KV.get(keyName)) === email) await env.PORTAL_KV.delete(keyName);
+  }
+  await logAudit(env, adminEmail, 'reset-password', { target: email });
+  return json({ ok: true, email }, 200, cors);
+}
+
 async function handleAdminDeleteAdmin(request, env, cors, targetEmail) {
   const adminEmail = await getAdminEmail(request, env);
   if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
@@ -926,7 +961,11 @@ async function handleAdminListAdmins(request, env, cors) {
   const admins = [];
   for (const email of await allAdminEmails(env)) {
     const mfa = await getAdminMfa(env, email); // throws on decrypt fail -> 500 (fail closed)
-    admins.push({ email, name: names[email] || null, mfaEnabled: !!(mfa && mfa.confirmed) });
+    // legacy: password lives in a Cloudflare secret (ADMIN_ACCOUNTS), not KV —
+    // the Settings page needs this to know whether "Reset password" can act on
+    // the account here or has to point the caller at the Cloudflare dashboard.
+    const legacy = ADMIN_ACCOUNTS.some((a) => a.email === email);
+    admins.push({ email, name: names[email] || null, mfaEnabled: !!(mfa && mfa.confirmed), legacy });
   }
   return json({
     admins,
@@ -7903,6 +7942,10 @@ export default {
       const adminNameMatch = url.pathname.match(/^\/api\/admin\/admins\/([^/]+)\/name$/);
       if (adminNameMatch && request.method === 'POST') {
         return await handleAdminRenameAdmin(request, env, cors, decodeURIComponent(adminNameMatch[1]));
+      }
+      const adminResetPwMatch = url.pathname.match(/^\/api\/admin\/admins\/([^/]+)\/reset-password$/);
+      if (adminResetPwMatch && request.method === 'POST') {
+        return await handleAdminResetPassword(request, env, cors, decodeURIComponent(adminResetPwMatch[1]));
       }
       if (url.pathname === '/api/admin/workspaces' && request.method === 'GET') {
         return await handleAdminWorkspaces(request, env, cors);

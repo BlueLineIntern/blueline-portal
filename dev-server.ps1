@@ -45,6 +45,12 @@ $frankAdminEmail = 'fsabin@blueline-advisors.com'
 $jennAdminEmail = 'jyoung@blueline-advisors.com'
 $internAdminEmail = 'intern@blueline-advisors.com'
 $ericAdminEmail = 'esullivan@blueline-advisors.com'
+# Mirrors worker.js's ADMIN_ACCOUNTS: these 3 have a password in a Cloudflare
+# secret, not KV, so the mock can't (and the real worker won't) reset it via
+# the app. $ericAdminEmail is pre-seeded above for local convenience only —
+# in worker.js he is added through the app like any other KV admin, so he's
+# deliberately NOT in this list.
+$legacyAdminEmails = @($frankAdminEmail, $jennAdminEmail, $internAdminEmail)
 $allAdminWorkspaces = '__all__'
 $adminWorkspaceAccess = @{
     $frankAdminEmail = @('jyoung@blueline-advisors.com', 'intern@blueline-advisors.com', 'esullivan@blueline-advisors.com')
@@ -2394,7 +2400,7 @@ while ($listener.IsListening) {
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
             $admins = @($adminPasswords.Keys | ForEach-Object {
                     $m = $adminMfa[$_]
-                    @{ email = $_; name = $adminNames[$_]; mfaEnabled = [bool]($m -and $m.confirmed) }
+                    @{ email = $_; name = $adminNames[$_]; mfaEnabled = [bool]($m -and $m.confirmed); legacy = ($legacyAdminEmails -contains $_) }
                 })
             Send-Json $ctx 200 @{ admins = $admins; you = $adminEmail; boss = (Test-SharedViewManager $adminEmail); canDeleteAdmins = (Test-SuperAdmin $adminEmail) }
         }
@@ -2439,13 +2445,30 @@ while ($listener.IsListening) {
             if (-not (Test-SharedViewManager $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only shared firm view managers can rename admin accounts' }; continue }
             $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
             if (-not $adminPasswords.ContainsKey($target)) { Send-Json $ctx 404 @{ error = 'Not an admin account' }; continue }
-            $body = Read-JsonBody $ctx
+            $body = Read-Body $ctx
             $name = if ($body) { ([string]$body.name).Trim() } else { '' }
             if (-not $name) { Send-Json $ctx 400 @{ error = "Enter the admin's name" }; continue }
             if ($name.Length -gt 200) { $name = $name.Substring(0, 200) }
             $adminNames[$target] = $name
             Write-Audit $adminEmail 'rename-admin' @{ target = $target; name = $name }
             Send-Json $ctx 200 @{ email = $target; name = $name }
+        }
+        elseif ($path -match '^/api/admin/admins/(.+)/reset-password$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            if (-not (Test-SharedViewManager $adminEmail)) { Send-Json $ctx 403 @{ error = 'Only shared firm view managers can reset admin passwords' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if ($legacyAdminEmails -contains $target) {
+                Send-Json $ctx 400 @{ error = "This account's password is a Cloudflare secret, not stored in the app -- update it in the Cloudflare dashboard instead." }; continue
+            }
+            if (-not $adminPasswords.ContainsKey($target)) { Send-Json $ctx 404 @{ error = 'Not an admin account' }; continue }
+            $body = Read-Body $ctx
+            $password = if ($body) { [string]$body.password } else { '' }
+            if ($password.Length -lt 10) { Send-Json $ctx 400 @{ error = 'Password must be at least 10 characters' }; continue }
+            $adminPasswords[$target] = $password
+            foreach ($token in @($adminSessions.Keys | Where-Object { $adminSessions[$_] -eq $target })) { $adminSessions.Remove($token) }
+            Write-Audit $adminEmail 'reset-password' @{ target = $target }
+            Send-Json $ctx 200 @{ ok = $true; email = $target }
         }
         elseif ($path -match '^/api/admin/mfa/reset/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx

@@ -22,7 +22,9 @@
       <div class="panel-head"><h2>Admin Accounts</h2></div>
       <p class="hint">Two-factor status for each admin. If someone loses their authenticator and all backup
       codes, reset their MFA here — they'll set up a new authenticator the next time they sign in. Frank is
-      the super-admin; removing admin accounts is the only action reserved exclusively for him.</p>
+      the super-admin; removing admin accounts is the only action reserved exclusively for him. Reset
+      password sets a new password directly for admins added here; for Frank, Jenn, and Intern it instead
+      points you to the Cloudflare secret that holds theirs.</p>
       <p class="panel-status" id="admins-status"></p>
       <div class="table-scroll">
         <table class="data-table">
@@ -212,6 +214,15 @@
   }
 
   // ---------- Admin accounts / MFA ----------
+  // The 3 accounts hardcoded in worker.js's ADMIN_ACCOUNTS — mirrored here only
+  // to name the Cloudflare secret in the "reset password" instructions below;
+  // their password can't be reset through the app (see handleAdminResetPassword).
+  const LEGACY_ADMIN_SECRET_SUFFIX = {
+    'fsabin@blueline-advisors.com': 'FSABIN',
+    'jyoung@blueline-advisors.com': 'JYOUNG',
+    'intern@blueline-advisors.com': 'INTERN',
+  };
+
   function renderAdmins(admins, you, boss, canDeleteAdmins) {
     const body = document.getElementById('admins-body');
     body.innerHTML = (admins || [])
@@ -223,6 +234,7 @@
         const actions = boss
           ? `<div style="display:flex; gap:var(--sp-2); flex-wrap:wrap;">
               <button type="button" class="btn btn-ghost btn-small edit-admin-name-btn" data-email="${escapeHtml(a.email)}" data-name="${escapeHtml(a.name || staffLabel(a.email))}">Edit name</button>
+              <button type="button" class="btn btn-ghost btn-small reset-password-btn" data-email="${escapeHtml(a.email)}" data-legacy="${a.legacy ? '1' : ''}">Reset password</button>
               ${a.mfaEnabled ? `<button type="button" class="btn btn-ghost btn-small reset-mfa-btn" data-email="${escapeHtml(a.email)}">Reset MFA</button>` : ''}
               ${canDeleteAdmins && !isYou ? `<button type="button" class="btn btn-danger btn-small remove-admin-btn" data-email="${escapeHtml(a.email)}" data-name="${escapeHtml(a.name || staffLabel(a.email))}">Remove admin</button>` : ''}
             </div>`
@@ -301,6 +313,31 @@
         loadAdmins();
       } catch (err) {
         statusEl.textContent = `Name change failed: ${err.message}`;
+      }
+      return;
+    }
+    const resetPwBtn = e.target.closest('.reset-password-btn');
+    if (resetPwBtn) {
+      const email = resetPwBtn.dataset.email;
+      if (resetPwBtn.dataset.legacy) {
+        const suffix = LEGACY_ADMIN_SECRET_SUFFIX[email] || email.split('@')[0].toUpperCase();
+        alert(`${email}'s password is a Cloudflare secret, not stored in the app — it can't be reset here.\n\n`
+          + `Go to Cloudflare → blueline-portal → Settings → Variables and Secrets → find ADMIN_PASSWORD_${suffix}.\n\n`
+          + `Takes effect immediately — no redeploy needed.`);
+        return;
+      }
+      const password = prompt(`New password for ${email} (at least 10 characters). They'll be signed out of any open session; MFA is unaffected.`);
+      if (password === null) return;
+      if (password.length < 10) { alert('Password must be at least 10 characters.'); return; }
+      const statusEl = document.getElementById('admins-status');
+      statusEl.textContent = 'Resetting password…';
+      try {
+        await api(`/api/admin/admins/${encodeURIComponent(email)}/reset-password`, {
+          method: 'POST', body: JSON.stringify({ password }),
+        });
+        statusEl.textContent = `Reset ${email}'s password. Give it to them directly.`;
+      } catch (err) {
+        statusEl.textContent = `Password reset failed: ${err.message}`;
       }
       return;
     }
@@ -392,7 +429,7 @@
     if (entry.action === 'login') {
       return d.mfa === 'backup-code' ? 'via backup code' : d.mfa === 'totp' ? 'via authenticator app' : '—';
     }
-    if (entry.action === 'reset-mfa' || entry.action === 'remove-admin' || entry.action === 'rename-admin') {
+    if (entry.action === 'reset-mfa' || entry.action === 'remove-admin' || entry.action === 'rename-admin' || entry.action === 'reset-password') {
       return d.target || '—';
     }
     if (typeof d === 'string') return d;
@@ -408,6 +445,7 @@
     'create-admin': 'Added an admin account',
     'rename-admin': 'Renamed an admin account',
     'remove-admin': 'Removed an admin account',
+    'reset-password': "Reset an admin's password",
   };
 
   function renderAudit(entries) {
