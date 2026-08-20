@@ -1118,6 +1118,17 @@ Client portal is untouched and keeps its own look.
   (`columnForTask` maps unknown list/assignee there). Migrates the earlier
   `team_roster` members → custom lists on first read. (This replaces the
   short-lived non-login "team roster"; assignees are admin-only again.)
+  **Completed tasks age out of this page after 7 days** (added 2026-08-20):
+  `operations.html` drops `status:'done'` records whose `completedAt` (falling
+  back to `readyAt`) is older than `COMPLETED_VISIBLE_DAYS` as the
+  `/api/admin/tasks` response lands in `loadData`, so the Completed column, the
+  List view's Completed quick filter, the quick-filter counts and the category
+  options all agree on one set of tasks. **This is a view filter, not
+  retention** - nothing is deleted, the `task:` records and their timeline
+  entries are untouched, and a completed task stays reachable from the
+  contact's Tasks tab, its client timeline and the search palette. A done task
+  carrying neither timestamp stays visible rather than being hidden on a
+  guessed date.
 - **Operations** (`operations.html`, sidebar "Operations") is the single task
   workspace — the old separate Tasks page was merged in as a **List view**. A
   Board/List toggle switches between them; both are views over the same `task:`

@@ -414,6 +414,29 @@
   let draft = null;
   const POLL_INTERVAL_MS = 30000;
 
+  // Completed tasks age out of this page after a week. The board's Completed
+  // column and the list's Completed quick filter are a "what did we just
+  // finish" view, not an archive — unbounded, they grow into a wall nobody
+  // reads. Nothing is deleted: the records stay in KV, and a completed task is
+  // still reachable from the contact's Tasks tab, its timeline entry, and the
+  // search palette. Applied where the API response lands (loadData) so the
+  // board, the list, the quick-filter counts and the category options all agree
+  // on one set of tasks instead of each re-deriving the cutoff.
+  const COMPLETED_VISIBLE_DAYS = 7;
+
+  // Age comes from completedAt, which handleAdminUpdateTask stamps on every
+  // open -> done transition; readyAt is stamped in the same place and covers any
+  // record written before completedAt existed. A done task carrying neither date
+  // stays visible rather than being hidden on a guessed timestamp — a straggler
+  // in the Completed column is a smaller problem than a task that silently
+  // disappears because its age was invented.
+  function completedLongAgo(t) {
+    if (t.status !== 'done') return false;
+    const ts = Date.parse(t.completedAt || t.readyAt || '');
+    if (Number.isNaN(ts)) return false;
+    return Date.now() - ts > COMPLETED_VISIBLE_DAYS * 86400000;
+  }
+
   // Category labels/badges, priority rails and due-date urgency come from
   // shared.js. This page previously kept its own copies; the category map in
   // particular never learned about the categories added later (trading,
@@ -1308,7 +1331,7 @@
   function emptyMessage() {
     if (!allTasks.length) return 'No tasks yet — use “+ New task”.';
     if (listQuickFilter === 'awaiting') return 'Nothing ticked off and waiting. Tick a task, then press Complete.';
-    if (listQuickFilter === 'done') return 'Nothing completed yet.';
+    if (listQuickFilter === 'done') return `Nothing completed in the last ${COMPLETED_VISIBLE_DAYS} days.`;
     if (listFiltersActive() || listSearch.trim()) return 'No tasks match these filters.';
     return 'Nothing here. Enjoy the quiet, or create a task.';
   }
@@ -1475,7 +1498,7 @@
         api('/api/admin/contacts'),
         api('/api/admin/lists').catch(() => ({ lists: [] })),
       ]);
-      allTasks = taskData.tasks || [];
+      allTasks = (taskData.tasks || []).filter((t) => !completedLongAgo(t));
       allContacts = (contactData.contacts || []).sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)));
       adminList = contactData.admins || [];
       registerStaff(Object.entries(contactData.adminNames || {}).map(([id, name]) => ({ id, name })));
