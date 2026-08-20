@@ -1007,14 +1007,20 @@ function Test-SuperAdmin($adminEmail) {
     return $adminEmail -eq $frankAdminEmail
 }
 
+# Workspaces $adminEmail may look at. Returns a FLAT array: the callers all
+# wrap the call in @(), which re-arrays a single value on its own, so the
+# `, @()` array-preserving idiom used elsewhere in this file handed them an
+# array nested one level too deep instead. That made `$allowed -contains
+# $requested` always false and `$allowed[0]` an array, so Get-AdminWorkspace
+# returned $null and every workspace-scoped admin endpoint answered 403.
 function Get-AccessibleWorkspaces($adminEmail) {
     $frankMembers = @($adminWorkspaceAccess[$frankAdminEmail])
     if (Test-SharedViewManager $adminEmail) {
         $owners = @(@($adminPasswords.Keys) + @($formerAdminNames.Keys) | Select-Object -Unique)
-        return , @($owners | Where-Object { $_ -eq $frankAdminEmail -or $formerAdminNames.ContainsKey($_) -or $frankMembers -notcontains $_ })
+        return @($owners | Where-Object { $_ -eq $frankAdminEmail -or $formerAdminNames.ContainsKey($_) -or $frankMembers -notcontains $_ })
     }
-    if ($frankMembers -contains $adminEmail) { return , @($frankAdminEmail) }
-    return , @($adminEmail)
+    if ($frankMembers -contains $adminEmail) { return @($frankAdminEmail) }
+    return @($adminEmail)
 }
 
 function Get-AdminWorkspace($ctx, $adminEmail) {
@@ -1404,7 +1410,7 @@ while ($listener.IsListening) {
         elseif ($path -eq '/api/admin/workspaces' -and $method -eq 'GET') {
             $adminEmail = Get-AdminEmail $ctx
             if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
-            $allowed = Get-AccessibleWorkspaces $adminEmail
+            $allowed = @(Get-AccessibleWorkspaces $adminEmail)
             $active = Get-AdminWorkspace $ctx $adminEmail
             if (-not $active) { $active = $allowed[0] }
             $workspaces = @($allowed | ForEach-Object {
