@@ -17,7 +17,9 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 70% -20%, rgba(74,171,219,0.09), transparent 38rem),
+    var(--bg);
   color: var(--text);
 }
 
@@ -57,22 +59,24 @@ a:hover { text-decoration: underline; }
 .shell { display: flex; min-height: 100vh; }
 
 .sidebar {
-  width: 232px;
+  width: 244px;
   flex-shrink: 0;
-  background: var(--navy);
+  background: linear-gradient(180deg, #121f38 0%, var(--navy) 48%, #13233d 100%);
   color: #fff;
   display: flex;
   flex-direction: column;
   position: sticky;
   top: 0;
   height: 100vh;
+  box-shadow: 10px 0 34px rgba(15, 31, 55, 0.12);
+  z-index: 2;
 }
-.sidebar-brand { padding: var(--sp-5) var(--sp-4) var(--sp-4); border-bottom: 1px solid rgba(255,255,255,0.09); }
+.sidebar-brand { padding: var(--sp-6) var(--sp-5) var(--sp-5); border-bottom: 1px solid rgba(255,255,255,0.09); }
 .sidebar-brand img { width: 100%; max-width: 160px; height: auto; display: block; }
 .sidebar-nav { padding: var(--sp-3) var(--sp-2); display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .sidebar-nav a {
   display: flex; align-items: center; gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm);
+  padding: 10px var(--sp-3); border-radius: var(--radius);
   color: rgba(255,255,255,0.76);
   font-size: var(--fs-md); font-weight: var(--fw-medium);
   text-decoration: none;
@@ -82,7 +86,7 @@ a:hover { text-decoration: underline; }
 /* Active tab gets a left marker as well as a tint — colour alone is a weak
    "you are here" signal against a dark ground. */
 .sidebar-nav a.active {
-  background: rgba(74,171,219,0.20); color: #fff;
+  background: linear-gradient(90deg, rgba(74,171,219,0.24), rgba(74,171,219,0.12)); color: #fff;
   box-shadow: inset 3px 0 0 var(--sky);
   font-weight: var(--fw-semibold);
 }
@@ -231,13 +235,13 @@ a:hover { text-decoration: underline; }
 }
 .sidebar-foot button:hover { background: rgba(255,255,255,0.1); }
 
-.content { flex: 1; min-width: 0; padding: var(--sp-8) var(--sp-8) 64px; max-width: 1440px; }
+.content { flex: 1; min-width: 0; width: 100%; padding: 36px 40px 72px; max-width: 1500px; }
 
 .page-head {
   display: flex; align-items: center; justify-content: space-between;
-  gap: var(--sp-4); flex-wrap: wrap; margin-bottom: var(--sp-6);
+  gap: var(--sp-4); flex-wrap: wrap; margin-bottom: 28px;
 }
-.page-head h1 { font-size: var(--fs-2xl); font-weight: var(--fw-semibold); }
+.page-head h1 { font-size: var(--fs-2xl); font-weight: var(--fw-bold); letter-spacing: -0.025em; }
 .page-head .sub { color: var(--muted); margin: var(--sp-1) 0 0; font-size: var(--fs-base); }
 .page-actions { display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap; }
 .admin-employee-filter {
@@ -254,7 +258,7 @@ a:hover { text-decoration: underline; }
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   padding: var(--sp-5);
   margin-bottom: var(--sp-5);
@@ -283,8 +287,13 @@ button.panel-link:hover { text-decoration: underline; }
 /* Stat tiles */
 .stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: var(--sp-4); margin-bottom: var(--sp-5); }
 .stat-tile {
-  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-  box-shadow: var(--shadow-sm); padding: var(--sp-4); cursor: default;
+  background: linear-gradient(180deg, #fff, #fbfcfe); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm); padding: var(--sp-5); cursor: default;
+  position: relative; overflow: hidden;
+}
+.stat-tile::before {
+  content: ""; position: absolute; inset: 0 0 auto; height: 3px;
+  background: linear-gradient(90deg, var(--sky), rgba(74,171,219,0.25));
 }
 .stat-tile .num {
   font-size: var(--fs-3xl); font-weight: var(--fw-bold); color: var(--navy);
@@ -441,11 +450,11 @@ a.stat-tile:hover {
   padding: var(--sp-2) var(--sp-4); border-radius: var(--radius-sm); border: 1px solid transparent;
   font-family: var(--font-sans); font-size: var(--fs-base); font-weight: var(--fw-semibold);
   cursor: pointer; text-decoration: none; white-space: nowrap; align-self: center; margin: 0;
-  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), transform var(--transition);
 }
 .btn:hover { text-decoration: none; }
-.btn-primary { background: var(--sky); color: #fff; box-shadow: var(--shadow-sm); }
-.btn-primary:hover { background: var(--sky-dark); }
+.btn-primary { background: linear-gradient(135deg, #287da9, #1d6289); color: #fff; box-shadow: 0 6px 14px rgba(40,127,174,0.2); }
+.btn-primary:hover { background: linear-gradient(135deg, #236f99, #174f73); box-shadow: 0 8px 18px rgba(40,127,174,0.26); transform: translateY(-1px); }
 .btn-secondary { background: var(--navy); color: #fff; box-shadow: var(--shadow-sm); }
 .btn-secondary:hover { background: var(--navy-soft); }
 .btn-ghost { background: var(--panel); color: var(--navy); border-color: var(--border-strong); }
@@ -459,7 +468,7 @@ a.stat-tile:hover {
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: var(--sp-4); }
 .field label { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--navy); }
 .field input, .field select, .field textarea, .input, select {
-  padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 9px var(--sp-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   font-family: var(--font-sans); font-size: var(--fs-base); color: var(--text); background: #fff;
   transition: border-color var(--transition), box-shadow var(--transition);
 }
@@ -616,6 +625,7 @@ body .topbar, body .footer { display: none; }
 /* Composer tab strip: Update / Task / Event. Each pane files a different
    record type from Home without navigating away first. */
 .composer-panel { padding: 0; }
+.composer-panel, .home-cols > div > .panel, .rail .panel { border-color: rgba(200,211,223,0.82); }
 .composer-tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--border); padding: 0 var(--sp-4); }
 .composer-tabs button {
   border: none; background: none; cursor: pointer;
