@@ -62,6 +62,25 @@
           <p class="form-error" id="register-error"></p>
           <button type="submit" class="btn btn-primary">Create Account</button>
         </form>
+
+        <!-- Shown only when the page is opened with a ?reset= link from an
+             advisor. The tabs are hidden in that state (script.js): the client
+             followed a link to do one specific thing, and offering Log In next
+             to it just invites them to try the password they've forgotten. -->
+        <form id="reset-form" class="form hidden">
+          <h2>Set a new password</h2>
+          <p class="hint" id="reset-for"></p>
+
+          <label for="reset-password">New password</label>
+          <input type="password" id="reset-password" required minlength="8" autocomplete="new-password" />
+          <p class="hint">At least 8 characters.</p>
+
+          <label for="reset-password-confirm">Confirm new password</label>
+          <input type="password" id="reset-password-confirm" required minlength="8" autocomplete="new-password" />
+
+          <p class="form-error" id="reset-error"></p>
+          <button type="submit" class="btn btn-primary">Set Password</button>
+        </form>
       </div>
     </section>
 

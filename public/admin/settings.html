@@ -432,6 +432,10 @@
     if (entry.action === 'reset-mfa' || entry.action === 'remove-admin' || entry.action === 'rename-admin' || entry.action === 'reset-password') {
       return d.target || '—';
     }
+    // Client-scoped actions name the client rather than an admin target.
+    if (entry.action === 'create-client-invite' || entry.action === 'create-client-reset') {
+      return d.client || '—';
+    }
     if (typeof d === 'string') return d;
     try { return JSON.stringify(d); } catch { return '—'; }
   }
@@ -446,6 +450,8 @@
     'rename-admin': 'Renamed an admin account',
     'remove-admin': 'Removed an admin account',
     'reset-password': "Reset an admin's password",
+    'create-client-invite': 'Created a client registration link',
+    'create-client-reset': 'Created a client password reset link',
   };
 
   function renderAudit(entries) {

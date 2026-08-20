@@ -24,6 +24,7 @@ import { buildSignedAgreementServer, resolveClientNameServer } from './agreement
  *   onboarding:<id>            -> onboarding POC record (sample/test data only)
  *   onboarding_secret:<id>     -> per-session write token  (TTL'd, never returned)
  *   client_invite:<sha256>      -> invited client email (7-day TTL, one use)
+ *   client_reset:<sha256>       -> client email for a password reset (24h TTL, one use)
  *   rl:<scope>:<ip>            -> { count, windowStart }    (TTL'd, rate limiting)
  *
  * Endpoints:
@@ -67,6 +68,11 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const PBKDF2_ITERATIONS = 100000;
 const ONBOARDING_TTL_SECONDS = 60 * 60 * 24 * 30; // secrets + soft-deleted records expire after 30 days
 const CLIENT_INVITE_TTL_SECONDS = 60 * 60 * 24 * 7;
+// Deliberately much shorter than an invite. An invite is for an account that
+// doesn't exist yet, so a stale one is worthless; a reset link takes over an
+// account that already holds the client's assessment data, so it's the more
+// dangerous thing to leave lying in an inbox.
+const CLIENT_RESET_TTL_SECONDS = 60 * 60 * 24;
 
 // Admin staff each sign in with their own password. The password for each email
 // lives in its own Cloudflare secret (the `secret` field below); set them with:
@@ -100,6 +106,7 @@ const LEGACY_ADMIN_NAMES = {
   'esullivan@blueline-advisors.com': 'Eric S',
 };
 const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 12; // 12 hours
+const CLIENT_PASSWORD_MIN_LENGTH = 8;
 const ADMIN_PASSWORD_MIN_LENGTH = 10; // a step above the client minimum (8) — elevated privilege
 
 // ---------- Admin accounts added through the app ----------
@@ -424,6 +431,7 @@ const RATE_LIMITS = {
   register: [5, 3600], // 5 new accounts / hour per IP
   onboardingStart: [20, 3600], // 20 new onboardings / hour per IP
   adminlogin: [10, 300], // 10 admin login attempts / 5 min per IP
+  reset: [10, 300], // 10 client password-reset submissions / 5 min per IP
 };
 
 // ---------- CORS ----------
@@ -565,9 +573,9 @@ async function handleRegister(request, env, cors) {
   if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
 
   const { name, email, password, invite } = body;
-  if (!name || !isValidEmail(email) || !password || password.length < 8) {
+  if (!name || !isValidEmail(email) || !password || password.length < CLIENT_PASSWORD_MIN_LENGTH) {
     return json(
-      { error: 'name, a valid email, and a password of at least 8 characters are required' },
+      { error: `name, a valid email, and a password of at least ${CLIENT_PASSWORD_MIN_LENGTH} characters are required` },
       400,
       cors
     );
@@ -624,6 +632,81 @@ async function handleAdminCreateClientInvite(request, env, cors, rawEmail) {
   });
   await logAudit(env, adminEmail, 'create-client-invite', { client: email });
   return json({ invite: token, email, expiresIn: CLIENT_INVITE_TTL_SECONDS }, 201, cors);
+}
+
+// Mint a one-time password-reset link for a client who already has a portal
+// account. Deliberately does NOT let the admin choose the password: only the
+// client should ever know their own credential, so this hands back a token and
+// the client sets the password themselves (handleResetPassword). Same
+// hash-the-token-at-rest shape as the invite above — a KV dump can't be
+// replayed as a live link.
+async function handleAdminCreateClientReset(request, env, cors, rawEmail) {
+  const adminEmail = await getAdminEmail(request, env);
+  if (!adminEmail) return json({ error: 'Not authorized' }, 401, cors);
+  const workspace = await requestedAdminWorkspace(request, env, adminEmail);
+  if (!workspace) return json({ error: 'You do not have access to that workspace' }, 403, cors);
+  const email = String(rawEmail || '').trim().toLowerCase();
+  if (!isValidEmail(email) || !(await contactBelongsToWorkspace(env, email, workspace))) {
+    return json({ error: 'Contact not found in this workspace' }, 404, cors);
+  }
+  if (!(await env.PORTAL_KV.get(`user:${email}`))) {
+    return json({ error: 'This contact has no portal account yet — use Create Account instead' }, 409, cors);
+  }
+  const token = randomHex(32);
+  await env.PORTAL_KV.put(`client_reset:${await sha256Hex(token)}`, email, {
+    expirationTtl: CLIENT_RESET_TTL_SECONDS,
+  });
+  await logAudit(env, adminEmail, 'create-client-reset', { client: email });
+  return json({ reset: token, email, expiresIn: CLIENT_RESET_TTL_SECONDS }, 201, cors);
+}
+
+// The client end of the reset: prove possession of the one-time token, set a
+// new password. Unauthenticated by design (the whole point is that they can't
+// log in), so it is rate-limited and the token is consumed before the response.
+async function handleResetPassword(request, env, cors) {
+  if (!(await checkRateLimit(env, 'reset', clientIp(request)))) {
+    return json({ error: 'Too many attempts. Please try again later.' }, 429, cors);
+  }
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ error: 'Invalid JSON body' }, 400, cors);
+  const token = String(body.token || '').trim();
+  const password = String(body.password || '');
+  if (!token) return json({ error: 'This password reset link is invalid or has expired' }, 403, cors);
+  const resetKey = `client_reset:${await sha256Hex(token)}`;
+  const email = String((await env.PORTAL_KV.get(resetKey)) || '').trim().toLowerCase();
+  if (!email) return json({ error: 'This password reset link is invalid or has expired' }, 403, cors);
+  // Token validity is checked before the password rules on purpose. The other
+  // order tells someone with a dead link to fix their password first, then
+  // fails them again on the link — two round trips and a misleading first
+  // message. It also keeps the password policy behind a valid token.
+  if (password.length < CLIENT_PASSWORD_MIN_LENGTH) {
+    return json({ error: `Password must be at least ${CLIENT_PASSWORD_MIN_LENGTH} characters` }, 400, cors);
+  }
+  const userRaw = await env.PORTAL_KV.get(`user:${email}`);
+  // The account could have been deleted between the link being issued and used.
+  if (!userRaw) {
+    await env.PORTAL_KV.delete(resetKey);
+    return json({ error: 'This password reset link is invalid or has expired' }, 403, cors);
+  }
+  const user = JSON.parse(userRaw);
+  const salt = randomHex(16);
+  const hash = await hashPassword(password, salt, PBKDF2_ITERATIONS);
+  await env.PORTAL_KV.put(`user:${email}`, JSON.stringify({
+    ...user, salt, hash, iterations: PBKDF2_ITERATIONS, passwordResetAt: new Date().toISOString(),
+  }));
+  // Single-use: consume the link before issuing the session, same ordering the
+  // registration flow uses so two near-simultaneous requests can't both win.
+  await env.PORTAL_KV.delete(resetKey);
+  // Whoever was signed in with the old password is signed out. If the reset was
+  // prompted by a shared or compromised password, leaving those alive would
+  // defeat the point.
+  for (const keyName of await listKeys(env, 'session:')) {
+    if ((await env.PORTAL_KV.get(keyName)) === email) await env.PORTAL_KV.delete(keyName);
+  }
+  const sessionToken = randomHex(32);
+  await env.PORTAL_KV.put(`session:${sessionToken}`, email, { expirationTtl: SESSION_TTL_SECONDS });
+  await logTimeline(env, email, 'password-reset', 'client', null);
+  return json({ token: sessionToken, name: user.name, email }, 200, cors);
 }
 
 async function handleLogin(request, env, cors) {
@@ -7882,6 +7965,9 @@ export default {
       if (url.pathname === '/api/login' && request.method === 'POST') {
         return await handleLogin(request, env, cors);
       }
+      if (url.pathname === '/api/reset-password' && request.method === 'POST') {
+        return await handleResetPassword(request, env, cors);
+      }
       if (url.pathname === '/api/logout' && request.method === 'POST') {
         return await handleLogout(request, env, cors);
       }
@@ -8142,6 +8228,10 @@ export default {
       const clientInviteMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/portal-invite$/);
       if (clientInviteMatch && request.method === 'POST') {
         return await handleAdminCreateClientInvite(request, env, cors, decodeURIComponent(clientInviteMatch[1]));
+      }
+      const clientResetMatch = url.pathname.match(/^\/api\/admin\/contacts\/(.+)\/portal-reset$/);
+      if (clientResetMatch && request.method === 'POST') {
+        return await handleAdminCreateClientReset(request, env, cors, decodeURIComponent(clientResetMatch[1]));
       }
       // Archive/unarchive must be matched before the generic upsert route below,
       // whose `(.+)` would otherwise swallow the "/archive" suffix into the email.

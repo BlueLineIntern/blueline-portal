@@ -779,6 +779,28 @@
   </div>
 </div>
 
+<!-- Client password reset. The link is shown for the advisor to send on, never
+     opened here: the whole point of the token is that the *client* chooses the
+     password, so following it in this browser would defeat it. -->
+<div class="modal-backdrop hidden" id="pwreset-modal-backdrop">
+  <div class="modal">
+    <h2>Password reset link</h2>
+    <p class="field-note" id="pwreset-intro"></p>
+    <div class="field">
+      <label for="pwreset-link">Send this link to the client</label>
+      <input type="text" id="pwreset-link" readonly />
+      <p class="field-note">Works once, and expires in 24 hours. They set their own password &mdash;
+      you won't see it. Sending it to the client's own email address is what makes this safe, so
+      don't post it anywhere shared.</p>
+    </div>
+    <p class="form-error" id="pwreset-error"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="pwreset-close">Close</button>
+      <button type="button" class="btn btn-primary" id="pwreset-copy">Copy link</button>
+    </div>
+  </div>
+</div>
+
 <script src="/assets/render.js"></script>
 <script src="/admin/shared.js?v=20260817-6"></script>
 <script>
@@ -3022,7 +3044,7 @@
             ${kvRow('Primary advisor', c.advisor ? escapeHtml(c.advisor) : '<span class="cell-missing">—</span>')}
             ${kvRow('Status', statusBadge(c.status))}
             ${kvRow('Portal account', c.hasAccount
-              ? '<span class="badge badge-green">Registered</span>'
+              ? '<span class="badge badge-green">Registered</span> <button type="button" class="btn btn-ghost btn-small" id="reset-portal-password">Reset password</button>'
               : '<span class="badge badge-gray">Not registered</span> <button type="button" class="btn btn-primary btn-small" id="create-portal-invite">Create Account</button>')}
           </div>
         </div>
@@ -3083,6 +3105,28 @@
       } finally {
         inviteBtn.disabled = false;
         inviteBtn.textContent = oldText;
+      }
+    });
+    const resetPwBtn = document.getElementById('reset-portal-password');
+    if (resetPwBtn) resetPwBtn.addEventListener('click', async () => {
+      if (!confirm(`Create a password reset link for ${c.name || email}?\n\nAny session they currently have open will be signed out once they use it.`)) return;
+      resetPwBtn.disabled = true;
+      const oldText = resetPwBtn.textContent;
+      resetPwBtn.textContent = 'Creating…';
+      try {
+        const result = await api(`/api/admin/contacts/${encodeURIComponent(email)}/portal-reset`, { method: 'POST' });
+        const link = `${location.origin}/?reset=${encodeURIComponent(result.reset)}&email=${encodeURIComponent(result.email || email)}`;
+        document.getElementById('pwreset-intro').textContent =
+          `For ${result.email || email}. They'll be asked to set a new password, then signed straight in.`;
+        document.getElementById('pwreset-link').value = link;
+        document.getElementById('pwreset-error').textContent = '';
+        document.getElementById('pwreset-copy').textContent = 'Copy link';
+        document.getElementById('pwreset-modal-backdrop').classList.remove('hidden');
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        resetPwBtn.disabled = false;
+        resetPwBtn.textContent = oldText;
       }
     });
     if (!background || !prevActivity) renderOverviewActivity(email);
@@ -3700,6 +3744,34 @@
 
   document.getElementById('doc-cancel').addEventListener('click', closeDocModal);
   docModal.addEventListener('click', (e) => { if (e.target === e.currentTarget) closeDocModal(); });
+
+  // ---------- Client password-reset link modal ----------
+  const pwResetModal = document.getElementById('pwreset-modal-backdrop');
+  function closePwResetModal() {
+    // Blank the field on close so a live reset token isn't left in the DOM of a
+    // tab that stays open all day.
+    document.getElementById('pwreset-link').value = '';
+    pwResetModal.classList.add('hidden');
+  }
+  document.getElementById('pwreset-close').addEventListener('click', closePwResetModal);
+  pwResetModal.addEventListener('click', (e) => { if (e.target === e.currentTarget) closePwResetModal(); });
+
+  document.getElementById('pwreset-copy').addEventListener('click', async (e) => {
+    const input = document.getElementById('pwreset-link');
+    const errEl = document.getElementById('pwreset-error');
+    errEl.textContent = '';
+    try {
+      await navigator.clipboard.writeText(input.value);
+      e.target.textContent = 'Copied';
+    } catch {
+      // Clipboard access needs a secure context and can be blocked outright;
+      // selecting the text is a fallback the advisor can finish with Ctrl+C
+      // rather than a dead button.
+      input.focus();
+      input.select();
+      errEl.textContent = 'Could not copy automatically — the link is selected, press Ctrl+C.';
+    }
+  });
 
   // Default the name to the filename without its extension — one less thing to
   // type for the common case, still fully editable.
@@ -4572,6 +4644,7 @@
 
   const TIMELINE_LABELS = {
     'account-created': 'Created their portal account',
+    'password-reset': 'Set a new portal password',
     'login': 'Signed in to the portal',
     'assessment-completed': 'Completed an assessment',
     'assessment-updated': 'Updated an assessment',

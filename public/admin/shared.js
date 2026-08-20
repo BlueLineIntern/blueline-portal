@@ -735,6 +735,7 @@ const ACTIVITY_KIND = {
   'meeting-held': { icon: '▤', cls: 'fi-meeting' },
   'note-added': { icon: '✎', cls: 'fi-note' },
   'account-created': { icon: '☺', cls: 'fi-client' },
+  'password-reset': { icon: '✎', cls: 'fi-client' },
   'login': { icon: '→', cls: 'fi-client' },
   'assessment-completed': { icon: '◆', cls: 'fi-client' },
   'assessment-updated': { icon: '◆', cls: 'fi-client' },
@@ -979,6 +980,7 @@ async function loadWorkspaceContext(activePage) {
 
 const TL_LABELS = {
   'account-created': 'created their portal account',
+  'password-reset': 'set a new portal password',
   'login': 'signed in to the portal',
   'assessment-completed': 'completed an assessment',
   'assessment-updated': 'updated an assessment',

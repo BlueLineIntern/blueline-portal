@@ -18,6 +18,7 @@ $assignments = @{}  # email -> array of assigned module keys ($null / absent = a
 $onboardings = @{}
 $onbSecrets = @{}
 $clientInvites = @{} # one-time token -> client email
+$clientResets = @{}  # one-time token -> @{ email; expiresAt } for a password reset
 $script:onbCounter = 0
 $adminSessions = @{}  # admin session token -> admin email
 $auditLog = [System.Collections.ArrayList]::new()  # audit entries, appended in order
@@ -920,7 +921,7 @@ function Get-OtpauthUri([string]$email, [string]$secret) {
 }
 
 # Fixed-window rate limiting, mirroring worker.js. [limit, windowSeconds].
-$rateLimits = @{ login = @(10, 300); register = @(5, 3600); onboardingStart = @(20, 3600) }
+$rateLimits = @{ login = @(10, 300); register = @(5, 3600); onboardingStart = @(20, 3600); reset = @(10, 300) }
 $rateState = @{}
 
 function Test-RateLimit($scope, $ip) {
@@ -1356,6 +1357,32 @@ while ($listener.IsListening) {
             $sessions[$token] = $body.email
             Write-Timeline $body.email 'login' 'client' $null
             Send-Json $ctx 200 @{ token = $token; name = $u.name; email = $u.email }
+        }
+        elseif ($path -eq '/api/reset-password' -and $method -eq 'POST') {
+            if (-not (Test-RateLimit 'reset' (Get-ClientIp $ctx))) { Send-Json $ctx 429 @{ error = 'Too many attempts. Please try again later.' }; continue }
+            $body = Read-Body $ctx
+            $resetToken = [string]$body.token
+            $password = [string]$body.password
+            $entry = if ($resetToken -and $clientResets.ContainsKey($resetToken)) { $clientResets[$resetToken] } else { $null }
+            if (-not $entry -or $entry.expiresAt -le (Get-Date)) {
+                Send-Json $ctx 403 @{ error = 'This password reset link is invalid or has expired' }; continue
+            }
+            if ($password.Length -lt 8) { Send-Json $ctx 400 @{ error = 'Password must be at least 8 characters' }; continue }
+            $email = $entry.email
+            if (-not $users.ContainsKey($email)) {
+                $clientResets.Remove($resetToken)
+                Send-Json $ctx 403 @{ error = 'This password reset link is invalid or has expired' }; continue
+            }
+            $u = $users[$email]
+            $u.password = $password
+            $users[$email] = $u
+            $clientResets.Remove($resetToken)
+            # Mirrors the worker: every existing session for this client dies.
+            foreach ($token in @($sessions.Keys | Where-Object { $sessions[$_] -eq $email })) { $sessions.Remove($token) }
+            $newToken = New-Token
+            $sessions[$newToken] = $email
+            Write-Timeline $email 'password-reset' 'client' $null
+            Send-Json $ctx 200 @{ token = $newToken; name = $u.name; email = $email }
         }
         elseif ($path -eq '/api/logout' -and $method -eq 'POST') {
             Send-Json $ctx 200 @{ ok = $true }
@@ -2351,6 +2378,19 @@ while ($listener.IsListening) {
             $clientInvites[$invite] = @{ email = $target; expiresAt = (Get-Date).AddDays(7) }
             Write-Audit $adminEmail 'create-client-invite' @{ client = $target }
             Send-Json $ctx 201 @{ invite = $invite; email = $target; expiresIn = 604800 }
+        }
+        elseif ($path -match '^/api/admin/contacts/(.+)/portal-reset$' -and $method -eq 'POST') {
+            $adminEmail = Get-AdminEmail $ctx
+            if (-not $adminEmail) { Send-Json $ctx 401 @{ error = 'Not authorized' }; continue }
+            $workspace = Get-AdminWorkspace $ctx $adminEmail
+            if (-not $workspace) { Send-Json $ctx 403 @{ error = 'You do not have access to that workspace' }; continue }
+            $target = [Uri]::UnescapeDataString($Matches[1]).Trim().ToLower()
+            if (-not (Test-ContactWorkspace $target $workspace)) { Send-Json $ctx 404 @{ error = 'Contact not found in this workspace' }; continue }
+            if (-not $users.ContainsKey($target)) { Send-Json $ctx 409 @{ error = 'This contact has no portal account yet -- use Create Account instead' }; continue }
+            $resetToken = New-Token
+            $clientResets[$resetToken] = @{ email = $target; expiresAt = (Get-Date).AddDays(1) }
+            Write-Audit $adminEmail 'create-client-reset' @{ client = $target }
+            Send-Json $ctx 201 @{ reset = $resetToken; email = $target; expiresIn = 86400 }
         }
         elseif ($path -match '^/api/admin/contacts/(.+)$' -and $method -eq 'POST') {
             $adminEmail = Get-AdminEmail $ctx

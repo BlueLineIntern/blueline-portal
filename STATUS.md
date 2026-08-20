@@ -441,6 +441,51 @@ Replaces the single bearer `ADMIN_TOKEN` with a login system:
   and now also mirrors the audit writes + `/api/admin/audit` in memory so the
   viewer is exercisable locally.)
 
+## Client portal accounts (advisor-issued registration + password reset)
+Clients never self-serve either of these -- there is no public sign-up and no
+"forgot password" email, by design. Both start from the advisor, on the
+contact's Overview tab, in the **Portal account** row:
+
+- **Not registered** -> a **Create Account** button. `POST
+  /api/admin/contacts/:email/portal-invite` mints `client_invite:<sha256(token)>`
+  -> email (7-day TTL, one use) and the page opens `/?invite=<token>&email=<addr>`,
+  which `script.js` swaps onto the Create Account tab with the email locked.
+  `/api/register` refuses any registration whose invite token is missing,
+  unknown, or bound to a different email. Audit-logged `create-client-invite`.
+- **Registered** -> a **Reset password** button (added 2026-08-20). `POST
+  /api/admin/contacts/:email/portal-reset` mints `client_reset:<sha256(token)>`
+  -> email (**24h** TTL, one use -- deliberately far shorter than an invite,
+  since a reset link takes over an account that already holds the client's
+  data). 409s if the contact has no portal account yet. Audit-logged
+  `create-client-reset`.
+
+  **The admin never sets or sees a client password.** The reset link is shown in
+  a modal for the advisor to send on and is deliberately NOT opened in the
+  advisor's browser (unlike the invite flow above, where the advisor does fill
+  in the registration form). Closing the modal blanks the field so a live token
+  is not left in the DOM of a tab that stays open. `POST /api/reset-password`
+  `{token,password}` is the client end: unauthenticated by necessity, so it is
+  rate-limited (`reset`, 10/5min/IP), re-hashes `user:<email>`, consumes the
+  token, **deletes every `session:` entry for that client** (a reset prompted by
+  a shared or compromised password has to end the sessions it was prompted by),
+  then issues one fresh session so the client lands signed in. Timeline event
+  `password-reset`.
+
+  Validation order is token-then-password on purpose: the reverse tells someone
+  with a dead link to fix their password first and only then fails them on the
+  link. A rejected password does **not** consume the token, so a typo does not
+  strand the client on a dead link.
+
+  Client-side: `?reset=<token>&email=<addr>` is stripped from the URL on load
+  (token out of the address bar, history, and any screenshot), held in module
+  scope rather than sessionStorage, and hides the tab strip plus both other
+  forms -- the client cannot log in (that is why they are here) and should not
+  be creating a second account. A confirm-password field catches typos
+  browser-side.
+
+  `CLIENT_PASSWORD_MIN_LENGTH` (8) now backs both `/api/register` and the reset,
+  replacing a hardcoded 8 in register.
+
 ## Advisor CRM (multi-page admin app under /admin/)
 The admin side is now a Wealthbox-inspired CRM. `admin.html` = login + MFA only
 (redirects into `/admin/` on success); pages share `admin/shared.css` (modern

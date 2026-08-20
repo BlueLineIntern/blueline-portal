@@ -24,6 +24,23 @@ if (inviteFromUrl) {
 const REGISTRATION_INVITE = inviteFromUrl || sessionStorage.getItem(REGISTRATION_INVITE_KEY) || "";
 const REGISTRATION_EMAIL = invitedEmailFromUrl || sessionStorage.getItem(REGISTRATION_EMAIL_KEY) || "";
 
+// Advisor-issued password reset (?reset=<token>&email=<addr>). Held in module
+// scope rather than sessionStorage like the invite above: a reset token is
+// single-use and short-lived, so surviving a tab reload buys nothing and
+// leaving it in storage after use is worse. Stripped from the URL immediately
+// so the token isn't sitting in the address bar, history, or a screenshot.
+const resetUrl = new URL(location.href);
+const RESET_TOKEN = resetUrl.searchParams.get("reset") || "";
+const RESET_EMAIL = (resetUrl.searchParams.get("email") || "").trim().toLowerCase();
+if (RESET_TOKEN) {
+  // Same precedence rule as an invite: an advisor-issued link wins over
+  // whoever is already signed in on this browser.
+  localStorage.removeItem(SESSION_KEY);
+  resetUrl.searchParams.delete("reset");
+  resetUrl.searchParams.delete("email");
+  history.replaceState(null, "", resetUrl.pathname + resetUrl.search + resetUrl.hash);
+}
+
 function getSession() {
   const raw = localStorage.getItem(SESSION_KEY);
   return raw ? JSON.parse(raw) : null;
@@ -328,6 +345,47 @@ if (REGISTRATION_INVITE) {
   const createTab = document.querySelector('.tab-btn[data-tab="register"]');
   if (createTab) createTab.click();
 }
+
+// A reset link replaces the whole auth card rather than adding a third tab:
+// the client can't log in (that's why they're here) and shouldn't be creating a
+// second account, so both other forms are hidden along with the tab strip.
+if (RESET_TOKEN) {
+  document.getElementById("login-form").classList.add("hidden");
+  document.getElementById("register-form").classList.add("hidden");
+  document.getElementById("reset-form").classList.remove("hidden");
+  const tabs = document.querySelector(".tabs");
+  if (tabs) tabs.classList.add("hidden");
+  const forEl = document.getElementById("reset-for");
+  if (forEl) {
+    forEl.textContent = RESET_EMAIL
+      ? `For ${RESET_EMAIL}. This link works once and expires within 24 hours.`
+      : "This link works once and expires within 24 hours.";
+  }
+}
+
+document.getElementById("reset-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const errorEl = document.getElementById("reset-error");
+  errorEl.textContent = "";
+  const password = document.getElementById("reset-password").value;
+  const confirm = document.getElementById("reset-password-confirm").value;
+  // Checked here rather than server-side: the confirm field exists to catch a
+  // typo in a password nobody can see, which is a browser-side concern.
+  if (password !== confirm) {
+    errorEl.textContent = "Those passwords don't match.";
+    return;
+  }
+  try {
+    const data = await apiRequest("/api/reset-password", {
+      method: "POST",
+      body: { token: RESET_TOKEN, password },
+    });
+    setSession({ token: data.token, name: data.name, email: data.email });
+    await enterApp();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
 
 document.getElementById("logout-btn").addEventListener("click", async () => {
   try {
